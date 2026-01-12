@@ -20,7 +20,8 @@ UI_LOG="$BASE_DIR/ui.log"
 # 0 = live mode, 1 = dry-run (safe)
 LIVE_DRY_RUN="${LIVE_DRY_RUN:-0}"
 
-export SYMBOLS="BBAI,F,AAL"
+export SYMBOLS="F,AAL,SOXS"
+export POSITION_SIZE=1666
 
 cleanup() {
     echo -e "\n[STOP] Cleaning up..."

@@ -70,7 +70,7 @@ def load_data():
         # 4. Trade History (for Graph)
         try:
             data['trades'] = pd.read_sql_query(
-                "SELECT timestamp, pnl, side FROM paper_trades ORDER BY timestamp ASC", conn
+                "SELECT timestamp, pnl, side, symbol FROM paper_trades ORDER BY timestamp ASC", conn
             )
             if not data['trades'].empty:
                 data['trades']["timestamp"] = pd.to_datetime(
@@ -78,6 +78,19 @@ def load_data():
                 ).dt.tz_convert("US/Eastern")
         except Exception:
             data['trades'] = pd.DataFrame()
+
+    # Filter out BBAI from all dataframes
+    if 'alerts' in data and not data['alerts'].empty:
+        data['alerts'] = data['alerts'][data['alerts']['symbol'] != 'BBAI']
+        
+    if 'positions' in data and not data['positions'].empty:
+        data['positions'] = data['positions'][data['positions']['symbol'] != 'BBAI']
+        
+    if 'realized' in data and not data['realized'].empty:
+        data['realized'] = data['realized'][data['realized']['symbol'] != 'BBAI']
+        
+    if 'trades' in data and not data['trades'].empty:
+        data['trades'] = data['trades'][data['trades']['symbol'] != 'BBAI']
 
     return data
 
@@ -133,12 +146,11 @@ with h_col1:
 with h_col2:
     st.markdown(f"<div style='text-align: right; font-size: 1.5em; font-weight: bold; padding-top: 35px;'>Portfolio PnL: <span style='color: {'#00FF99' if total_realized >= 0 else '#FF3366'}'>${total_realized:,.2f}</span></div>", unsafe_allow_html=True)
 
-# Top Metrics (Compact)
-# st.markdown(f"### 💰 Total Portfolio: **${total_pnl:,.2f}** <span style='font-size:0.8em; color:#94a3b8'>(Realized: **${total_realized:,.2f}** | Unrealized: **${total_unrealized:,.2f}**)</span>", unsafe_allow_html=True)
 st.divider()
 
 # ROW 1: Unified Positions & PnL
 st.subheader("📊 Portfolio Overview")
+
 
 if summary_rows:
     df_summary = pd.DataFrame(summary_rows)
@@ -204,67 +216,126 @@ with r2_c1:
         import plotly.graph_objects as go
         
         st.subheader("📈 Cumulative PnL")
+        
+        show_history = st.checkbox("Show All History", value=False)
+        
         df_chart = data['trades'].copy()
-        df_chart['cumulative_pnl'] = df_chart['pnl'].cumsum()
         
-        fig = go.Figure()
-        
-        # Main PnL Line
-        fig.add_trace(go.Scatter(
-            x=df_chart['timestamp'],
-            y=df_chart['cumulative_pnl'],
-            mode='lines',
-            name='PnL',
-            line=dict(color='#00FF99', width=3),
-            fill='tozeroy',
-            fillcolor='rgba(0, 255, 153, 0.1)'
-        ))
-        
-        # Buy Markers
-        buys = df_chart[df_chart['side'] == 'long']
-        if not buys.empty:
+        if not show_history:
+            # Filter to today only
+            today_midnight = pd.Timestamp.now(tz="US/Eastern").normalize()
+            df_chart = df_chart[df_chart['timestamp'] >= today_midnight].copy()
+            
+            if not df_chart.empty:
+                # Recalculate PnL from 0 for today
+                df_chart['cumulative_pnl'] = df_chart['pnl'].cumsum()
+        else:
+            # Full history
+            df_chart['cumulative_pnl'] = df_chart['pnl'].cumsum()
+
+        if not df_chart.empty:
+            fig = go.Figure()
+            
+            # Prepare X-axis data
+            if show_history:
+                # Use index-based X-axis to remove gaps
+                df_chart = df_chart.sort_values('timestamp').reset_index(drop=True)
+                x_values = df_chart.index
+                
+                # Generate ticks: Show date label only when day changes
+                df_chart['date_str'] = df_chart['timestamp'].dt.strftime('%b %d')
+                tick_vals = []
+                tick_text = []
+                last_date = None
+                
+                # Simple logic: Add tick for the first trade of each new day
+                for i, row in df_chart.iterrows():
+                    curr_date = row['date_str']
+                    if curr_date != last_date:
+                        tick_vals.append(i)
+                        tick_text.append(curr_date)
+                        last_date = curr_date
+            else:
+                # Standard time-based X-axis for intraday
+                x_values = df_chart['timestamp']
+
+            # Main PnL Line (No Fill)
             fig.add_trace(go.Scatter(
-                x=buys['timestamp'],
-                y=buys['cumulative_pnl'],
-                mode='markers+text',
-                name='Buy',
-                marker=dict(symbol='triangle-up', color='#00FF99', size=12, line=dict(color='white', width=1)),
-                text=["BUY"] * len(buys),
-                textposition="top center",
-                textfont=dict(color='#00FF99', size=10)
+                x=x_values,
+                y=df_chart['cumulative_pnl'],
+                mode='lines',
+                name='PnL',
+                line=dict(color='#00FF99', width=3),
+                hovertemplate='%{y:$.2f}<extra></extra>' # Simple hover
             ))
             
-        # Sell Markers
-        sells = df_chart[df_chart['side'] == 'short']
-        if not sells.empty:
-            fig.add_trace(go.Scatter(
-                x=sells['timestamp'],
-                y=sells['cumulative_pnl'],
-                mode='markers+text',
-                name='Sell',
-                marker=dict(symbol='triangle-down', color='#FF3366', size=12, line=dict(color='white', width=1)),
-                text=["SELL"] * len(sells),
-                textposition="bottom center",
-                textfont=dict(color='#FF3366', size=10)
-            ))
+            # Buy Markers
+            buys = df_chart[df_chart['side'] == 'long']
+            if not buys.empty:
+                buy_x = buys.index if show_history else buys['timestamp']
+                fig.add_trace(go.Scatter(
+                    x=buy_x,
+                    y=buys['cumulative_pnl'],
+                    mode='markers+text',
+                    name='Buy',
+                    marker=dict(symbol='triangle-up', color='#00FF99', size=12, line=dict(color='white', width=1)),
+                    text=["BUY"] * len(buys),
+                    textposition="top center",
+                    textfont=dict(color='#00FF99', size=10),
+                    hoverinfo='skip'
+                ))
+                
+            # Sell Markers
+            sells = df_chart[df_chart['side'] == 'short']
+            if not sells.empty:
+                sell_x = sells.index if show_history else sells['timestamp']
+                fig.add_trace(go.Scatter(
+                    x=sell_x,
+                    y=sells['cumulative_pnl'],
+                    mode='markers+text',
+                    name='Sell',
+                    marker=dict(symbol='triangle-down', color='#FF3366', size=12, line=dict(color='white', width=1)),
+                    text=["SELL"] * len(sells),
+                    textposition="bottom center",
+                    textfont=dict(color='#FF3366', size=10),
+                    hoverinfo='skip'
+                ))
 
-        fig.update_layout(
-            template="plotly_dark",
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            margin=dict(l=10, r=10, t=30, b=10),
-            height=350,
-            xaxis=dict(
-                showgrid=True, 
-                gridcolor='rgba(255,255,255,0.1)',
-                tickformat='%H:%M:%S',  # Show only time on axis
-                hoverformat='%H:%M:%S'  # Show only time on hover
-            ),
-            yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)', tickprefix="$"),
-            hovermode="x unified",
-            showlegend=False
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            # Default Range: Today (Only apply if showing history, otherwise auto-scale is fine)
+            layout_args = dict(
+                template="plotly_dark",
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                margin=dict(l=10, r=10, t=30, b=10),
+                height=350,
+                xaxis=dict(
+                    showgrid=True, 
+                    gridcolor='rgba(255,255,255,0.1)',
+                    tickformat='%H:%M:%S',
+                    hoverformat='%H:%M:%S',
+                ),
+                yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)', tickprefix="$"),
+                hovermode="x unified",
+                showlegend=False
+            )
+            
+            if show_history:
+                 # Override for "Show All History" - Index based
+                 layout_args['yaxis']['range'] = [0, 4000]
+                 layout_args['xaxis']['tickmode'] = 'array'
+                 layout_args['xaxis']['tickvals'] = tick_vals
+                 layout_args['xaxis']['ticktext'] = tick_text
+                 # Remove time formatting since X is now an integer index
+                 if 'tickformat' in layout_args['xaxis']: del layout_args['xaxis']['tickformat']
+                 if 'hoverformat' in layout_args['xaxis']: del layout_args['xaxis']['hoverformat']
+            else:
+                 # Default "Today" view - Auto-scale
+                 pass
+
+            fig.update_layout(**layout_args)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No trades today.")
     else:
         st.info("No trades yet.")
 

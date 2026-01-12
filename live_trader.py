@@ -283,6 +283,8 @@ class LiveTrader:
         self.last_alert_id = 0
         self.trade_timestamps: list[float] = []
         self.outstanding_limits: Dict[str, dict] = {}
+        self.position_entry_times: Dict[str, float] = {}
+        self.check_bad_fills = _bool_env("LIVE_CHECK_BAD_FILLS", True)
         self._lock = threading.Lock()
 
         self._load_state()
@@ -299,6 +301,7 @@ class LiveTrader:
         try:
             data = json.loads(self.state_path.read_text())
             self.positions = {k: int(v) for k, v in data.get("positions", {}).items()}
+            self.position_entry_times = {k: float(v) for k, v in data.get("position_entry_times", {}).items()}
             self.last_alert_id = int(data.get("last_alert_id", 0))
             LOGGER.info("Loaded state: %s positions", len(self.positions))
         except Exception as exc:
@@ -307,7 +310,11 @@ class LiveTrader:
     def _save_state(self) -> None:
         if self.dry_run:
             return
-        payload = {"positions": self.positions, "last_alert_id": self.last_alert_id}
+        payload = {
+            "positions": self.positions,
+            "position_entry_times": self.position_entry_times,
+            "last_alert_id": self.last_alert_id
+        }
         try:
             self.state_path.write_text(json.dumps(payload, indent=2))
         except Exception as exc:
@@ -415,9 +422,18 @@ class LiveTrader:
     # Position bookkeeping
     # ------------------------------------------------------------------
     def _apply_position_delta(self, symbol: str, delta: int) -> None:
-        new_qty = self.positions.get(symbol, 0) + delta
+        old_qty = self.positions.get(symbol, 0)
+        new_qty = old_qty + delta
+        
+        # Track entry time for new positions or flips
+        if old_qty == 0 and new_qty != 0:
+            self.position_entry_times[symbol] = time.time()
+        elif (old_qty > 0 and new_qty < 0) or (old_qty < 0 and new_qty > 0):
+            self.position_entry_times[symbol] = time.time()
+
         if new_qty == 0:
             self.positions.pop(symbol, None)
+            self.position_entry_times.pop(symbol, None)
         else:
             self.positions[symbol] = new_qty
         LOGGER.info("Position update %s => %s", symbol, new_qty)
@@ -497,11 +513,38 @@ class LiveTrader:
             LOGGER.error("Kill switch file %s detected", self.kill_switch_path)
             self._engage_emergency_shutdown("Kill switch activated")
 
+    def _check_time_stops(self) -> None:
+        """Close positions held longer than 10 minutes."""
+        now = time.time()
+        limit = 600  # 10 minutes in seconds
+        
+        for symbol, entry_time in list(self.position_entry_times.items()):
+            if symbol not in self.positions:
+                continue
+            
+            duration = now - entry_time
+            if duration > limit:
+                qty = self.positions[symbol]
+                side = "SELL" if qty > 0 else "COVER"
+                price = self._latest_price(symbol) or 0.0
+                LOGGER.info("Time stop triggered for %s (held %.1fs)", symbol, duration)
+                self._submit_order(
+                    alert_id=-1,
+                    symbol=symbol,
+                    direction="time-stop",
+                    side=side,
+                    qty=abs(qty),
+                    price=price,
+                )
+
     # ------------------------------------------------------------------
     # Order + alert processing
     # ------------------------------------------------------------------
     def _check_fill_quality(self, side: str, price: float) -> None:
         """Check for 'bad fills' (longs at .99, shorts at .01) and kill switch if found."""
+        if not self.check_bad_fills:
+            return
+
         if price is None or price <= 0:
             return
 
@@ -814,6 +857,7 @@ class LiveTrader:
 
         while True:
             self._check_kill_switch()
+            self._check_time_stops()
             with self._open_conn() as conn:
                 cur = conn.cursor()
                 cur.execute(
