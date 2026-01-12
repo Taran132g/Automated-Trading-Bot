@@ -11,9 +11,11 @@ import json
 import atexit
 from pathlib import Path
 
+import os
+
 DB_PATH = "penny_basing.db"
-POSITION_SIZE = 1000        # Long size
-SHORT_SIZE = 1000           # Short size
+POSITION_SIZE = int(os.getenv("POSITION_SIZE", "2500"))        # Long size
+SHORT_SIZE = int(os.getenv("POSITION_SIZE", "2500"))           # Short size
 SLIPPAGE = 0.001
 COMMISSION = 0.0
 STATE_FILE = "paper_trader_state.json"

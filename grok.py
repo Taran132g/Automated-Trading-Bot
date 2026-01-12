@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 from collections import deque, defaultdict
 from dataclasses import dataclass
 from time import time
+from datetime import datetime
 from typing import Deque, Dict, List, Optional, TypedDict
 import sqlite3
 import json
@@ -648,9 +649,15 @@ def on_book(msg: dict):
             "price": price
         })
         direction = None
-        if not DISABLE_BID_HEAVY and metrics.bid_heavy_venues >= metrics.ask_heavy_venues + 4:
+        
+        # Lower L2 setup between 3-4pm (hour 15)
+        imbalance_threshold = 4
+        if datetime.fromtimestamp(now).hour == 15:
+            imbalance_threshold = 3
+
+        if not DISABLE_BID_HEAVY and metrics.bid_heavy_venues >= metrics.ask_heavy_venues + imbalance_threshold:
             direction = "bid-heavy"
-        elif metrics.ask_heavy_venues >= metrics.bid_heavy_venues + 4:
+        elif metrics.ask_heavy_venues >= metrics.bid_heavy_venues + imbalance_threshold:
             direction = "ask-heavy"
         if direction:
             last_imbalance[sym].append((now, direction, metrics))
