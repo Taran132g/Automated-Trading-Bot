@@ -831,11 +831,7 @@ async def main():
         log_structured("CONFIG_ERROR", {"error": str(e)})
         sys.exit(2)
 
-    try:
-        account_id = int(account_id_s)
-    except ValueError:
-        log_structured("CONFIG_ERROR", {"error": "SCHWAB_ACCOUNT_ID must be an integer"})
-        sys.exit(2)
+    account_id = account_id_s
 
     global WINDOW_SECONDS, HEARTBEAT_SEC, MIN_ASK_HEAVY, MIN_BID_HEAVY
     global MAX_RANGE_CENTS, ALERT_THROTTLE_SEC, MIN_VOLUME, MIN_IMBALANCE_DURATION_SEC
@@ -862,13 +858,13 @@ async def main():
     # else:
     SYMBOLS = _parse_symbols_from_env("SYMBOLS", "BBAI")
     DISABLE_BID_HEAVY = bool(args.disable_bid_heavy)
-    DEBUG_BOOK_RAW = bool(args.debug_book_raw)
+    DEBUG_BOOK_RAW = True
     JSON_BOOK = bool(args.json_book)
     SHOW_BOOK = bool(args.show_book)
     BOOK_INTERVAL_SEC = args.book_interval if args.book_interval is not None else _get_int_env("BOOK_INTERVAL_SEC", 2, 1)
     _book_raw_remaining = defaultdict(lambda: args.book_raw_limit if args.book_raw_limit is not None else _get_int_env("BOOK_RAW_LIMIT", 5, 1))
     DEBUG_INSTR = bool(args.debug_instr) or any(sym in {"CRON", "F"} for sym in SYMBOLS)
-    DEBUG = bool(args.debug)
+    DEBUG = True
 
     if not SYMBOLS:
         log_structured("CONFIG_ERROR", {"error": "No symbols provided"})
