@@ -285,12 +285,19 @@ class LiveTrader:
         self.outstanding_limits: Dict[str, dict] = {}
         self.position_entry_times: Dict[str, float] = {}
         self.check_bad_fills = _bool_env("LIVE_CHECK_BAD_FILLS", True)
+        self.live_symbols = self._parse_live_symbols()
         self._lock = threading.Lock()
 
         self._load_state()
         self._init_db_schema()
         if not self.dry_run:
             atexit.register(self._save_state)
+
+    def _parse_live_symbols(self) -> Optional[set[str]]:
+        raw = os.getenv("LIVE_SYMBOLS")
+        if not raw:
+            return None
+        return {s.strip().upper() for s in raw.split(",") if s.strip()}
 
     # ------------------------------------------------------------------
     # State & persistence helpers
@@ -773,43 +780,65 @@ class LiveTrader:
         return False
 
     def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float) -> None:
+        # Check if symbol is allowed for live trading
+        if self.live_symbols is not None and symbol not in self.live_symbols:
+            LOGGER.info("Skipping live trade for %s (not in LIVE_SYMBOLS)", symbol)
+            return
+
         position = self.positions.get(symbol, 0)
 
         if direction == "ask-heavy":
+            # Check if already short - skip to avoid stacking
             if position < 0:
                 LOGGER.info("Already short %s; skip stacking", symbol)
                 return
+            
+            # If currently long, close the long position first (use initial_entry_size)
+            if position > 0:
+                LOGGER.info("Closing long position on %s before entering short", symbol)
+                self._submit_order(
+                    alert_id=alert_id,
+                    symbol=symbol,
+                    direction=direction,
+                    side="SELL",
+                    qty=self.initial_entry_size,
+                    price=price,
+                )
 
-            qty = self.flip_size if position > 0 else self.initial_entry_size
+            # Now enter the short position
             self._submit_order(
                 alert_id=alert_id,
                 symbol=symbol,
                 direction=direction,
                 side="SHORT",
-                qty=qty,
+                qty=self.initial_entry_size,
                 price=price,
             )
         elif direction == "bid-heavy":
+            # Check if already long - skip to avoid stacking
             if position > 0:
                 LOGGER.info("Already long %s; skip stacking", symbol)
                 return
+            
+            # If currently short, close the short position first (use initial_entry_size)
             if position < 0:
+                LOGGER.info("Closing short position on %s before entering long", symbol)
                 self._submit_order(
                     alert_id=alert_id,
                     symbol=symbol,
                     direction=direction,
                     side="COVER",
-                    qty=abs(position),
+                    qty=self.initial_entry_size,
                     price=price,
                 )
 
-            qty = self.initial_entry_size
+            # Now enter the long position
             self._submit_order(
                 alert_id=alert_id,
                 symbol=symbol,
                 direction=direction,
                 side="BUY",
-                qty=qty,
+                qty=self.initial_entry_size,
                 price=price,
             )
 

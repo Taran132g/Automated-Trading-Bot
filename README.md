@@ -1,200 +1,127 @@
-# Schwab Level II Alerting, Dashboard, and Trading Bridge
+# Schwab Trading Bot - System Documentation
 
-This repository contains a full pipeline for spotting heavy bid/ask activity on
-Schwab Level II feeds, storing the signals in SQLite, visualizing them in
-Streamlit, and optionally mirroring them into paper or live Schwab orders. It
-also includes an end-of-day (EOD) support/resistance scanner for a Nasdaq
-universe.
+This project is an automated trading system that connects to the Charles Schwab API to trade stocks based on order book imbalances. It consists of four main components running in parallel.
 
-```
-┌────────────┐     Level II       ┌────────────┐      alerts.db
-│ Schwab API │ ───────────────▶ │ grok.py    │ ───────┬──────────────┐
-└────────────┘  (quotes/orders)  │ (alert bot)│       │              │
-                                  └────────────┘   SQL │              │
-                                                       ▼              ▼
-                                               paper_trader.py   ui.py (Streamlit)
-                                                       │              ▲
-                                                       ▼              │
-                                                 live_trader.py  Support/Res
-                                                                  sup_res.py
-```
+## 🚀 Quick Start
 
-## Components
-
-| Path | Purpose |
-| ---- | ------- |
-| `grok.py` | Main Schwab streaming client. Normalizes Level II books, calculates rolling window metrics, and inserts alerts/positions into SQLite. |
-| `ui.py` | Streamlit dashboard that auto-refreshes to show the latest alerts, positions, and paper fills. |
-| `paper_trader.py` | Flip-only paper trading engine that tails the `alerts` table, stores fills/PnL, and persists state so you can stop/restart without losing context. |
-| `live_trader.py` | Schwab order bridge that replays the paper trader's signals into paperMoney or live REST endpoints (market orders via `schwab-py`). |
-| `auth_login.py` | Helper to create/refresh Schwab OAuth tokens referenced by every other script. |
-| `sup_res.py` | Support/resistance watcher that walks the Nasdaq `$2–$50` universe defined in `nasdaq_2_to_50_stocks.csv`. |
-| `run_both.sh` / `stop_trading_bot.sh` | Convenience shell scripts for launching/killing the alert bot + dashboard together. |
-| `sql.py` | Example read-only queries for exploring the SQLite database. |
-| `requirements.txt` | Python dependencies for the whole stack. |
-
-## Prerequisites
-
-- Python 3.10+ (developed against CPython 3.11).
-- Schwab Developer account with API key, app secret, redirect URI, and streaming permissions.
-- Browser access to complete the OAuth login flow when refreshing tokens.
-- (Optional) Schwab paperMoney or live account for `live_trader.py`.
-
-## Installation
-
-1. Clone the repo and enter it.
-   ```bash
-   git clone https://github.com/<your-account>/taranveer-singh.github.io.git
-   cd taranveer-singh.github.io
-   ```
-2. Create/activate a virtual environment (recommended).
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # Windows: .venv\Scripts\activate
-   ```
-3. Install dependencies.
-   ```bash
-   pip install --upgrade pip
-   pip install -r requirements.txt
-   ```
-
-## Environment configuration
-
-All scripts rely on a `.env` file in the repo root. The following variables are
-required for the streaming + trading stack:
-
-```ini
-SCHWAB_CLIENT_ID=your_app_key_without_suffix
-SCHWAB_APP_SECRET=your_app_secret
-SCHWAB_REDIRECT_URI=https://127.0.0.1:8182/
-SCHWAB_ACCOUNT_ID=paper_or_live_account_hash
-SCHWAB_TOKEN_PATH=./schwab_tokens.json
-DB_PATH=penny_basing.db          # overrides default SQLite path
-SYMBOLS=SNAP,NVDA                # comma or space separated list
-MIN_VOLUME=150000                # per-symbol shares/minute requirement
-```
-
-`grok.py` also honors tuning variables such as `WINDOW_SECONDS`,
-`HEARTBEAT_SEC`, `BOOK_INTERVAL_SEC`, `MIN_ASK_HEAVY`, `MIN_BID_HEAVY`,
-`MAX_RANGE_CENTS`, `ALERT_THROTTLE_SEC`, `MIN_IMBALANCE_DURATION_SEC`, and
-`BOOK_RAW_LIMIT`. Unset variables fall back to the script defaults.
-
-## Authenticate with Schwab
-
-Create or refresh the OAuth token before streaming:
+To start the entire system (Data Stream, Paper Trader, Live Trader, and UI):
 
 ```bash
-python auth_login.py --force-login
+./run_both.sh
 ```
 
-A browser will prompt for Schwab credentials. On success, the token file at
-`SCHWAB_TOKEN_PATH` is updated and reused by every script.
+To stop the system, press `CTRL+C` in the terminal.
 
-## Running the real-time alert pipeline
+---
 
-1. **Start the streamer.** Supply symbols and optional overrides on the command
-   line (these take precedence over `.env`).
-   ```bash
-   python grok.py --symbols SNAP,NVDA --min-volume 150000
-   ```
-   - Level II data is normalized per exchange, debounced, and inserted into the
-     `alerts` table inside `DB_PATH`.
-   - Structured logs (INFO/WARN) describe throttling, heartbeat gaps, and alert
-     payloads for debugging.
+## 🏗 System Architecture
 
-2. **Launch the dashboard.**
-   ```bash
-   streamlit run ui.py
-   ```
-   The Streamlit app reads the same database and auto-refreshes to show alerts,
-   open positions, and paper fills. On Windows the DB defaults to
-   `%LOCALAPPDATA%\taranveer_app\penny_basing.db`; elsewhere it lives beside
-   `ui.py` unless `DB_PATH` is set.
+The system is composed of four Python scripts managed by `run_both.sh`:
 
-3. **Optional combined launcher.** Update the `cd` path inside `run_both.sh`
-   before executing it to start `grok.py` + `ui.py` together. Use
-   `stop_trading_bot.sh` to terminate them.
+1.  **`grok.py` (The Brain)**:
+    *   Connects to Schwab's streaming API.
+    *   Monitors Level 1 (Quotes) and Level 2 (Order Book) data.
+    *   Detects "Ask-Heavy" (Bearish) or "Bid-Heavy" (Bullish) imbalances.
+    *   Generates alerts and saves them to `penny_basing.db`.
+    *   Dispatches alerts directly to the trader.
 
-## Paper trading loop
+2.  **`paper_trader.py` (Simulation)**:
+    *   Simulates trading based on alerts without using real money.
+    *   Tracks a virtual cash balance and positions.
+    *   Useful for verifying strategy performance safely.
 
-`paper_trader.py` consumes the `alerts` table and flips between long/short
-positions when the alert direction changes (no stacking). Key traits:
+3.  **`live_trader.py` (Execution)**:
+    *   Receives alerts from `grok.py`.
+    *   Executes **Real Money** trades on your Schwab account.
+    *   Manages orders (Buy, Sell, Short, Cover).
 
-- Persists cash + open positions in `paper_trader_state.json` so you can restart
-  intraday.
-- Writes every fill to `paper_trades` and maintains a `paper_positions` table
-  for the dashboard.
-- Respects configurable constants near the top of the script (`POSITION_SIZE`,
-  `SHORT_SIZE`, `SLIPPAGE`, `COMMISSION`).
+4.  **`ui.py` (Dashboard)**:
+    *   A Streamlit-based web dashboard.
+    *   Displays live PnL, active positions, and trade history.
+    *   Accessible at `http://localhost:8501`.
 
-Run it alongside the streamer:
+---
 
-```bash
-python paper_trader.py
-```
+## 🧠 How It Works (The Brain)
 
-## Live/paperMoney execution bridge
+The core logic lives in `grok.py`. It uses **Level 2 (Order Book)** data to detect supply/demand imbalances across multiple exchanges.
 
-`live_trader.py` mirrors the paper trader's flip-only logic into Schwab REST
-orders. It shares the same `.env` credentials and supports a `LIVE_DRY_RUN=1`
-flag for rehearsals. Typical usage:
+### Imbalance Detection Algorithm
+1.  **Venue Validation**: The system looks at every exchange (NYSE, NASDAQ, MEMX, etc.) individually.
+    *   A venue is considered **"Valid"** only if its Bid-Ask spread is tight (default: **≤ 1 cent**).
+    *   If the spread is too wide, that exchange is ignored.
+2.  **Venue Voting**: For each valid venue, it compares Bid Volume vs. Ask Volume.
+    *   **Bid-Heavy**: Bid Volume > Ask Volume.
+    *   **Ask-Heavy**: Ask Volume > Bid Volume.
+3.  **Consensus**: It counts how many venues are Bid-Heavy vs. Ask-Heavy.
+    *   **Threshold**: It requires a net difference of **4 venues** (or **3 venues** between 3 PM - 4 PM).
+    *   *Example*: If 6 venues are Bid-Heavy and 1 is Ask-Heavy, the difference is 5. Since 5 ≥ 4, it triggers a **Bid-Heavy (Buy)** signal.
 
-```bash
-python live_trader.py --db penny_basing.db --min-alert-id 0
-```
+---
 
-- The script tails the `alerts` table, deduplicates order intents, and submits
-  market orders (`BUY`, `SELL`, `SHORT`, `COVER`) via `schwab-py`.
-- The `--min-alert-id` flag is handy when you want to ignore historical alerts
-  after restarting the bot.
-- Ensure `SCHWAB_ACCOUNT_ID` points to your paperMoney account hash before going
-  live.
+## 🛡 System Constraints & Safety Checks
 
-## Support/resistance scanning
+The system enforces strict constraints to ensure trade quality and safety.
 
-The `sup_res.py` utility scans the Nasdaq universe in `nasdaq_2_to_50_stocks.csv`
-for prices approaching 1-week/30-day/52-week levels within a configurable
-band.
+### 1. `grok.py` (Signal Quality)
+*   **Minimum Volume**: The stock must be trading at least **100,000 shares/minute**.
+*   **Imbalance Duration**: The imbalance must persist for at least **10 seconds** before alerting.
+*   **Minimum Venues**: At least **4 valid exchanges** must be participating.
+*   **Throttle**: Limits alerts to **one per 60 seconds** per symbol to prevent spamming.
 
-```bash
-python sup_res.py --watch
-```
+### 2. `live_trader.py` (Execution Safety)
+*   **Flip-Only Logic**:
+    *   **No Stacking**: If you are already Long, it ignores new Buy signals. It only acts on Sell signals to flip Short.
+    *   **Always in the Market**: It flips from Long → Short or Short → Long.
+*   **Bad Fill Protection**:
+    *   **Kill Switch**: If a Buy fills at `x.99` or a Sell fills at `x.01`, the bot **immediately shuts down**. This protects against trading against market makers who pin prices.
+*   **Time Stops**:
+    *   Any position held for more than **10 minutes** is automatically closed (Market Sell/Cover).
+*   **Rate Limiting**:
+    *   Maximum **60 trades per hour**. If exceeded, the system performs an emergency shutdown (closes all positions and exits).
 
-It prints human-readable alerts and can be run independently of the Level II
-pipeline.
+---
 
-## Database schema
+## ⚙️ Configuration & Parameters
 
-`grok.py` automatically creates:
+The system is configured via environment variables in `run_both.sh` and your `.env` file.
 
-- `alerts` – timestamped imbalance events with symbol, price, side, aggregate
-  bid/ask volume, heavy venues, etc.
-- `positions` – optional manual entries for currently held trades.
+### 1. `run_both.sh` (Main Config)
+Modify these variables in the `run_both.sh` file to change trading behavior:
 
-`paper_trader.py` adds:
+*   **`SYMBOLS`**: A comma-separated list of stock tickers to trade.
+    *   *Example*: `export SYMBOLS="F,AAL,BBAI"`
+*   **`POSITION_SIZE`**: The number of shares to trade per signal.
+    *   *Example*: `export POSITION_SIZE=1666` (Trades 1666 shares per buy/short).
+*   **`LIVE_DRY_RUN`**: Safety switch for live trading.
+    *   `1`: **Dry Run Mode**. Logs what it *would* do but sends NO orders to Schwab.
+    *   `0`: **Live Mode**. Sends REAL orders with REAL money.
 
-- `paper_trades` – synthetic fills including slippage/commission and realized
-  PnL.
-- `paper_positions` – current holdings tracked by the paper engine.
+### 2. `.env` (Credentials)
+This file (not committed to git) holds your secrets. **Do not share this file.**
 
-`sql.py` contains sample queries (update the `db_path` variable inside before
-running it manually).
+*   `SCHWAB_CLIENT_ID`: Your Schwab App Key.
+*   `SCHWAB_APP_SECRET`: Your Schwab App Secret.
+*   `SCHWAB_REDIRECT_URI`: The callback URL set in your Schwab Developer Portal (usually `https://127.0.0.1:8182/`).
+*   `SCHWAB_ACCOUNT_ID`: The encrypted Account Hash ID for the account you want to trade in.
 
-## Troubleshooting
+---
 
-- **Missing env vars** – Scripts raise descriptive `RuntimeError` messages if an
-  expected variable is absent.
-- **Token failures** – Delete the file pointed at by `SCHWAB_TOKEN_PATH` and
-  re-run `python auth_login.py --force-login`.
-- **Database mismatch** – The dashboard prints the exact DB path it is trying
-  to open; make sure it matches the `DB_PATH` used by `grok.py`/`paper_trader.py`.
-- **Schwab throttling** – Watch the `grok.py` logs for `HEARTBEAT` warnings or
-  reconnect messages if the streaming client gets disconnected.
-- **Order errors** – `live_trader.py` logs the Schwab response status and order
-  location headers; double-check account permissions and whether `dry_run` mode
-  is still enabled.
+## 🛠 Helper Scripts
 
-## License
+*   **`auth_login.py`**:
+    *   Run this manually if your token expires (every 7 days).
+    *   Command: `python3 auth_login.py`
+    *   Follow the prompts to log in via browser and authorize the app.
 
-No explicit license is provided. Assume all rights reserved unless the owner
-states otherwise.
+*   **`calculate_fees.py`**:
+    *   Analyzes your trade history to estimate fees and calculate hourly PnL.
+    *   Command: `python3 calculate_fees.py`
+
+---
+
+## ⚠️ Important Notes
+
+1.  **Token Expiration**: Schwab tokens expire every 7 days. If the app crashes with a "401 Unauthorized" error, run `python3 auth_login.py` to refresh your token.
+2.  **Market Hours**: The bot is designed for active market hours. Liquidity and spreads can be volatile pre/post-market.
+3.  **Risk Warning**: This is an automated trading system. Always monitor it when running in Live Mode (`LIVE_DRY_RUN=0`).

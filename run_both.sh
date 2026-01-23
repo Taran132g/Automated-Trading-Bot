@@ -18,10 +18,13 @@ LIVE_LOG="$BASE_DIR/live_trader.log"
 UI_LOG="$BASE_DIR/ui.log"
 
 # 0 = live mode, 1 = dry-run (safe)
-LIVE_DRY_RUN="${LIVE_DRY_RUN:-0}"
+LIVE_DRY_RUN="${LIVE_DRY_RUN:-1}"
 
-export SYMBOLS="F,AAL,SOXS"
-export POSITION_SIZE=1666
+export SYMBOLS="F,AAL,BBAI,SOXS,KVUE,OPEN"
+export LIVE_SYMBOLS="KVUE,AAL"  # KVUE and AAL will be live traded
+export LIVE_PREFER_LIMIT_ORDERS=0  # Force MARKET orders only
+export POSITION_SIZE=1000          # Paper trading size
+export LIVE_POSITION_SIZE=10        # Live trading size
 
 cleanup() {
     echo -e "\n[STOP] Cleaning up..."

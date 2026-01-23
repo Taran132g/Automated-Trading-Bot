@@ -79,19 +79,6 @@ def load_data():
         except Exception:
             data['trades'] = pd.DataFrame()
 
-    # Filter out BBAI from all dataframes
-    if 'alerts' in data and not data['alerts'].empty:
-        data['alerts'] = data['alerts'][data['alerts']['symbol'] != 'BBAI']
-        
-    if 'positions' in data and not data['positions'].empty:
-        data['positions'] = data['positions'][data['positions']['symbol'] != 'BBAI']
-        
-    if 'realized' in data and not data['realized'].empty:
-        data['realized'] = data['realized'][data['realized']['symbol'] != 'BBAI']
-        
-    if 'trades' in data and not data['trades'].empty:
-        data['trades'] = data['trades'][data['trades']['symbol'] != 'BBAI']
-
     return data
 
 # --- Main UI Layout ---
@@ -321,7 +308,7 @@ with r2_c1:
             
             if show_history:
                  # Override for "Show All History" - Index based
-                 layout_args['yaxis']['range'] = [0, 4000]
+                 layout_args['yaxis']['range'] = [0, 5000]
                  layout_args['xaxis']['tickmode'] = 'array'
                  layout_args['xaxis']['tickvals'] = tick_vals
                  layout_args['xaxis']['ticktext'] = tick_text
