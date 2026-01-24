@@ -74,21 +74,22 @@ class SchwabOrderExecutor:
     error handling easier to follow.
     """
 
-    def __init__(self, *, dry_run: bool = False) -> None:
+    def __init__(self, *, dry_run: bool = False, account_id: Optional[str] = None, token_path: Optional[str] = None, name: str = "default") -> None:
         self.dry_run = dry_run or _bool_env("LIVE_DRY_RUN", False)
-        self.account_id = _require_env("SCHWAB_ACCOUNT_ID")
+        self.name = name  # Identifier for logging
+        self.account_id = account_id or _require_env("SCHWAB_ACCOUNT_ID")
         api_key = _require_env("SCHWAB_CLIENT_ID")
         app_secret = _require_env("SCHWAB_APP_SECRET")
         redirect_uri = _normalize_and_validate_callback(_require_env("SCHWAB_REDIRECT_URI"))
-        token_path = Path(os.getenv("SCHWAB_TOKEN_PATH", "./schwab_tokens.json"))
+        token_file = Path(token_path or os.getenv("SCHWAB_TOKEN_PATH", "./schwab_tokens.json"))
 
-        LOGGER.info("Initializing Schwab client (dry_run=%s)", self.dry_run)
+        LOGGER.info("[%s] Initializing Schwab client (account=%s, dry_run=%s)", self.name, self.account_id[-4:], self.dry_run)
         try:
             self.client = easy_client(
                 api_key=api_key,
                 app_secret=app_secret,
                 callback_url=redirect_uri,
-                token_path=token_path,
+                token_path=token_file,
             )
         except Exception as exc:  # pragma: no cover - network interaction
             raise RuntimeError(f"Failed to create Schwab client: {exc}") from exc
@@ -263,19 +264,24 @@ class LiveTrader:
     and a kill-switch file.
     """
 
-    def __init__(self, *, dry_run: bool = False, executor: Optional[SchwabOrderExecutor] = None) -> None:
+    def __init__(self, *, dry_run: bool = False, executor: Optional[SchwabOrderExecutor] = None, name: str = "default") -> None:
+        self.name = name  # Identifier for multi-account logging
         self.db_path = Path(os.getenv("DB_PATH", "penny_basing.db"))
         self.position_size = int(os.getenv("LIVE_POSITION_SIZE", os.getenv("POSITION_SIZE", "5000")))
         self.initial_entry_size = int(os.getenv("LIVE_INITIAL_SIZE", str(self.position_size)))
         self.flip_size = int(os.getenv("LIVE_FLIP_SIZE", str(self.initial_entry_size * 2)))
         self.poll_interval = float(os.getenv("LIVE_POLL_INTERVAL", "1"))
-        self.state_path = Path(os.getenv("LIVE_STATE_FILE", "live_trader_state.json"))
+        # Unique state file per account
+        state_base = os.getenv("LIVE_STATE_FILE", "live_trader_state.json")
+        if name != "default":
+            state_base = state_base.replace(".json", f"_{name}.json")
+        self.state_path = Path(state_base)
         self.prefer_limit_orders = _bool_env("LIVE_PREFER_LIMIT_ORDERS", False)
         self.limit_slippage_bps = float(os.getenv("LIVE_LIMIT_SLIPPAGE_BPS", "10"))
         self.limit_fill_timeout = float(os.getenv("LIVE_LIMIT_FILL_TIMEOUT", "0"))
         self.limit_poll_interval = float(os.getenv("LIVE_LIMIT_FILL_POLL_INTERVAL", "0.05"))
         self.limit_timeout_policy = os.getenv("LIVE_LIMIT_TIMEOUT_POLICY", "MARKET").upper()
-        self.executor = executor if executor is not None else SchwabOrderExecutor(dry_run=dry_run)
+        self.executor = executor if executor is not None else SchwabOrderExecutor(dry_run=dry_run, name=name)
         self.dry_run = getattr(self.executor, "dry_run", dry_run)
         self.kill_switch_path = Path(os.getenv("LIVE_KILL_SWITCH_FILE", "kill_switch.flag"))
         self.max_trades_per_hour = int(os.getenv("LIVE_MAX_TRADES_PER_HOUR", "60"))
@@ -284,10 +290,15 @@ class LiveTrader:
         self.trade_timestamps: list[float] = []
         self.outstanding_limits: Dict[str, dict] = {}
         self.position_entry_times: Dict[str, float] = {}
+        self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
+        self.daily_pnl: float = 0.0
+        self.daily_date: str = time.strftime("%Y-%m-%d")
         self.check_bad_fills = _bool_env("LIVE_CHECK_BAD_FILLS", True)
+        self.consecutive_bad_fills: int = 0  # Track consecutive bad fills
         self.live_symbols = self._parse_live_symbols()
         self._lock = threading.Lock()
 
+        LOGGER.info("[%s] LiveTrader initialized (pos_size=%d, state=%s)", self.name, self.position_size, self.state_path)
         self._load_state()
         self._init_db_schema()
         if not self.dry_run:
@@ -373,6 +384,22 @@ class LiveTrader:
                 )
                 """
             )
+            # Live trades table for PnL comparison with paper trades
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS live_trades (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL,
+                    symbol TEXT,
+                    side TEXT,
+                    qty INTEGER,
+                    price REAL,
+                    entry_price REAL,
+                    pnl REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.commit()
 
         if self.last_alert_id == 0:
@@ -425,6 +452,23 @@ class LiveTrader:
                         return float(quote[key])
         return float(fallback)
 
+    def _log_live_trade(self, *, symbol: str, side: str, qty: int, price: float, entry_price: float, pnl: float) -> None:
+        """Log live trade to database for comparison with paper trades."""
+        LOGGER.info(
+            "[LIVE] %s %s %s @ $%.4f | Entry: $%.4f | PnL: $%.2f | Daily PnL: $%.2f",
+            side, qty, symbol, price, entry_price, pnl, self.daily_pnl
+        )
+        with self._open_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO live_trades (timestamp, symbol, side, qty, price, entry_price, pnl)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (time.time(), symbol, side, qty, price, entry_price, pnl)
+            )
+            conn.commit()
+
     # ------------------------------------------------------------------
     # Position bookkeeping
     # ------------------------------------------------------------------
@@ -445,9 +489,40 @@ class LiveTrader:
             self.positions[symbol] = new_qty
         LOGGER.info("Position update %s => %s", symbol, new_qty)
 
-    def _record_fill(self, *, symbol: str, side: str, qty: int) -> None:
+    def _record_fill(self, *, symbol: str, side: str, qty: int, price: float = 0.0) -> None:
+        old_qty = self.positions.get(symbol, 0)
+        entry_price = self.position_entry_prices.get(symbol, price)
+        
+        # Calculate PnL for closing trades
+        pnl = 0.0
+        if old_qty > 0 and side == "SELL":
+            pnl = (price - entry_price) * qty
+        elif old_qty < 0 and side == "COVER":
+            pnl = (entry_price - price) * qty
+        
+        # Update daily PnL
+        today = time.strftime("%Y-%m-%d")
+        if today != self.daily_date:
+            self.daily_date = today
+            self.daily_pnl = 0.0
+        if pnl != 0:
+            self.daily_pnl += pnl
+        
+        # Log trade to database
+        self._log_live_trade(symbol=symbol, side=side, qty=qty, price=price, entry_price=entry_price, pnl=pnl)
+        
         delta = qty if side in {"BUY", "COVER"} else -qty
         self._apply_position_delta(symbol, delta)
+        
+        # Track entry price for new positions
+        new_qty = self.positions.get(symbol, 0)
+        if old_qty == 0 and new_qty != 0:
+            self.position_entry_prices[symbol] = price
+        elif new_qty == 0:
+            self.position_entry_prices.pop(symbol, None)
+        elif (old_qty > 0 and new_qty < 0) or (old_qty < 0 and new_qty > 0):
+            self.position_entry_prices[symbol] = price
+        
         if not self.dry_run:
             self._save_state()
         self.trade_timestamps.append(time.time())
@@ -478,7 +553,7 @@ class LiveTrader:
 
         delta = filled_qty - filled_qty_seen
         if delta > 0:
-            self._record_fill(symbol=symbol, side=side, qty=delta)
+            self._record_fill(symbol=symbol, side=side, qty=delta, price=0.0)  # Price not available in partial fills
         return filled_qty
 
     def _enforce_trade_rate_limit(self) -> None:
@@ -548,7 +623,7 @@ class LiveTrader:
     # Order + alert processing
     # ------------------------------------------------------------------
     def _check_fill_quality(self, side: str, price: float) -> None:
-        """Check for 'bad fills' (longs at .99, shorts at .01) and kill switch if found."""
+        """Check for 'bad fills' (longs at .99, shorts at .01) and log consecutive occurrences."""
         if not self.check_bad_fills:
             return
 
@@ -561,15 +636,28 @@ class LiveTrader:
         is_01 = 0.005 <= cents <= 0.015
 
         bad_fill = False
+        fill_type = ""
         if side in {"BUY", "COVER"} and is_99:
             bad_fill = True
+            fill_type = ".99"
         elif side in {"SELL", "SHORT"} and is_01:
             bad_fill = True
+            fill_type = ".01"
 
         if bad_fill:
-            msg = f"Bad fill detected: {side} at {price:.2f}"
-            LOGGER.error(msg)
-            self._engage_emergency_shutdown(msg)
+            self.consecutive_bad_fills += 1
+            msg = f"⚠️  BAD FILL #{self.consecutive_bad_fills}: {side} at ${price:.2f} ({fill_type})"
+            LOGGER.warning(msg)
+            print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
+            
+            if self.consecutive_bad_fills >= 3:
+                LOGGER.error("🚨 ALERT: %d consecutive bad fills detected!", self.consecutive_bad_fills)
+                print(f"\n🚨🚨🚨 ALERT: {self.consecutive_bad_fills} CONSECUTIVE BAD FILLS! 🚨🚨🚨\n", flush=True)
+        else:
+            # Reset counter on good fill
+            if self.consecutive_bad_fills > 0:
+                LOGGER.info("Good fill - resetting bad fill counter from %d", self.consecutive_bad_fills)
+            self.consecutive_bad_fills = 0
 
     def _record_order(self, *, alert_id: int, symbol: str, direction: str, side: str, qty: int, price: float, result: dict) -> None:
         serialized = json.dumps(result, default=str)
@@ -614,7 +702,7 @@ class LiveTrader:
         actual_price = price
 
         if submitted:
-            self._record_fill(symbol=symbol, side=side, qty=qty)
+            self._record_fill(symbol=symbol, side=side, qty=qty, price=price)
             filled = True
             filled_qty = qty
             fill_status = "FILLED"
