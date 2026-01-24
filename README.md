@@ -35,7 +35,7 @@ The system is composed of four Python scripts managed by `run_both.sh`:
     *   Executes **Real Money** trades on your Schwab account.
     *   Manages orders (Buy, Sell, Short, Cover).
 
-4.  **`ui.py` (Dashboard)**:
+4.  **`app.py` (Dashboard)**:
     *   A Streamlit-based web dashboard.
     *   Displays live PnL, active positions, and trade history.
     *   Accessible at `http://localhost:8501`.

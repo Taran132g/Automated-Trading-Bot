@@ -20,11 +20,11 @@ UI_LOG="$BASE_DIR/ui.log"
 # 0 = live mode, 1 = dry-run (safe)
 LIVE_DRY_RUN="${LIVE_DRY_RUN:-1}"
 
-export SYMBOLS="F,AAL,BBAI,SOXS,KVUE,OPEN"
+export SYMBOLS="F,AAL,BBAI,SOXS,KVUE"
 export LIVE_SYMBOLS="KVUE,AAL"  # KVUE and AAL will be live traded
 export LIVE_PREFER_LIMIT_ORDERS=0  # Force MARKET orders only
 export POSITION_SIZE=1000          # Paper trading size
-export LIVE_POSITION_SIZE=10        # Live trading size
+export LIVE_POSITION_SIZE=100        # Live trading size
 
 cleanup() {
     echo -e "\n[STOP] Cleaning up..."
@@ -80,7 +80,7 @@ else
 fi
 
 echo "[4/4] Starting UI..."
-$PYTHON_BIN -m streamlit run ui.py \
+$PYTHON_BIN -m streamlit run app.py \
     --server.port=8501 --server.headless=true --server.enableCORS=false \
     > "$UI_LOG" 2>&1 &
 UI_PID=$!

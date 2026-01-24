@@ -902,15 +902,34 @@ async def main():
     inline_only_mode = False
     try:
         trader_kind = "live"
+        traders = []  # List of (name, trader) tuples
+        
         if inline_dry_run:
             from paper_trader import PaperTrader
-
-            inline_trader = PaperTrader()
+            traders.append(("paper", PaperTrader()))
             trader_kind = "paper"
         else:
-            from live_trader import LiveTrader
-
-            inline_trader = LiveTrader(dry_run=False)
+            from live_trader import LiveTrader, SchwabOrderExecutor
+            
+            # Primary account (original settings)
+            traders.append(("primary", LiveTrader(dry_run=False, name="primary")))
+            
+            # ----------------------------------------------------------------
+            # MULTI-ACCOUNT TRADING (commented out for later use)
+            # To enable, set FRIEND_ACCOUNT_ID and FRIEND_TOKEN_PATH in .env
+            # ----------------------------------------------------------------
+            # friend_account = os.getenv("FRIEND_ACCOUNT_ID")
+            # friend_token = os.getenv("FRIEND_TOKEN_PATH")
+            # if friend_account and friend_token:
+            #     friend_executor = SchwabOrderExecutor(
+            #         dry_run=False,
+            #         account_id=friend_account,
+            #         token_path=friend_token,
+            #         name="friend"
+            #     )
+            #     traders.append(("friend", LiveTrader(dry_run=False, executor=friend_executor, name="friend")))
+            #     log_structured("MULTI_ACCOUNT", {"accounts": ["primary", "friend"]})
+        
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue(maxsize=_get_int_env("INLINE_TRADER_QUEUE", 100, 10))
         worker_count = _get_int_env("INLINE_TRADER_WORKERS", 1, 1)
@@ -923,14 +942,25 @@ async def main():
                     lag = time() - enqueued_at
                     if lag > 0.5:
                         log_structured("INLINE_TRADER_LAG", {"alert_id": alert_id, "lag_sec": round(lag, 3)})
-                    await loop.run_in_executor(
-                        None,
-                        inline_trader.process_alert,
-                        int(alert_id),
-                        alert["symbol"],
-                        alert["direction"],
-                        float(alert["price"]),
-                    )
+                    
+                    # Trade all accounts in parallel using threads
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=len(traders)) as executor:
+                        futures = []
+                        for name, trader in traders:
+                            futures.append(executor.submit(
+                                trader.process_alert,
+                                int(alert_id),
+                                alert["symbol"],
+                                alert["direction"],
+                                float(alert["price"]),
+                            ))
+                        # Wait for all to complete
+                        for future in concurrent.futures.as_completed(futures):
+                            try:
+                                future.result()
+                            except Exception as e:
+                                log_structured("INLINE_TRADER_THREAD_ERROR", {"error": str(e)})
                 except Exception as exc:
                     log_structured("INLINE_TRADER_ERROR", {"error": str(exc), "alert_id": alert_id})
                 finally:
