@@ -42,8 +42,8 @@ with st.sidebar:
     if st.button("📈 Live Trading", use_container_width=True):
         st.switch_page("pages/2_📈_Live_Trading.py")
     st.divider()
-    if st.button("💀 Self Destruct", use_container_width=True):
-        st.switch_page("pages/4_💀_Self_Destruct.py")
+    if st.button("⚙️ Admin Controls", use_container_width=True):
+        st.switch_page("pages/4_⚙️_Admin_Controls.py")
     if st.button("🚪 Logout", use_container_width=True):
         st.session_state.authenticated = False
         st.switch_page("app.py")
@@ -360,6 +360,45 @@ with left_col:
             st.info("No trades yet today.")
     else:
         st.info("No paper trades recorded yet.")
+    
+    # --- Per-Symbol Performance ---
+    st.subheader("🏆 Symbol Performance")
+    if not data['trades'].empty:
+        # Calculate per-symbol metrics
+        symbol_stats = []
+        for symbol, group in data['trades'].groupby('symbol'):
+            total_pnl = group['pnl'].sum()
+            wins = len(group[group['pnl'] > 0])
+            total_trades = len(group)
+            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+            
+            symbol_stats.append({
+                'Symbol': symbol,
+                'Total PnL': total_pnl,
+                'Win Rate': win_rate,
+                'Trades': total_trades
+            })
+        
+        if symbol_stats:
+            df_stats = pd.DataFrame(symbol_stats)
+            # Sort by PnL descending
+            df_stats = df_stats.sort_values('Total PnL', ascending=False)
+            
+            # Format for display
+            df_stats['Total PnL'] = df_stats['Total PnL'].apply(lambda x: f"${x:,.2f}")
+            df_stats['Win Rate'] = df_stats['Win Rate'].apply(lambda x: f"{x:.1f}%")
+            
+            st.dataframe(
+                df_stats,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
+                    "Total PnL": st.column_config.TextColumn("Total PnL", width="medium"),
+                    "Win Rate": st.column_config.ProgressColumn("Win Rate", format="%s", min_value=0, max_value=100),
+                    "Trades": st.column_config.NumberColumn("Trades", width="small"),
+                }
+            )
     
     # Trade History Table
     st.subheader("� Trade History")
