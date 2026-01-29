@@ -12,10 +12,20 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+import sys
+# Add project root to path
+sys.path.append(str(Path(__file__).parent.parent))
+import config_manager
+import auth_manager
+
+# Check authentication
+# auth_manager.require_auth()
 # Configuration
 REFRESH_INTERVAL = 3
 DB_PATH = Path("penny_basing.db").resolve()
-LIVE_STATE_PATH = Path("live_trader_state.json").resolve()
+LIVE_STATE_PATH = Path("live_trader_state_primary.json").resolve()
+if not LIVE_STATE_PATH.exists():
+    LIVE_STATE_PATH = Path("live_trader_state.json").resolve()
 
 st.set_page_config(
     page_title="Live Trading | Dashboard",
@@ -24,13 +34,18 @@ st.set_page_config(
 )
 
 # Check authentication
-if 'authenticated' not in st.session_state or not st.session_state.authenticated:
-    st.switch_page("app.py")
+# if 'authenticated' not in st.session_state or not st.session_state.authenticated:
+#     st.switch_page("app.py")
 
 # Sidebar navigation
 with st.sidebar:
-    # Show trading symbols - try env var first, then DB
-    live_symbols = os.getenv('LIVE_SYMBOLS', '').split(',')
+    # Show trading symbols - try config first, then env
+    config = config_manager.load_config()
+    raw_symbols = config.get("live_symbols", "")
+    if not raw_symbols:
+        raw_symbols = os.getenv('LIVE_SYMBOLS', '')
+        
+    live_symbols = raw_symbols.split(',')
     live_symbols = [s.strip().upper() for s in live_symbols if s.strip()]
     
     # Fallback: get from live_trades table
@@ -51,11 +66,10 @@ with st.sidebar:
     if st.button("🔬 Backtesting", use_container_width=True):
         st.switch_page("pages/3_🔬_Backtest.py")
     st.divider()
-    if st.button("⚙️ Admin Controls", use_container_width=True):
-        st.switch_page("pages/4_⚙️_Admin_Controls.py")
     if st.button("🚪 Logout", use_container_width=True):
-        st.session_state.authenticated = False
-        st.switch_page("app.py")
+        auth_manager.logout()
+        st.rerun()
+
 
 # --- CSS Styling ---
 st.markdown("""
@@ -142,14 +156,20 @@ def load_live_data():
         'daily_pnl': 0.0,
         'total_pnl': 0.0,
         'win_rate': 0.0,
-        'alerts': pd.DataFrame()
+        'alerts': pd.DataFrame(),
+        'win_rate': 0.0,
+        'alerts': pd.DataFrame(),
+        'account_details': {},
+        'account_history': pd.DataFrame()
     }
+
     
     today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
     
     # Load positions from state file
     state = load_live_state()
     data['positions'] = state.get('positions', {})
+    data['account_details'] = state.get('account_details', {})
     
     with closing(get_db_connection()) as conn:
         # Live trades
@@ -198,7 +218,11 @@ def load_live_data():
         
         # Recent alerts (for live symbols only)
         try:
-            live_symbols = os.getenv('LIVE_SYMBOLS', '').split(',')
+            config = config_manager.load_config()
+            raw_symbols = config.get("live_symbols", "")
+            if not raw_symbols:
+                raw_symbols = os.getenv('LIVE_SYMBOLS', '')
+            live_symbols = raw_symbols.split(',')
             live_symbols = [s.strip().upper() for s in live_symbols if s.strip()]
             if live_symbols:
                 placeholders = ','.join(['?' for _ in live_symbols])
@@ -215,6 +239,19 @@ def load_live_data():
             if not data['alerts'].empty:
                 data['alerts']['datetime'] = pd.to_datetime(
                     data['alerts']['timestamp'], unit='s', utc=True
+                ).dt.tz_convert('US/Eastern')
+        except:
+            pass
+            
+        # Account History
+        try:
+            data['account_history'] = pd.read_sql_query(
+                "SELECT * FROM account_history ORDER BY timestamp ASC",
+                conn
+            )
+            if not data['account_history'].empty:
+                data['account_history']['datetime'] = pd.to_datetime(
+                    data['account_history']['timestamp'], unit='s', utc=True
                 ).dt.tz_convert('US/Eastern')
         except:
             pass
@@ -236,24 +273,48 @@ st.divider()
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
+    # Use real PnL from Schwab if available
+    real_pnl = data['account_details'].get('day_pnl')
+    if real_pnl is not None:
+        pnl_val = real_pnl
+        pnl_label = "Daily PnL (Schwab)"
+    else:
+        pnl_val = data['daily_pnl']
+        pnl_label = "Daily PnL (Est.)"
+
     st.metric(
-        label="Daily PnL",
-        value=f"${data['daily_pnl']:,.2f}",
+        label=pnl_label,
+        value=f"${pnl_val:,.2f}",
         delta="Today"
     )
 
 with col2:
-    st.metric(
-        label="Total PnL (All Time)",
-        value=f"${data['total_pnl']:,.2f}"
-    )
+    # Show Account Value if available, else Total PnL
+    acct_val = data['account_details'].get('liquidation_value')
+    if acct_val:
+        st.metric(
+            label="Account Value",
+            value=f"${acct_val:,.2f}"
+        )
+    else:
+        st.metric(
+            label="Total PnL (All Time)",
+            value=f"${data['total_pnl']:,.2f}"
+        )
 
 with col3:
-    st.metric(
-        label="Win Rate",
-        value=f"{data['win_rate']:.1f}%",
-        delta="Today"
-    )
+    buying_power = data['account_details'].get('buying_power')
+    if buying_power:
+        st.metric(
+            label="Buying Power",
+            value=f"${buying_power:,.2f}"
+        )
+    else:
+        st.metric(
+            label="Win Rate",
+            value=f"{data['win_rate']:.1f}%",
+            delta="Today"
+        )
 
 with col4:
     trades_today = len(data['trades'][data['trades']['timestamp'] >= datetime.now().replace(hour=0, minute=0, second=0).timestamp()]) if not data['trades'].empty else 0
@@ -268,21 +329,19 @@ st.divider()
 left_col, right_col = st.columns([2, 1])
 
 with left_col:
-    # PnL Chart
-    st.subheader("📊 Cumulative PnL")
+    # Account Value Chart
+    st.subheader("📊 Account Value (Liquidation)")
     
-    if not data['trades'].empty:
+    if not data['account_history'].empty:
         show_all = st.checkbox("Show All History", value=False, key="live_history")
         
-        df_chart = data['trades'].copy().sort_values('timestamp')
+        df_chart = data['account_history'].copy().sort_values('timestamp')
         
         if not show_all:
             today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
             df_chart = df_chart[df_chart['timestamp'] >= today_start].copy()
         
         if not df_chart.empty:
-            df_chart['cumulative_pnl'] = df_chart['pnl'].cumsum()
-            
             fig = go.Figure()
             
             # Prepare X-axis data
@@ -307,48 +366,18 @@ with left_col:
                 # Standard time-based X-axis for intraday
                 x_values = df_chart['datetime']
             
-            # Main PnL Line (No Fill)
+            # Main Value Line (No Fill)
             fig.add_trace(go.Scatter(
                 x=x_values,
-                y=df_chart['cumulative_pnl'],
+                y=df_chart['liquidation_value'],
                 mode='lines',
-                name='PnL',
+                name='Value',
                 line=dict(color='#00FF99', width=3),
                 customdata=df_chart['datetime'].dt.strftime('%Y-%m-%d %I:%M:%S %p'),
-                hovertemplate='<b>Date:</b> %{customdata}<br><b>PnL:</b> $%{y:,.2f}<extra></extra>'
+                hovertemplate='<b>Date:</b> %{customdata}<br><b>Value:</b> $%{y:,.2f}<extra></extra>'
             ))
             
-            # Buy/Cover Markers with text
-            buys = df_chart[df_chart['side'].isin(['BUY', 'COVER'])]
-            if not buys.empty:
-                buy_x = buys.index if show_all else buys['datetime']
-                fig.add_trace(go.Scatter(
-                    x=buy_x,
-                    y=buys['cumulative_pnl'],
-                    mode='markers+text',
-                    name='Buy/Cover',
-                    marker=dict(symbol='triangle-up', color='#00FF99', size=12, line=dict(color='white', width=1)),
-                    text=["BUY"] * len(buys),
-                    textposition="top center",
-                    textfont=dict(color='#00FF99', size=10),
-                    hoverinfo='skip'
-                ))
-            
-            # Sell/Short Markers with text
-            sells = df_chart[df_chart['side'].isin(['SELL', 'SHORT'])]
-            if not sells.empty:
-                sell_x = sells.index if show_all else sells['datetime']
-                fig.add_trace(go.Scatter(
-                    x=sell_x,
-                    y=sells['cumulative_pnl'],
-                    mode='markers+text',
-                    name='Sell/Short',
-                    marker=dict(symbol='triangle-down', color='#FF3366', size=12, line=dict(color='white', width=1)),
-                    text=["SELL"] * len(sells),
-                    textposition="bottom center",
-                    textfont=dict(color='#FF3366', size=10),
-                    hoverinfo='skip'
-                ))
+
             
             # Layout
             layout_args = dict(
@@ -379,63 +408,11 @@ with left_col:
             fig.update_layout(**layout_args)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No trades yet today.")
+            st.info("No account history yet today.")
     else:
-        st.info("No live trades recorded yet.")
+        st.info("No account history recorded yet.")
     
-    # --- Per-Symbol Performance ---
-    st.subheader("🏆 Symbol Performance")
-    if not data['trades'].empty:
-        # Calculate per-symbol metrics
-        symbol_stats = []
-        for symbol, group in data['trades'].groupby('symbol'):
-            total_pnl = group['pnl'].sum()
-            wins = len(group[group['pnl'] > 0])
-            total_trades = len(group)
-            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
-            
-            symbol_stats.append({
-                'Symbol': symbol,
-                'Total PnL': total_pnl,
-                'Win Rate': win_rate,
-                'Trades': total_trades
-            })
-        
-        if symbol_stats:
-            df_stats = pd.DataFrame(symbol_stats)
-            # Sort by PnL descending
-            df_stats = df_stats.sort_values('Total PnL', ascending=False)
-            
-            # Format for display
-            df_stats['Total PnL'] = df_stats['Total PnL'].apply(lambda x: f"${x:,.2f}")
-            df_stats['Win Rate'] = df_stats['Win Rate'].apply(lambda x: f"{x:.1f}%")
-            
-            st.dataframe(
-                df_stats,
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-                    "Total PnL": st.column_config.TextColumn("Total PnL", width="medium"),
-                    "Win Rate": st.column_config.ProgressColumn("Win Rate", format="%s", min_value=0, max_value=100),
-                    "Trades": st.column_config.NumberColumn("Trades", width="small"),
-                }
-            )
-    
-    # Trade History Table
-    st.subheader("📜 Trade History")
-    
-    if not data['trades'].empty:
-        display_cols = ['datetime', 'symbol', 'side', 'qty', 'price', 'pnl']
-        df_display = data['trades'][display_cols].head(20).copy()
-        df_display['datetime'] = df_display['datetime'].dt.strftime('%I:%M:%S %p')
-        df_display['price'] = df_display['price'].apply(lambda x: f"${x:.3f}")
-        df_display['pnl'] = df_display['pnl'].apply(lambda x: f"${x:+.2f}")
-        df_display.columns = ['Time', 'Symbol', 'Side', 'Qty', 'Price', 'PnL']
-        
-        st.dataframe(df_display, use_container_width=True, hide_index=True)
-    else:
-        st.info("No trades to display.")
+
 
 with right_col:
     # Live Positions

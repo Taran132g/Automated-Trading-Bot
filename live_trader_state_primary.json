@@ -1,0 +1,15 @@
+{
+  "positions": {
+    "BBAI": -1500
+  },
+  "position_entry_times": {
+    "BBAI": 1769705527.718913
+  },
+  "last_alert_id": 3498,
+  "account_details": {
+    "liquidation_value": 25874.99,
+    "cash_balance": 25905.53,
+    "day_pnl": -29.130000000001,
+    "buying_power": 43593.8
+  }
+}
