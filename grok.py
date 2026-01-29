@@ -28,8 +28,10 @@ from datetime import datetime
 from typing import Deque, Dict, List, Optional, TypedDict
 import sqlite3
 import json
+import pytz
 import logging
 from dotenv import load_dotenv
+import config_manager
 from schwab.auth import easy_client
 from schwab.client import Client
 from schwab.streaming import StreamClient
@@ -139,17 +141,19 @@ def _get_float_env(name: str, default: float, minimum: float = 0.0) -> float:
     except ValueError:
         return max(default, minimum)
     return max(val, minimum)
+def _get_symbols() -> List[str]:
+    config = config_manager.load_config()
+    # Combine live and paper symbols for monitoring
+    live = config.get("live_symbols", "").split(",")
+    paper = config.get("paper_symbols", "").split(",")
+    all_syms = set()
+    for s in live + paper:
+        s = s.strip().upper()
+        if s:
+            all_syms.add(s)
+    return sorted(list(all_syms))
 
-def _parse_symbols_from_env(var_name: str = "SYMBOLS", fallback: str = "F") -> List[str]:
-    raw = os.getenv(var_name, fallback)
-    parts = [p.strip().upper() for p in raw.replace(" ", ",").split(",")]
-    seen, out = set(), []
-    for p in parts:
-        if not p or p in seen:
-            continue
-        seen.add(p)
-        out.append(p)
-    return out
+
 
 # Book Processing
 # Convert the raw level-2 order book into bid/ask lists we can count. This is
@@ -694,6 +698,7 @@ def on_book(msg: dict):
                     "heavy_venues": heavy_venues,
                     "direction": direction,
                     "price": price,
+                    "vol_per_min": vol_per_min,
                     "exchanges": [EXCHANGE_MAP.get(ex, ex) for ex in metrics.per_venue.keys()]
                 }
                 alert_history[sym].append(alert)
@@ -712,10 +717,10 @@ def on_book(msg: dict):
                     inline_ok = inline_trader_dispatch(next_alert_id, alert)
                 if not inline_only_mode or not inline_ok:
                     c.execute(
-                        "INSERT INTO alerts (rowid, timestamp, symbol, ratio, total_bids, total_asks, heavy_venues, direction, price) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO alerts (rowid, timestamp, symbol, ratio, total_bids, total_asks, heavy_venues, direction, price, vol_per_min) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (next_alert_id, alert["timestamp"], alert["symbol"], alert["ratio"], alert["total_bids"],
-                         alert["total_asks"], alert["heavy_venues"], alert["direction"], alert["price"])
+                         alert["total_asks"], alert["heavy_venues"], alert["direction"], alert["price"], alert["vol_per_min"])
                     )
                     conn.commit()
                 last_alert[sym] = now
@@ -833,6 +838,22 @@ async def main():
 
     account_id = account_id_s
 
+    # Auto-start paper_trader if requested (unified startup)
+    paper_proc = None
+    if _bool_env("RUN_PAPER_TRADER", False):
+        import subprocess
+        log_structured("STARTUP", {"message": "Launching paper_trader.py subprocess..."})
+        try:
+            # Use same python executable
+            paper_proc = subprocess.Popen(
+                [sys.executable, "paper_trader.py"],
+                stdout=open("paper_trader.log", "a"),
+                stderr=subprocess.STDOUT
+            )
+            log_structured("STARTUP", {"message": f"paper_trader started (PID: {paper_proc.pid})"})
+        except Exception as e:
+            log_structured("STARTUP_ERROR", {"error": f"Failed to start paper_trader: {e}"})
+
     global WINDOW_SECONDS, HEARTBEAT_SEC, MIN_ASK_HEAVY, MIN_BID_HEAVY
     global MAX_RANGE_CENTS, ALERT_THROTTLE_SEC, MIN_VOLUME, MIN_IMBALANCE_DURATION_SEC
     global DB_PATH, SYMBOLS, DISABLE_BID_HEAVY, trades, msg_count, _book_raw_remaining
@@ -856,7 +877,7 @@ async def main():
     # if args.symbols:
     #     SYMBOLS = [s.strip().upper() for s in args.symbols.replace(" ", ",").split(",") if s.strip()]
     # else:
-    SYMBOLS = _parse_symbols_from_env("SYMBOLS", "BBAI")
+    SYMBOLS = _get_symbols()
     DISABLE_BID_HEAVY = bool(args.disable_bid_heavy)
     DEBUG_BOOK_RAW = True
     JSON_BOOK = bool(args.json_book)
@@ -876,6 +897,8 @@ async def main():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     global conn, inline_only_next_alert_id
     conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
     c = conn.cursor()
     c.execute("PRAGMA table_info(alerts)")
     columns = [info[1] for info in c.fetchall()]
@@ -891,7 +914,8 @@ async def main():
                 total_asks INTEGER,
                 heavy_venues INTEGER,
                 direction TEXT,
-                price REAL
+                price REAL,
+                vol_per_min REAL
             )
         ''')
     inline_only_next_alert_id = (c.execute("SELECT IFNULL(MAX(rowid), 0) FROM alerts").fetchone() or [0])[0]
@@ -990,7 +1014,7 @@ async def main():
         inline_only_mode = inline_only_requested
         inline_log = {
             "status": "enabled",
-            "dry_run": getattr(inline_trader, "dry_run", inline_dry_run),
+            "dry_run": inline_dry_run,
             "trader": trader_kind,
         }
         if inline_only_mode:
@@ -1133,6 +1157,13 @@ async def main():
             await stream.logout()
         except Exception:
             pass
+        if paper_proc:
+            log_structured("SHUTDOWN", {"message": "Stopping paper_trader subprocess..."})
+            paper_proc.terminate()
+            try:
+                paper_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                paper_proc.kill()
 
 if __name__ == "__main__":
     try:

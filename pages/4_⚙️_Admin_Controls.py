@@ -1,8 +1,20 @@
 import os
 import json
 import subprocess
+import time
 import streamlit as st
 from pathlib import Path
+import sys
+
+# Add project root to path
+sys.path.append(str(Path(__file__).parent.parent))
+import config_manager
+import auth_manager
+import schwab.auth
+from datetime import datetime
+
+# Check authentication
+auth_manager.require_auth()
 
 st.set_page_config(
     page_title="Admin Controls | Dashboard",
@@ -11,8 +23,8 @@ st.set_page_config(
 )
 
 # Check main authentication first
-if 'authenticated' not in st.session_state or not st.session_state.authenticated:
-    st.switch_page("app.py")
+# if 'authenticated' not in st.session_state or not st.session_state.authenticated:
+#     st.switch_page("app.py")
 
 # CSS
 st.markdown("""
@@ -76,6 +88,9 @@ st.markdown("""
 
 # Load live positions
 LIVE_STATE_PATH = Path("live_trader_state.json").resolve()
+PRIMARY_STATE = Path("live_trader_state_primary.json").resolve()
+if PRIMARY_STATE.exists():
+    LIVE_STATE_PATH = PRIMARY_STATE
 
 def load_live_positions():
     if LIVE_STATE_PATH.exists():
@@ -103,15 +118,18 @@ def start_backend():
         if kill_switch.exists():
             kill_switch.unlink()
         
-        # Start backend via script with proper cwd
-        script_path = project_root / "start_backend.sh"
-        subprocess.Popen(
-            [str(script_path)], 
-            stdout=subprocess.DEVNULL, 
-            stderr=subprocess.DEVNULL,
-            cwd=str(project_root),
-            start_new_session=True
-        )
+        # Start backend directly (grok.py manages paper_trader)
+        # Redirect output to grok.log
+        log_path = project_root / "grok.log"
+        import sys
+        with open(log_path, "a") as log_file:
+            subprocess.Popen(
+                [sys.executable, "grok.py"], 
+                stdout=log_file, 
+                stderr=subprocess.STDOUT,
+                cwd=str(project_root),
+                start_new_session=True
+            )
         return "✅ Backend starting..."
     except Exception as e:
         return f"❌ Error: {str(e)}"
@@ -119,9 +137,10 @@ def start_backend():
 def stop_backend():
     """Stop the backend processes."""
     try:
+        # grok.py handles paper_trader shutdown on exit
         subprocess.run(["pkill", "-f", "grok.py"], capture_output=True)
+        # Ensure paper_trader is gone (safety net)
         subprocess.run(["pkill", "-f", "paper_trader.py"], capture_output=True)
-        subprocess.run(["pkill", "-f", "live_trader.py"], capture_output=True)
         
         Path("kill_switch.flag").touch()
         return "✅ Backend stopped"
@@ -130,6 +149,9 @@ def stop_backend():
 
 def flatten_all_positions():
     """Close all live positions by placing opposite orders."""
+    if is_backend_running():
+        return "❌ Error: Backend is running. Stop it first to avoid state corruption."
+
     positions = load_live_positions()
     
     if not positions:
@@ -175,27 +197,8 @@ st.markdown("""
     </div>
 """, unsafe_allow_html=True)
 
-# Secondary password check
-if 'admin_authorized' not in st.session_state:
-    st.session_state.admin_authorized = False
-
-if not st.session_state.admin_authorized:
-    st.warning("🔐 Additional authorization required")
-    
-    admin_pass = st.text_input(
-        "Enter admin code",
-        type="password",
-        placeholder="Enter code...",
-        label_visibility="collapsed"
-    )
-    
-    if st.button("Authorize", type="secondary", use_container_width=True):
-        if admin_pass == "mi bombaclat":
-            st.session_state.admin_authorized = True
-            st.rerun()
-        else:
-            st.error("Invalid authorization code")
-else:
+# Secondary password check removed
+if True:
     # --- Backend Status ---
     st.subheader("🖥️ Backend Status")
     backend_running = is_backend_running()
@@ -248,7 +251,7 @@ else:
                     </div>
                 """, unsafe_allow_html=True)
         
-        if st.button("🔴 FLATTEN ALL POSITIONS", type="primary", use_container_width=True):
+        if st.button("🔴 FLATTEN ALL POSITIONS", type="primary", use_container_width=True, disabled=backend_running):
             with st.spinner("Flattening positions..."):
                 result = flatten_all_positions()
             st.success(result)
@@ -268,11 +271,113 @@ else:
     
     if st.button("💥 EXECUTE FULL SHUTDOWN", type="primary", use_container_width=True):
         with st.spinner("Executing shutdown..."):
-            flatten_result = flatten_all_positions()
+            # 1. Stop backend first to release state file
             kill_result = stop_backend()
+            time.sleep(2) # Wait for shutdown
+            
+            # 2. Now safe to flatten
+            flatten_result = flatten_all_positions()
         
         st.error("🔥 SHUTDOWN EXECUTED")
-        st.code(f"{flatten_result}\n\n{kill_result}")
+        st.code(f"{kill_result}\n\n{flatten_result}")
+
+    st.divider()
+    
+    # --- Schwab Token Management ---
+    st.subheader("🔑 Schwab Token Management")
+    
+    token_path = Path("schwab_tokens.json")
+    if token_path.exists():
+        mtime = datetime.fromtimestamp(token_path.stat().st_mtime)
+        st.info(f"✅ **Token File Found**: Last updated {mtime.strftime('%Y-%m-%d %H:%M:%S')}")
+    else:
+        st.warning("⚠️ **Token File Missing**: Backend will not start without valid tokens.")
+
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("### Step 1: Generate Link")
+        if st.button("🔗 Generate Auth Link", use_container_width=True):
+            try:
+                api_key = os.getenv("SCHWAB_CLIENT_ID")
+                redirect_uri = os.getenv("SCHWAB_REDIRECT_URI")
+                if not api_key or not redirect_uri:
+                    st.error("Missing SCHWAB_CLIENT_ID or SCHWAB_REDIRECT_URI in .env")
+                else:
+                    auth_context = schwab.auth.get_auth_context(api_key, redirect_uri)
+                    st.session_state.schwab_auth_context = auth_context
+                    st.success("Link generated! Click below to log in:")
+                    st.markdown(f"[Login to Schwab]({auth_context.authorization_url})")
+            except Exception as e:
+                st.error(f"Error generating link: {e}")
+
+    with col2:
+        st.markdown("### Step 2: Paste Callback")
+        callback_url = st.text_input("Paste the full URL you were redirected to:", key="schwab_callback_input")
+        if st.button("💾 Save New Tokens", type="primary", use_container_width=True):
+            if not callback_url:
+                st.error("Please paste the URL first.")
+            elif 'schwab_auth_context' not in st.session_state:
+                st.error("Please generate the auth link first (Step 1).")
+            else:
+                try:
+                    api_key = os.getenv("SCHWAB_CLIENT_ID")
+                    app_secret = os.getenv("SCHWAB_APP_SECRET")
+                    auth_context = st.session_state.schwab_auth_context
+                    
+                    # This function exchanges the URL for tokens and writes them to the path
+                    # we provide in a custom write function.
+                    def token_writer(token):
+                        with open("schwab_tokens.json", "w") as f:
+                            json.dump(token, f, indent=4)
+                    
+                    schwab.auth.client_from_received_url(
+                        api_key=api_key,
+                        app_secret=app_secret,
+                        auth_context=auth_context,
+                        received_url=callback_url,
+                        token_write_func=token_writer
+                    )
+                    st.success("✅ Tokens saved successfully! You can now start the backend.")
+                    time.sleep(2)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error saving tokens: {e}")
+
+    st.divider()
+
+    # --- Configuration ---
+    st.subheader("🛠️ Configuration")
+    
+    config = config_manager.load_config()
+    
+    with st.form("config_form"):
+        new_live_symbols = st.text_input("Live Symbols (comma-separated)", value=config.get("live_symbols", ""))
+        new_paper_symbols = st.text_input("Paper Symbols (comma-separated)", value=config.get("paper_symbols", ""))
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            new_live_size = st.number_input("Live Position Size", value=config.get("live_position_size", 100))
+            new_live_max_trades = st.number_input("Max Live Trades/Hour", value=config.get("live_max_trades_per_hour", 60))
+        with c2:
+            new_paper_size = st.number_input("Paper Position Size", value=config.get("paper_position_size", 1000))
+            new_stop_loss = st.number_input("Account Stop Loss ($) (0 to disable)", value=float(config.get("account_stop_loss", 0.0)))
+            
+        if st.form_submit_button("💾 Save Configuration", type="primary", use_container_width=True):
+            new_config = {
+                "live_symbols": new_live_symbols,
+                "paper_symbols": new_paper_symbols,
+                "live_position_size": int(new_live_size),
+                "paper_position_size": int(new_paper_size),
+                "live_max_trades_per_hour": int(new_live_max_trades),
+                "account_stop_loss": float(new_stop_loss)
+            }
+            if config_manager.save_config(new_config):
+                st.success("Configuration saved successfully!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("Failed to save configuration.")
 
 # Sidebar nav
 with st.sidebar:
@@ -281,7 +386,7 @@ with st.sidebar:
         st.switch_page("pages/2_📈_Live_Trading.py")
     if st.button("🔬 Backtesting", use_container_width=True):
         st.switch_page("pages/3_🔬_Backtest.py")
+
     if st.button("🚪 Logout", use_container_width=True):
-        st.session_state.authenticated = False
-        st.session_state.admin_authorized = False
-        st.switch_page("app.py")
+        auth_manager.logout()
+        st.rerun()

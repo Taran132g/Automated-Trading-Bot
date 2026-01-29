@@ -12,6 +12,14 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+import sys
+# Add project root to path
+sys.path.append(str(Path(__file__).parent.parent))
+import config_manager
+import auth_manager
+
+# Check authentication
+# auth_manager.require_auth()
 # Configuration
 REFRESH_INTERVAL = 3
 DB_PATH = Path("penny_basing.db").resolve()
@@ -24,13 +32,18 @@ st.set_page_config(
 )
 
 # Check authentication
-if 'authenticated' not in st.session_state or not st.session_state.authenticated:
-    st.switch_page("app.py")
+# if 'authenticated' not in st.session_state or not st.session_state.authenticated:
+#     st.switch_page("app.py")
 
 # Sidebar navigation
 with st.sidebar:
-    # Show trading symbols from .env
-    paper_symbols = os.getenv('SYMBOLS', '').split(',')
+    # Show trading symbols from config
+    config = config_manager.load_config()
+    raw_symbols = config.get("paper_symbols", "")
+    if not raw_symbols:
+        raw_symbols = os.getenv('SYMBOLS', '')
+        
+    paper_symbols = raw_symbols.split(',')
     paper_symbols = [s.strip().upper() for s in paper_symbols if s.strip()]
     
     if paper_symbols:
@@ -363,21 +376,35 @@ with left_col:
     
     # --- Per-Symbol Performance ---
     st.subheader("🏆 Symbol Performance")
+    
+    # Time Range Toggle
+    time_range = st.radio("Time Range", ["All Time", "Today"], horizontal=True, label_visibility="collapsed")
+    
     if not data['trades'].empty:
-        # Calculate per-symbol metrics
-        symbol_stats = []
-        for symbol, group in data['trades'].groupby('symbol'):
-            total_pnl = group['pnl'].sum()
-            wins = len(group[group['pnl'] > 0])
-            total_trades = len(group)
-            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+        # Filter trades based on selection
+        trades_to_show = data['trades']
+        if time_range == "Today":
+            today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
+            trades_to_show = trades_to_show[trades_to_show['timestamp'] >= today_start]
             
-            symbol_stats.append({
-                'Symbol': symbol,
-                'Total PnL': total_pnl,
-                'Win Rate': win_rate,
-                'Trades': total_trades
-            })
+        if not trades_to_show.empty:
+            # Calculate per-symbol metrics
+            symbol_stats = []
+            for symbol, group in trades_to_show.groupby('symbol'):
+                total_pnl = group['pnl'].sum()
+                wins = len(group[group['pnl'] > 0])
+                total_trades = len(group)
+                win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+                
+                symbol_stats.append({
+                    'Symbol': symbol,
+                    'Total PnL': total_pnl,
+                    'Win Rate': win_rate,
+                    'Trades': total_trades
+                })
+        else:
+            symbol_stats = []
+            st.info("No trades found for this time range.")
         
         if symbol_stats:
             df_stats = pd.DataFrame(symbol_stats)
@@ -400,24 +427,6 @@ with left_col:
                 }
             )
     
-    # Trade History Table
-    st.subheader("� Trade History")
-    
-    if not data['trades'].empty:
-        display_df = data['trades'].head(20).copy()
-        display_df['time'] = display_df['datetime'].dt.strftime('%I:%M:%S %p')
-        display_df['pnl_fmt'] = display_df['pnl'].apply(lambda x: f"${x:+.2f}")
-        
-        st.dataframe(
-            display_df[['time', 'symbol', 'side', 'qty', 'pnl_fmt']].rename(columns={
-                'time': 'Time', 'symbol': 'Symbol', 'side': 'Side', 'qty': 'Qty', 'pnl_fmt': 'PnL'
-            }),
-            use_container_width=True,
-            hide_index=True
-        )
-    else:
-        st.info("No trades to display.")
-
 with right_col:
     # Paper Positions
     st.subheader("💼 Paper Positions")

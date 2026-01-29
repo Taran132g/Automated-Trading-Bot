@@ -1,0 +1,8 @@
+{
+    "live_symbols": "BBAI",
+    "paper_symbols": "BBAI, F, AAL, KVUE, SOXS, ACHR, ZSL",
+    "live_position_size": 1500,
+    "paper_position_size": 1000,
+    "live_max_trades_per_hour": 60,
+    "account_stop_loss": 25800.0
+}

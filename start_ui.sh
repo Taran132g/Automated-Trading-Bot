@@ -11,8 +11,8 @@ UI_PORT=8501
 
 echo -e "${BLUE}[UI] Starting Streamlit dashboard...${NC}"
 
-# Start Streamlit
-nohup streamlit run app.py \
+# Start Streamlit using venv
+./.venv/bin/streamlit run app.py \
     --server.port=$UI_PORT \
     --server.headless=true \
     --server.enableCORS=false \

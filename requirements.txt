@@ -4,3 +4,6 @@ schwab-py
 streamlit
 yfinance
 plotly
+pyotp
+extra-streamlit-components
+pytz

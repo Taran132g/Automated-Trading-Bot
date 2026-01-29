@@ -1,70 +1,36 @@
-# Execution strategy and latency resilience
+# Execution Strategy: Market Orders Only
 
-This note summarizes how we balance fast alert handling with order-safety when
-limits risk missing fills because prices move during the alert-to-trade window.
-It also calls out operational checks that keep the inline Grok → LiveTrader path
-safe from bugs.
+This document explains the bot's execution strategy, which prioritizes **speed and certainty of execution** over price improvement.
 
-## Current behavior
-- **Inline dispatch first.** Grok sends each alert directly to LiveTrader so the
-  trading logic runs immediately; the DB entry is for durability, not signaling.
-- **Limit-first, market-backed.** LiveTrader prefers limit orders for price
-  control but falls back to market only when limit submission fails (e.g., API
-  rejection) to avoid silent drops.
-- **Fill polling.** Accepted limit orders are polled until they fill, cancel,
-  or time out; only filled orders update positions.
+## Strategy Overview
 
-## Price movement risk
-If price moves between alert creation and order submission, a limit anchored to
-stale data can miss. Two safeguards reduce that risk:
+The bot uses **Market Orders** exclusively.
 
-1. **Aggressive limit padding.** A configurable bps cushion moves the limit a
-   small amount in the favorable direction to cross the spread while still
-   capping slippage. For buys/covers the price is nudged up; for shorts/sells it
-   is nudged down. The default pad is 10 bps (~0.1%).
-2. **Submission fallback.** If the limit cannot be submitted, LiveTrader logs a
-   warning and sends a market order instead so alerts are not dropped silently.
+1.  **Signal Detection**: `grok.py` detects an order book imbalance (e.g., "bid-heavy").
+2.  **Instant Dispatch**: The signal is passed directly to `LiveTrader` in the same process (no database polling delay).
+3.  **Immediate Execution**: `LiveTrader` immediately submits a Market Order to Schwab.
+    *   **Buy/Cover**: Pays the current Ask price.
+    *   **Sell/Short**: Accepts the current Bid price.
 
-## Recommended settings
-- Tune `LIVE_LIMIT_SLIPPAGE_BPS` to the minimum cushion that routinely fills on
-  your symbols (e.g., 5–15 bps for liquid names). Set to `0` to disable padding
-  if you must cap price strictly.
-- Keep `LIVE_PREFER_LIMIT_ORDERS=true` to avoid surprise fills when latency
-  spikes; the pad helps fills without fully switching to market.
-- Shorten `LIVE_LIMIT_FILL_TIMEOUT` if you prefer to give up sooner and move on;
-  lengthen it for thin symbols where fills take longer.
+## Why Market Orders?
 
-## P&L impact of the slippage pad
-- A 10 bps pad adds roughly $0.01 on a $10 order; the cost is bounded by your
-  configured `LIVE_LIMIT_SLIPPAGE_BPS` and is usually less than the spread you
-  were already willing to cross when latency hits.
-- Without the pad, alerts that drift by a cent or two often never fill, which
-  can quietly erase expected edge. The pad trades a tiny, known cost for a
-  higher fill rate so the strategy actually participates.
-- Reduce the pad toward 0 for extremely tight-spread symbols or when you see
-  systematic negative slippage; increase slightly (e.g., 15 bps) for illiquid
-  names to avoid repeat timeouts and market fallbacks.
+*   **Speed**: Market orders are executed instantly. In fast-moving markets (like penny stocks), waiting for a limit order to fill often means missing the move entirely.
+*   **Certainty**: A market order guarantees a fill (as long as there is liquidity). Limit orders can be left behind if the price moves away.
+*   **Simplicity**: Removes complex logic for repricing, timeout handling, and race conditions, making the bot more robust and less prone to bugs.
 
-## Operational guardrails
-- **Kill switch**: ensure `LIVE_KILL_SWITCH_FILE` is monitored; creating the file
-  triggers a cancel-all and market flatting on next loop iteration.
-- **Rate limiting**: `LIVE_MAX_TRADES_PER_HOUR` keeps runaway alert storms from
-  spiraling; exceeding it engages the kill switch.
-- **State persistence**: last seen alert ID and positions are checkpointed after
-  each processed alert so restarts do not re-run old alerts.
+## Operational Guardrails
 
-## Debugging checklist
-- Watch logs for `Limit price adjusted...` to confirm padding is active.
-- Verify DB `live_orders` rows record the adjusted price you expect.
-- In dry-run mode, confirm `_record_fill` messages fire only after the fill poll
-  succeeds; otherwise the position should remain unchanged.
+Even with market orders, safety mechanisms are in place:
 
-## What changed in this PR
-- Inline alert durability is stronger: if the low-latency queue is full we still
-  fall back to the DB so no alerts are lost.
-- Pricing uses side-aware quotes with safer casting to avoid midpoint bugs that
-  could block orders.
-- Repriced limits now guard against missing order IDs and track cancel attempts
-  so symbols do not get stuck behind an old working order.
-- CLI symbol overrides work again, and instrument lookup handles both sync and
-  async Schwab clients for wider compatibility.
+*   **Kill Switch**: If the file `kill_switch.flag` is detected, the bot cancels all pending actions (if any) and stops immediately.
+*   **Rate Limiting**: `LIVE_MAX_TRADES_PER_HOUR` (default: 60) prevents a runaway algorithm from draining your account.
+*   **Bad Fill Detection**: The bot monitors fill prices. If it detects "bad fills" (e.g., buying at x.99 or selling at x.01) consecutively, it alerts you.
+*   **State Persistence**: Position state is saved to disk (`live_trader_state.json`) after every trade, ensuring the bot remembers its positions even after a restart.
+
+## Configuration
+
+Relevant settings in your `.env` file:
+
+*   `LIVE_DRY_RUN`: Set to `1` or `true` to simulate trades without using real money.
+*   `LIVE_POSITION_SIZE`: Number of shares to trade per signal.
+*   `LIVE_MAX_TRADES_PER_HOUR`: Safety cap on trading frequency.

@@ -1,0 +1,16 @@
+[Unit]
+Description=Trading Bot UI (Streamlit Dashboard)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/taranveer-singh.github.io
+ExecStart=/usr/bin/python3.11 -m streamlit run app.py --server.port=8501 --server.headless=true
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
