@@ -147,7 +147,7 @@ class SchwabOrderExecutor:
             return self.cancel_all_orders()
 
         try:
-            cancel_one(self.account_id, order_id)
+            cancel_one(order_id, self.account_id)
             LOGGER.info("Cancel request sent for order %s", order_id)
             return True
         except Exception as exc:  # pragma: no cover - network interaction
@@ -192,7 +192,7 @@ class SchwabOrderExecutor:
             return result
 
         try:
-            response = fetch_order(self.account_id, order_id)
+            response = fetch_order(order_id, self.account_id)
         except Exception as exc:  # pragma: no cover - network interaction
             LOGGER.error("Failed to fetch order %s: %s", order_id, exc)
             result["error"] = str(exc)
@@ -324,6 +324,24 @@ class SchwabOrderExecutor:
                 
         return result
 
+    def submit_limit(self, *, symbol: str, qty: int, side: str, price: float) -> Dict[str, Optional[str]]:
+        builders = {
+            "BUY": equity_orders.equity_buy_limit,
+            "SELL": equity_orders.equity_sell_limit,
+            "SHORT": equity_orders.equity_sell_short_limit,
+            "COVER": equity_orders.equity_buy_to_cover_limit,
+        }
+        try:
+            builder_factory = builders[side.upper()]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported side '{side}'") from exc
+
+        try:
+            builder = builder_factory(symbol, qty, price)
+        except TypeError:
+            builder = builder_factory(symbol=symbol, quantity=qty, price=price)
+        return self._send(builder, symbol=symbol, side=side.upper(), qty=qty)
+
     def submit_market(self, *, symbol: str, qty: int, side: str) -> Dict[str, Optional[str]]:
         builders = {
             "BUY": equity_orders.equity_buy_market,
@@ -382,6 +400,9 @@ class LiveTrader:
         self.initial_entry_size = int(os.getenv("LIVE_INITIAL_SIZE", str(self.position_size)))
         self.flip_size = int(os.getenv("LIVE_FLIP_SIZE", str(self.initial_entry_size * 2)))
         self.poll_interval = float(os.getenv("LIVE_POLL_INTERVAL", "1"))
+        self.limit_poll_interval = float(os.getenv("LIVE_LIMIT_POLL_INTERVAL", "0.5"))  # Poll interval for limit orders
+        self.use_limit_orders = _bool_env("LIVE_USE_LIMIT_ORDERS", True)
+        
         # Unique state file per account
         state_base = os.getenv("LIVE_STATE_FILE", "live_trader_state.json")
         if name != "default":
@@ -445,10 +466,26 @@ class LiveTrader:
                 mismatches.append(f"{symbol}: Local={local_qty}, Schwab={schwab_qty}")
 
         if mismatches:
-            LOGGER.error("🚨 CRITICAL: Position mismatch detected on startup!")
+            LOGGER.warning("⚠️ Position mismatch detected! Auto-reconciling to trust Schwab...")
             for m in mismatches:
-                LOGGER.error("   - %s", m)
-            print(f"\n{'='*60}\n🚨 POSITION MISMATCH DETECTED:\n" + "\n".join(mismatches) + f"\n{'='*60}\n", flush=True)
+                LOGGER.warning("   - %s", m)
+            
+            # Trust Schwab
+            with self._lock:
+                self.positions = schwab_positions.copy()
+                
+                # Clean up entry times for positions that no longer exist
+                for symbol in list(self.position_entry_times.keys()):
+                    if symbol not in self.positions:
+                        del self.position_entry_times[symbol]
+                
+                # Initialize entry time for newly discovered positions (start tracking from now)
+                for symbol in self.positions:
+                    if symbol not in self.position_entry_times:
+                        self.position_entry_times[symbol] = time.time()
+                
+                self._save_state()
+            LOGGER.info("✅ State auto-corrected to match Schwab.")
         else:
             LOGGER.info("✅ Positions reconciled successfully (Local: %d, Schwab: %d)", len(self.positions), len(schwab_positions))
 
@@ -876,6 +913,172 @@ class LiveTrader:
         )
         return filled
 
+    def _record_and_apply_limit(
+        self, *, alert_id: int, symbol: str, direction: str, side: str, qty: int, price: Optional[float] = None
+    ) -> bool:
+        """Submit a limit order at Bid/Ask and cancel if not filled within timeout."""
+        limit_price = 0.0
+
+        # Preference 1: Use passed price if valid
+        if price is not None and price > 0:
+            limit_price = price
+        else:
+            # Preference 2: Fetch fresh quote
+            quote = self.executor.fetch_quote(symbol)
+            if not quote:
+                LOGGER.warning("Could not fetch quote for %s; skipping limit order", symbol)
+                return False
+
+            if side in {"BUY", "COVER"}:
+                 # Buy at Bid
+                 limit_price = float(quote.get("bidPrice", 0.0))
+            else:
+                 # Sell at Ask
+                 limit_price = float(quote.get("askPrice", 0.0))
+        
+        if limit_price <= 0:
+             LOGGER.warning("Invalid limit price %.2f for %s; skipping", limit_price, symbol)
+             return False
+
+        LOGGER.info("[LIMIT] Submitting %s %d %s @ $%.2f", side, qty, symbol, limit_price)
+        
+        result = self.executor.submit_limit(symbol=symbol, qty=qty, side=side, price=limit_price)
+        
+        error = result.get("error")
+        if error:
+             LOGGER.error("Limit order submission failed: %s", error)
+             # Record failure
+             self._record_order(
+                alert_id=alert_id,
+                symbol=symbol,
+                direction=direction,
+                side=side,
+                qty=qty,
+                price=limit_price,
+                result=result,
+            )
+             return False
+
+        if result.get("dry_run"):
+             # In dry run, assume filled after "wait"
+             time.sleep(self.limit_poll_interval)
+             LOGGER.info("[DRY-RUN] Limit order 'filled' after wait")
+             self._record_fill(symbol=symbol, side=side, qty=qty, price=limit_price)
+             result["fill_status"] = "FILLED"
+             result["filled_qty"] = qty
+             self._record_order(
+                alert_id=alert_id,
+                symbol=symbol,
+                direction=direction,
+                side=side,
+                qty=qty,
+                price=limit_price,
+                result=result,
+            )
+             return True
+
+        order_id = result.get("order_id")
+        if not order_id:
+             LOGGER.error("No order_id returned for limit order")
+             return False
+
+        # Wait and Poll
+        LOGGER.info("Waiting %.1fs for fill on order %s...", self.limit_poll_interval, order_id)
+        time.sleep(self.limit_poll_interval)
+        
+        status = self.executor.fetch_order_status(order_id)
+        order_status = status.get("status", "").upper()
+        filled_qty = status.get("filled_quantity") or 0
+        avg_price = status.get("avg_fill_price")
+        
+        LOGGER.info("Order %s status: %s (Filled: %s)", order_id, order_status, filled_qty)
+
+        final_filled = False
+        
+        if order_status in {"FILLED", "EXPIRED"} or filled_qty == qty:
+            # Filled!
+            final_filled = True
+            realized_price = float(avg_price) if avg_price else limit_price
+            # Use actual filled qty if available, otherwise assume full qty if status is FILLED
+            actual_fill = int(filled_qty) if filled_qty > 0 else qty
+            self._record_fill(symbol=symbol, side=side, qty=actual_fill, price=realized_price)
+            result["fill_status"] = "FILLED"
+            result["filled_qty"] = actual_fill
+            
+            # Check bad fill on limit? (Less likely if we set limit, but maybe if we crossed)
+            # self._check_fill_quality(side, realized_price) 
+        
+        elif order_status in {"CANCELED", "REJECTED"}:
+             LOGGER.warning("Order %s was already %s", order_id, order_status)
+             # Even if canceled, check if there was partial fill
+             if filled_qty > 0:
+                 realized_price = float(avg_price) if avg_price else limit_price
+                 self._record_fill(symbol=symbol, side=side, qty=int(filled_qty), price=realized_price)
+                 result["fill_status"] = "PARTIAL_CANCELED"
+                 result["filled_qty"] = int(filled_qty)
+             else:
+                 result["fill_status"] = order_status
+                 result["filled_qty"] = 0
+             
+        else:
+            # Still Open (WORKING, QUEUED, etc) -> CANCEL IT
+            LOGGER.info("Order %s not filled (Status: %s). Cancelling...", order_id, order_status)
+            cancel_success = self.executor.cancel_order(order_id)
+            
+            if cancel_success:
+                LOGGER.info("Order %s cancelled request sent. Verifying final status...", order_id)
+                time.sleep(1.0) # Give Schwab a moment to process the cancel vs fill race
+                final_status = self.executor.fetch_order_status(order_id)
+                final_state = final_status.get("status", "").upper()
+                final_filled_qty = final_status.get("filled_quantity") or 0
+                
+                # Update logic: Handle ANY fill amount, full or partial
+                if final_filled_qty > 0:
+                     LOGGER.warning("Order %s had fill qty %s after cancel!", order_id, final_filled_qty)
+                     final_filled = True # Consider it "filled" (at least partially) for return value purposes? 
+                     # Actually return True usually implies "Action Complete", partial might be tricky. 
+                     # But for "did we do something", yes.
+                     avg_price = final_status.get("avg_fill_price")
+                     realized_price = float(avg_price) if avg_price else limit_price
+                     self._record_fill(symbol=symbol, side=side, qty=int(final_filled_qty), price=realized_price)
+                     
+                     if final_filled_qty >= qty:
+                         result["fill_status"] = "FILLED"
+                     else:
+                         result["fill_status"] = "PARTIAL_CANCELED"
+                     result["filled_qty"] = int(final_filled_qty)
+                else:
+                     LOGGER.info("Order %s confirmed cancelled (Status: %s)", order_id, final_state)
+                     result["fill_status"] = "CANCELED_TIMEOUT"
+                     result["filled_qty"] = 0
+            else:
+                # If cancel failed, it might have just filled?
+                # Re-check status one last time?
+                LOGGER.warning("Failed to cancel order %s. Re-checking status...", order_id)
+                status = self.executor.fetch_order_status(order_id)
+                last_filled = status.get("filled_quantity") or 0
+                
+                if last_filled > 0:
+                     final_filled = True
+                     avg_price = status.get("avg_fill_price")
+                     realized_price = float(avg_price) if avg_price else limit_price
+                     self._record_fill(symbol=symbol, side=side, qty=int(last_filled), price=realized_price)
+                     result["fill_status"] = "FILLED" if last_filled >= qty else "PARTIAL_UNK"
+                     result["filled_qty"] = int(last_filled)
+                else:
+                     result["fill_status"] = "CANCEL_FAILED"
+        
+        self._record_order(
+            alert_id=alert_id,
+            symbol=symbol,
+            direction=direction,
+            side=side,
+            qty=qty,
+            price=limit_price,
+            result=result,
+        )
+        return final_filled
+
     def _submit_order(
         self,
         *,
@@ -885,17 +1088,32 @@ class LiveTrader:
         side: str,
         qty: int,
         price: float,
+        order_type: str = "AUTO",  # AUTO, MARKET, LIMIT
     ) -> bool:
-        return self._record_and_apply_market(
-            alert_id=alert_id,
-            symbol=symbol,
-            direction=direction,
-            side=side,
-            qty=qty,
-            price=price,
-        )
+        use_limit = self.use_limit_orders
+        if order_type == "MARKET":
+            use_limit = False
+        elif order_type == "LIMIT":
+            use_limit = True
 
-
+        if use_limit:
+            return self._record_and_apply_limit(
+                alert_id=alert_id,
+                symbol=symbol,
+                direction=direction,
+                side=side,
+                qty=qty,
+                price=price,
+            )
+        else:
+            return self._record_and_apply_market(
+                alert_id=alert_id,
+                symbol=symbol,
+                direction=direction,
+                side=side,
+                qty=qty,
+                price=price,
+            )
 
     def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float) -> None:
         # Check if symbol is allowed for live trading
@@ -915,6 +1133,7 @@ class LiveTrader:
             # If currently long, close the long position first (use initial_entry_size)
             if position > 0:
                 LOGGER.info("Closing long position on %s before entering short", symbol)
+                # FORCE MARKET CLOSE FOR EXITS
                 self._submit_order(
                     alert_id=alert_id,
                     symbol=symbol,
@@ -922,9 +1141,11 @@ class LiveTrader:
                     side="SELL",
                     qty=self.initial_entry_size,
                     price=price,
+                    order_type="MARKET",
                 )
 
             # Now enter the short position
+            # Use Default (Limit if configured)
             self._submit_order(
                 alert_id=alert_id,
                 symbol=symbol,
@@ -932,6 +1153,7 @@ class LiveTrader:
                 side="SHORT",
                 qty=self.initial_entry_size,
                 price=price,
+                order_type="LIMIT",
             )
         elif direction == "bid-heavy":
             # Check if already long - skip to avoid stacking
@@ -942,6 +1164,7 @@ class LiveTrader:
             # If currently short, close the short position first (use initial_entry_size)
             if position < 0:
                 LOGGER.info("Closing short position on %s before entering long", symbol)
+                # FORCE MARKET CLOSE FOR EXITS
                 self._submit_order(
                     alert_id=alert_id,
                     symbol=symbol,
@@ -949,9 +1172,11 @@ class LiveTrader:
                     side="COVER",
                     qty=self.initial_entry_size,
                     price=price,
+                    order_type="MARKET",
                 )
 
             # Now enter the long position
+            # Use Default (Limit if configured)
             self._submit_order(
                 alert_id=alert_id,
                 symbol=symbol,
@@ -959,6 +1184,7 @@ class LiveTrader:
                 side="BUY",
                 qty=self.initial_entry_size,
                 price=price,
+                order_type="LIMIT",
             )
 
     def process_alert(
@@ -1046,30 +1272,42 @@ class LiveTrader:
         # loops, but we watch for DB file writes every 10ms so a new alert can
         # break the longer sleep immediately. This mirrors the low-latency
         # monitoring used in ``paper_trader``.
-        min_sleep = 0.05
-        mtime_probe = 0.01
-        max_sleep = max(self.poll_interval, 2.0)
-        idle_sleep = min_sleep
-        """Main polling loop."""
         LOGGER.info("Starting LiveTrader loop...")
         self._check_kill_switch()
         
         while True:
-            woke_for_write = False
-
-            while time.monotonic() < wake_deadline:
-                time.sleep(mtime_probe)
-                current_mtime = db_path.stat().st_mtime if db_path.exists() else 0.0
-                if current_mtime != db_mtime_snapshot:
-                    woke_for_write = True
-                    db_mtime_snapshot = current_mtime
-                    break
-
-            last_db_mtime = db_mtime_snapshot
-            idle_sleep = min_sleep if woke_for_write else target_sleep
-
-            if woke_for_write:
-                continue
+            try:
+                # Poll for new alerts
+                new_alerts = []
+                with self._open_conn() as conn:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "SELECT rowid, symbol, direction, price FROM alerts WHERE rowid > ? ORDER BY rowid ASC",
+                        (self.last_alert_id,)
+                    )
+                    new_alerts = cur.fetchall()
+                
+                if new_alerts:
+                    for row in new_alerts:
+                        alert_id = row[0]
+                        symbol = row[1]
+                        direction = row[2]
+                        price = float(row[3]) if row[3] is not None else 0.0
+                        
+                        self.process_alert(alert_id, symbol, direction, price)
+                    
+                    # Short sleep if we had activity
+                    time.sleep(0.05)
+                else:
+                    # Sleep longer if no activity
+                    time.sleep(self.poll_interval)
+                    
+            except Exception as exc:
+                LOGGER.error("Error in main loop: %s", exc)
+                time.sleep(1.0)
+            
+            self._check_kill_switch()
+            self._check_time_stops()
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
