@@ -369,6 +369,7 @@ HEARTBEAT_SEC: int = 5
 MIN_ASK_HEAVY: int = 4
 MIN_BID_HEAVY: int = 4
 MAX_RANGE_CENTS: int = 1
+MIN_RANGE_CENTS: int = 2
 ALERT_THROTTLE_SEC: int = 60
 MIN_VOLUME: int = 100000
 MIN_IMBALANCE_DURATION_SEC: float = 10.0
@@ -683,7 +684,23 @@ def on_book(msg: dict):
                     "ask_heavy_venues": metrics.ask_heavy_venues,
                     "imbalance_duration": round(imbalance_duration, 2)
                 })
-            if (imbalance_duration >= MIN_IMBALANCE_DURATION_SEC and
+            
+            # Volatility Filter
+            pass_range_filter = True
+            range_cents = 0.0
+            if MIN_RANGE_CENTS > 0:
+                q = trades.get(sym)
+                if q:
+                    hi = max(t.px for t in q)
+                    lo = min(t.px for t in q)
+                    range_cents = (hi - lo) * 100.0
+                    if range_cents <= MIN_RANGE_CENTS:
+                        pass_range_filter = False
+                        if DEBUG:
+                            log_structured("RANGE_FILTER", {"symbol": sym, "range_cents": round(range_cents, 2), "min_range": MIN_RANGE_CENTS, "message": "Alert suppressed due to low volatility"})
+
+            if (pass_range_filter and
+                imbalance_duration >= MIN_IMBALANCE_DURATION_SEC and
                 metrics.valid_exchanges >= max(MIN_ASK_HEAVY, MIN_BID_HEAVY) and 
                 vol_per_min >= MIN_VOLUME and
                 (sym not in last_alert or (now - last_alert[sym]) >= ALERT_THROTTLE_SEC)):
@@ -798,6 +815,7 @@ async def main():
     parser.add_argument("--heartbeat", type=int, help="Heartbeat interval seconds (overrides $HEARTBEAT_SEC).")
     parser.add_argument("--min-venues", type=int, help="Min heavy venues for alert (overrides $MIN_ASK_HEAVY/$MIN_BID_HEAVY).")
     parser.add_argument("--max-range", type=int, help="Max exchange bid-ask spread in cents (overrides $MAX_RANGE_CENTS).")
+    parser.add_argument("--min-range", type=int, help="Min high-low range in cents to allow alert (overrides $MIN_RANGE_CENTS).")
     parser.add_argument("--throttle", type=int, help="Min seconds between alerts per symbol (overrides $ALERT_THROTTLE_SEC).")
     parser.add_argument("--min-volume", type=int, help="Min volume per minute for alert (overrides $MIN_VOLUME).")
     parser.add_argument("--min-imbalance-duration", type=float, help="Min duration in seconds for imbalance to trigger alert (overrides $MIN_IMBALANCE_DURATION_SEC).")
@@ -855,7 +873,7 @@ async def main():
             log_structured("STARTUP_ERROR", {"error": f"Failed to start paper_trader: {e}"})
 
     global WINDOW_SECONDS, HEARTBEAT_SEC, MIN_ASK_HEAVY, MIN_BID_HEAVY
-    global MAX_RANGE_CENTS, ALERT_THROTTLE_SEC, MIN_VOLUME, MIN_IMBALANCE_DURATION_SEC
+    global MAX_RANGE_CENTS, MIN_RANGE_CENTS, ALERT_THROTTLE_SEC, MIN_VOLUME, MIN_IMBALANCE_DURATION_SEC
     global DB_PATH, SYMBOLS, DISABLE_BID_HEAVY, trades, msg_count, _book_raw_remaining
     global DEBUG_BOOK_RAW, JSON_BOOK, SHOW_BOOK, BOOK_INTERVAL_SEC, DEBUG_INSTR, DEBUG
 
@@ -864,6 +882,7 @@ async def main():
     MIN_ASK_HEAVY = args.min_venues if args.min_venues is not None else _get_int_env("MIN_ASK_HEAVY", 4, 1)
     MIN_BID_HEAVY = args.min_venues if args.min_venues is not None else _get_int_env("MIN_BID_HEAVY", 4, 1)
     MAX_RANGE_CENTS = args.max_range if args.max_range is not None else _get_int_env("MAX_RANGE_CENTS", 1, 1)
+    MIN_RANGE_CENTS = args.min_range if args.min_range is not None else _get_int_env("MIN_RANGE_CENTS", 2, 0)
     ALERT_THROTTLE_SEC = args.throttle if args.throttle is not None else _get_int_env("ALERT_THROTTLE_SEC", 60, 10)
     MIN_VOLUME = args.min_volume if args.min_volume is not None else _get_int_env("MIN_VOLUME", 100000, 1000)
     MIN_IMBALANCE_DURATION_SEC = args.min_imbalance_duration if args.min_imbalance_duration is not None else _get_float_env("MIN_IMBALANCE_DURATION_SEC", 10.0, 0.0)
