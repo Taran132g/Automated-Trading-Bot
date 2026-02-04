@@ -427,6 +427,7 @@ class LiveTrader:
         self.consecutive_bad_fills: int = 0  # Track consecutive bad fills
         self.live_symbols = self._parse_live_symbols()
         self.account_details: Dict[str, float] = {}
+        self.min_range_cents = int(os.getenv("MIN_RANGE_CENTS", "2"))
         self._lock = threading.RLock()
 
         LOGGER.info("[%s] LiveTrader initialized (pos_size=%d, state=%s)", self.name, self.position_size, self.state_path)
@@ -558,7 +559,8 @@ class LiveTrader:
                     total_asks INTEGER,
                     heavy_venues INTEGER,
                     direction TEXT,
-                    price REAL
+                    price REAL,
+                    range_cents REAL
                 )
                 """
             )
@@ -1118,7 +1120,7 @@ class LiveTrader:
                 price=price,
             )
 
-    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float) -> None:
+    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0) -> None:
         # Check if symbol is allowed for live trading
         if symbol not in self.live_symbols:
             LOGGER.info("Skipping live trade for %s (not in LIVE_SYMBOLS)", symbol)
@@ -1126,6 +1128,13 @@ class LiveTrader:
 
         with self._lock:
             position = self.positions.get(symbol, 0)
+
+        # Volatility Filter (ENTRY ONLY)
+        # If we are FLAT (position == 0) and range is too low, skip entry.
+        # Exits are ALWAYS allowed (so if position != 0, we ignore this check).
+        if position == 0 and range_cents > 0 and range_cents <= self.min_range_cents:
+            LOGGER.info("Skipping entry for %s: Volatility range %.2fc <= %.2fc", symbol, range_cents, self.min_range_cents)
+            return
 
         # Cooldown check
         cooldown_seconds = 30.0
@@ -1229,6 +1238,7 @@ class LiveTrader:
         price: float,
         *,
         persist_state: bool = True,
+        range_cents: float = 0.0,
     ) -> None:
         """Process a single alert, optionally persisting state immediately.
 
@@ -1238,9 +1248,8 @@ class LiveTrader:
         """
         with self._lock:
             self.last_alert_id = max(self.last_alert_id, int(alert_id))
-            # FAST-PATH: Use the price from the stream directly.
-            # This skips the ~500ms network round-trip to fetch a fresh quote.
-            self._handle_alert(alert_id, symbol, direction, price)
+            # Fast-path inline alert
+            self._handle_alert(alert_id, symbol, direction, price, range_cents)
             if persist_state and not self.dry_run:
                 self._save_state()
 
@@ -1316,7 +1325,7 @@ class LiveTrader:
                 with self._open_conn() as conn:
                     cur = conn.cursor()
                     cur.execute(
-                        "SELECT rowid, symbol, direction, price FROM alerts WHERE rowid > ? ORDER BY rowid ASC",
+                        "SELECT rowid, symbol, direction, price, range_cents FROM alerts WHERE rowid > ? ORDER BY rowid ASC",
                         (self.last_alert_id,)
                     )
                     new_alerts = cur.fetchall()
@@ -1327,8 +1336,9 @@ class LiveTrader:
                         symbol = row[1]
                         direction = row[2]
                         price = float(row[3]) if row[3] is not None else 0.0
+                        range_cents = float(row[4]) if len(row) > 4 and row[4] is not None else 0.0
                         
-                        self.process_alert(alert_id, symbol, direction, price)
+                        self.process_alert(alert_id, symbol, direction, price, range_cents=range_cents)
                     
                     # Short sleep if we had activity
                     time.sleep(0.05)

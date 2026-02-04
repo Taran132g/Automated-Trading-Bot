@@ -686,21 +686,15 @@ def on_book(msg: dict):
                 })
             
             # Volatility Filter
-            pass_range_filter = True
+            # Volatility Calculation (Passed to Trader)
             range_cents = 0.0
-            if MIN_RANGE_CENTS > 0:
-                q = trades.get(sym)
-                if q:
-                    hi = max(t.px for t in q)
-                    lo = min(t.px for t in q)
-                    range_cents = (hi - lo) * 100.0
-                    if range_cents <= MIN_RANGE_CENTS:
-                        pass_range_filter = False
-                        if DEBUG:
-                            log_structured("RANGE_FILTER", {"symbol": sym, "range_cents": round(range_cents, 2), "min_range": MIN_RANGE_CENTS, "message": "Alert suppressed due to low volatility"})
-
-            if (pass_range_filter and
-                imbalance_duration >= MIN_IMBALANCE_DURATION_SEC and
+            q = trades.get(sym)
+            if q:
+                hi = max(t.px for t in q)
+                lo = min(t.px for t in q)
+                range_cents = (hi - lo) * 100.0
+            
+            if (imbalance_duration >= MIN_IMBALANCE_DURATION_SEC and
                 metrics.valid_exchanges >= max(MIN_ASK_HEAVY, MIN_BID_HEAVY) and 
                 vol_per_min >= MIN_VOLUME and
                 (sym not in last_alert or (now - last_alert[sym]) >= ALERT_THROTTLE_SEC)):
@@ -716,6 +710,7 @@ def on_book(msg: dict):
                     "direction": direction,
                     "price": price,
                     "vol_per_min": vol_per_min,
+                    "range_cents": range_cents,
                     "exchanges": [EXCHANGE_MAP.get(ex, ex) for ex in metrics.per_venue.keys()]
                 }
                 alert_history[sym].append(alert)
@@ -734,10 +729,10 @@ def on_book(msg: dict):
                     inline_ok = inline_trader_dispatch(next_alert_id, alert)
                 if not inline_only_mode or not inline_ok:
                     c.execute(
-                        "INSERT INTO alerts (rowid, timestamp, symbol, ratio, total_bids, total_asks, heavy_venues, direction, price, vol_per_min) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        "INSERT INTO alerts (rowid, timestamp, symbol, ratio, total_bids, total_asks, heavy_venues, direction, price, vol_per_min, range_cents) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         (next_alert_id, alert["timestamp"], alert["symbol"], alert["ratio"], alert["total_bids"],
-                         alert["total_asks"], alert["heavy_venues"], alert["direction"], alert["price"], alert["vol_per_min"])
+                         alert["total_asks"], alert["heavy_venues"], alert["direction"], alert["price"], alert["vol_per_min"], alert["range_cents"])
                     )
                     conn.commit()
                 last_alert[sym] = now
@@ -921,7 +916,7 @@ async def main():
     c = conn.cursor()
     c.execute("PRAGMA table_info(alerts)")
     columns = [info[1] for info in c.fetchall()]
-    required_columns = {"timestamp", "symbol", "ratio", "total_bids", "total_asks", "heavy_venues", "direction", "price"}
+    required_columns = {"timestamp", "symbol", "ratio", "total_bids", "total_asks", "heavy_venues", "direction", "price", "range_cents"}
     if not all(col in columns for col in required_columns):
         c.execute("DROP TABLE IF EXISTS alerts")
         c.execute('''
@@ -934,7 +929,8 @@ async def main():
                 heavy_venues INTEGER,
                 direction TEXT,
                 price REAL,
-                vol_per_min REAL
+                vol_per_min REAL,
+                range_cents REAL
             )
         ''')
     inline_only_next_alert_id = (c.execute("SELECT IFNULL(MAX(rowid), 0) FROM alerts").fetchone() or [0])[0]
@@ -996,7 +992,9 @@ async def main():
                                 int(alert_id),
                                 alert["symbol"],
                                 alert["direction"],
+                                alert["direction"],
                                 float(alert["price"]),
+                                range_cents=float(alert.get("range_cents", 0.0))
                             ))
                         # Wait for all to complete
                         for future in concurrent.futures.as_completed(futures):
