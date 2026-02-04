@@ -418,6 +418,7 @@ class LiveTrader:
         self.trade_timestamps: list[float] = []
         self.trade_timestamps: list[float] = []
         self.position_entry_times: Dict[str, float] = {}
+        self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
         self.daily_pnl: float = 0.0
@@ -508,6 +509,7 @@ class LiveTrader:
             with self._lock:
                 self.positions = {k: int(v) for k, v in data.get("positions", {}).items()}
                 self.position_entry_times = {k: float(v) for k, v in data.get("position_entry_times", {}).items()}
+                self.last_exit_time = {k: float(v) for k, v in data.get("last_exit_time", {}).items()}
                 self.last_alert_id = int(data.get("last_alert_id", 0))
                 self.account_details = data.get("account_details", {})
             LOGGER.info("Loaded state: %s positions", len(self.positions))
@@ -521,6 +523,7 @@ class LiveTrader:
             payload = {
                 "positions": self.positions,
                 "position_entry_times": self.position_entry_times,
+                "last_exit_time": self.last_exit_time,
                 "last_alert_id": self.last_alert_id,
                 "account_details": self.account_details
             }
@@ -1124,6 +1127,19 @@ class LiveTrader:
         with self._lock:
             position = self.positions.get(symbol, 0)
 
+        # Cooldown check
+        cooldown_seconds = 30.0
+        last_exit = self.last_exit_time.get(symbol, 0)
+        if time.time() - last_exit < cooldown_seconds:
+            # We are in cooldown. Only allow logical exits?
+            # Actually, if we are in cooldown, it means we just exited.
+            # So we shouldn't be entering.
+            # But what if we are closing a position during cooldown? 
+            # (e.g. manual intervention or some other logic).
+            # The request is "wait 30s before trading the next alert".
+            # This usually implies ENTRY. Exits should always be allowed.
+            pass
+
         if direction == "ask-heavy":
             # Check if already short - skip to avoid stacking
             if position < 0:
@@ -1132,7 +1148,7 @@ class LiveTrader:
             
             # If currently long, close the long position first (use initial_entry_size)
             if position > 0:
-                LOGGER.info("Closing long position on %s before entering short", symbol)
+                LOGGER.info("Closing long position on %s (Exit Only - No Flip)", symbol)
                 # FORCE MARKET CLOSE FOR EXITS
                 self._submit_order(
                     alert_id=alert_id,
@@ -1143,6 +1159,15 @@ class LiveTrader:
                     price=price,
                     order_type="MARKET",
                 )
+                with self._lock:
+                    self.last_exit_time[symbol] = time.time()
+                return # EXIT ONLY - NO FLIP
+
+            # We are flat. Check Cooldown before Entry.
+            if time.time() - self.last_exit_time.get(symbol, 0) < cooldown_seconds:
+                 LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Short entry", 
+                             symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
+                 return
 
             # Now enter the short position
             # Use Default (Limit if configured)
@@ -1163,7 +1188,7 @@ class LiveTrader:
             
             # If currently short, close the short position first (use initial_entry_size)
             if position < 0:
-                LOGGER.info("Closing short position on %s before entering long", symbol)
+                LOGGER.info("Closing short position on %s (Exit Only - No Flip)", symbol)
                 # FORCE MARKET CLOSE FOR EXITS
                 self._submit_order(
                     alert_id=alert_id,
@@ -1174,6 +1199,15 @@ class LiveTrader:
                     price=price,
                     order_type="MARKET",
                 )
+                with self._lock:
+                    self.last_exit_time[symbol] = time.time()
+                return # EXIT ONLY - NO FLIP
+
+            # We are flat. Check Cooldown before Entry.
+            if time.time() - self.last_exit_time.get(symbol, 0) < cooldown_seconds:
+                 LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Long entry", 
+                             symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
+                 return
 
             # Now enter the long position
             # Use Default (Limit if configured)
