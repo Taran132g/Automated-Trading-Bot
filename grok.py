@@ -992,7 +992,6 @@ async def main():
                                 int(alert_id),
                                 alert["symbol"],
                                 alert["direction"],
-                                alert["direction"],
                                 float(alert["price"]),
                                 range_cents=float(alert.get("range_cents", 0.0))
                             ))
