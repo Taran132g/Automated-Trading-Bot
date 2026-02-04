@@ -1132,9 +1132,9 @@ class LiveTrader:
         # Volatility Filter (ENTRY ONLY)
         # If we are FLAT (position == 0) and range is too low, skip entry.
         # Exits are ALWAYS allowed (so if position != 0, we ignore this check).
-        if position == 0 and range_cents > 0 and range_cents <= self.min_range_cents:
-            LOGGER.info("Skipping entry for %s: Volatility range %.2fc <= %.2fc", symbol, range_cents, self.min_range_cents)
-            return
+        # if position == 0 and range_cents > 0 and range_cents <= self.min_range_cents:
+        #     LOGGER.info("Skipping entry for %s: Volatility range %.2fc <= %.2fc", symbol, range_cents, self.min_range_cents)
+        #     return
 
         # Cooldown check
         cooldown_seconds = 30.0
