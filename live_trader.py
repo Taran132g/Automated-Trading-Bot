@@ -427,7 +427,14 @@ class LiveTrader:
         self.consecutive_bad_fills: int = 0  # Track consecutive bad fills
         self.live_symbols = self._parse_live_symbols()
         self.account_details: Dict[str, float] = {}
+        self.account_details: Dict[str, float] = {}
         self.min_range_cents = int(os.getenv("MIN_RANGE_CENTS", "2"))
+        
+        # Penalty Box State
+        # Penalty Box State
+        self.consecutive_loss_cents: float = 0.0
+        self.loss_cooldown_until: float = 0.0
+        
         self._lock = threading.RLock()
 
         LOGGER.info("[%s] LiveTrader initialized (pos_size=%d, state=%s)", self.name, self.position_size, self.state_path)
@@ -513,6 +520,8 @@ class LiveTrader:
                 self.last_exit_time = {k: float(v) for k, v in data.get("last_exit_time", {}).items()}
                 self.last_alert_id = int(data.get("last_alert_id", 0))
                 self.account_details = data.get("account_details", {})
+                self.consecutive_loss_cents = float(data.get("consecutive_loss_cents", 0.0))
+                self.loss_cooldown_until = float(data.get("loss_cooldown_until", 0.0))
             LOGGER.info("Loaded state: %s positions", len(self.positions))
         except Exception as exc:
             LOGGER.warning("Failed to load state: %s", exc)
@@ -526,7 +535,9 @@ class LiveTrader:
                 "position_entry_times": self.position_entry_times,
                 "last_exit_time": self.last_exit_time,
                 "last_alert_id": self.last_alert_id,
-                "account_details": self.account_details
+                "account_details": self.account_details,
+                "consecutive_loss_cents": self.consecutive_loss_cents,
+                "loss_cooldown_until": self.loss_cooldown_until,
             }
         try:
             self.state_path.write_text(json.dumps(payload, indent=2))
@@ -703,10 +714,32 @@ class LiveTrader:
             
             # Calculate PnL for closing trades
             pnl = 0.0
+            per_share_pnl = 0.0
             if old_qty > 0 and side == "SELL":
                 pnl = (price - entry_price) * qty
+                per_share_pnl = price - entry_price
             elif old_qty < 0 and side == "COVER":
                 pnl = (entry_price - price) * qty
+                per_share_pnl = entry_price - price
+            
+            # Penalty Box Logic: Cumulative Loss Bucket
+            # Threshold: Cumulative loss of >= $0.02 per share in consecutive trades
+            if pnl != 0: # Only check closing trades
+                if per_share_pnl < 0:
+                    self.consecutive_loss_cents += abs(per_share_pnl)
+                    LOGGER.info("Loss detected ($%.4f/share). Cumulative Bucket: $%.4f", per_share_pnl, self.consecutive_loss_cents)
+                    
+                    if self.consecutive_loss_cents >= 0.02:
+                        self.loss_cooldown_until = time.time() + 120
+                        self.consecutive_loss_cents = 0.0 # Reset after penalty applied
+                        msg = f"🚨 PENALTY BOX TRIGGERED: Cumulative Loss >= $0.02/share. Cooldown for 2 minutes."
+                        LOGGER.warning(msg)
+                        print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
+                else:
+                    # Empathetic Reset: Any profitable trade resets the anxiety bucket
+                    if self.consecutive_loss_cents > 0:
+                        LOGGER.info("Win/Flat trade ($%.4f/share) resets cumulative loss bucket (was $%.4f)", per_share_pnl, self.consecutive_loss_cents)
+                    self.consecutive_loss_cents = 0.0
             
             # Update daily PnL
             today = time.strftime("%Y-%m-%d")
@@ -750,14 +783,27 @@ class LiveTrader:
         LOGGER.error("EMERGENCY STOP: %s", reason)
         try:
             self.executor.cancel_all_orders()
+            LOGGER.info("Cancelled all open orders. Waiting 2s for propagation...")
+            time.sleep(2.0)
         except Exception as exc:  # pragma: no cover - defensive
             LOGGER.warning("Failed to request cancel-all: %s", exc)
+
+        # FORCE RECONCILE: Ensure we know exactly what we have before trying to close it.
+        # This prevents "Boxed Position" errors caused by stale state or race conditions.
+        try:
+            self._reconcile_positions_on_startup()
+        except Exception as exc:
+            LOGGER.error("Failed to reconcile positions during shutdown: %s", exc)
+            # Fallback to cached positions if reconcile fails (risky but necessary)
 
         for symbol, qty in list(self.positions.items()):
             if qty == 0:
                 continue
             side = "SELL" if qty > 0 else "COVER"
             price = self._latest_price(symbol) or 0.0
+            
+            LOGGER.info("Flattening %s %s (Qty: %d) due to shutdown...", side, symbol, abs(qty))
+            
             self._submit_order(
                 alert_id=-1,
                 symbol=symbol,
@@ -765,6 +811,7 @@ class LiveTrader:
                 side=side,
                 qty=abs(qty),
                 price=price,
+                order_type="MARKET"  # Force MARKET for emergency exit
             )
 
         self._save_state()
@@ -1128,6 +1175,13 @@ class LiveTrader:
 
         with self._lock:
             position = self.positions.get(symbol, 0)
+
+        # Penalty Box Check: Block NEW ENTRIES if in cooldown
+        # Exits/Flips from existing positions are allowed.
+        if position == 0 and time.time() < self.loss_cooldown_until:
+             remaining = self.loss_cooldown_until - time.time()
+             LOGGER.warning("In 2-min Penalty Box (%.1fs left); skipping entry alert %s", remaining, alert_id)
+             return
 
         # Volatility Filter (ENTRY ONLY)
         # If we are FLAT (position == 0) and range is too low, skip entry.
