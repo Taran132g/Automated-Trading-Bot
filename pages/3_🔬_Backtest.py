@@ -154,6 +154,10 @@ def load_paper_data():
                 conn
             )
             if not data['trades'].empty:
+                # Ensure timestamp is numeric
+                data['trades']['timestamp'] = pd.to_numeric(data['trades']['timestamp'], errors='coerce')
+                data['trades'] = data['trades'].dropna(subset=['timestamp'])
+
                 data['trades']['datetime'] = pd.to_datetime(
                     data['trades']['timestamp'], unit='s', utc=True
                 ).dt.tz_convert('US/Eastern')
