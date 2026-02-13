@@ -148,3 +148,24 @@ To proceed with this research, we would need to:
 1.  **Enable "Snapshots"**: Start logging market state even when *no alert* is triggered (every 1-5 seconds) to build a background dataset.
 2.  **run_analysis.py**: Create a script to perform the "Feature Importance" analysis on your existing `live_trades` data (even if limited) to give you an initial "Weighting Report".
 
+
+## Training Data Recovery (Post-Reset)
+Since the main database was reset, we are recovering training data from the server's raw execution logs (`grok.log` ~8.6GB).
+
+### Extraction Status
+A script `extract_training_data.py` is running on the server to parse these logs into a clean CSV.
+- **Source**: `/root/taranveer-singh.github.io/grok.log`
+- **Output**: `/root/taranveer-singh.github.io/training_data.csv`
+- **Estimated Rows**: ~500,000+ examples
+
+### How to Download the Data
+Once the script finishes (check via `ssh root@157.245.8.48 "pgrep -f extract_training_data.py"` - if empty, it's done), run this locally:
+
+```bash
+scp root@157.245.8.48:~/taranveer-singh.github.io/training_data.csv ./training_data.csv
+```
+
+### Dataset Schema
+The CSV contains features and future targets:
+- **Features**: `ratio`, `total_bids`, `total_asks`, `heavy_venues`, `vol_per_min`, `imbalance_duration`
+- **Targets**: `change_10s`, `change_30s`, `change_60s` (Percentage price change after the alert)
