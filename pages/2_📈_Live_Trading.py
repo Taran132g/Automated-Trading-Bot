@@ -250,6 +250,10 @@ def load_live_data():
                 conn
             )
             if not data['account_history'].empty:
+                 # Ensure timestamp is numeric
+                data['account_history']['timestamp'] = pd.to_numeric(data['account_history']['timestamp'], errors='coerce')
+                data['account_history'] = data['account_history'].dropna(subset=['timestamp'])
+
                 data['account_history']['datetime'] = pd.to_datetime(
                     data['account_history']['timestamp'], unit='s', utc=True
                 ).dt.tz_convert('US/Eastern')
