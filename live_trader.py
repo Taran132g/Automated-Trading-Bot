@@ -67,6 +67,10 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+class BoxedPositionError(Exception):
+    """Raised when Schwab rejects an order due to a boxed position (Long + Short)."""
+    pass
+
 class SchwabOrderExecutor:
     """Thin wrapper around ``schwab-py`` order placement.
 
@@ -947,6 +951,15 @@ class LiveTrader:
                     self._check_fill_quality(side, actual_price)
         else:
             fill_status = "FAILED"
+            # CHECK FOR BOXED POSITION ERROR
+            err_msg = str(result.get("error") or "").lower()
+            if "boxed" in err_msg:
+                 LOGGER.warning("Boxed Position Error detected in result: %s", err_msg)
+                 raise BoxedPositionError(err_msg)
+
+            if "replacement" in str(result.get("error") or "").lower():
+                LOGGER.info("Order replaced (or similar status), treating as PENDING/FILLED for now.")
+                fill_status = "FILLED"
 
         if filled and filled_qty == 0:
             filled_qty = qty
@@ -999,6 +1012,11 @@ class LiveTrader:
         error = result.get("error")
         if error:
              LOGGER.error("Limit order submission failed: %s", error)
+             # CHECK FOR BOXED POSITION ERROR
+             err_msg = str(error).lower()
+             if "boxed" in err_msg:
+                  LOGGER.warning("Boxed Position Error detected in result: %s", err_msg)
+                  raise BoxedPositionError(err_msg)
              # Record failure
              self._record_order(
                 alert_id=alert_id,
@@ -1173,116 +1191,132 @@ class LiveTrader:
             LOGGER.info("Skipping live trade for %s (not in LIVE_SYMBOLS)", symbol)
             return
 
-        with self._lock:
-            position = self.positions.get(symbol, 0)
-
-        # Penalty Box Check: Block NEW ENTRIES if in cooldown
-        # Exits/Flips from existing positions are allowed.
-        if position == 0 and time.time() < self.loss_cooldown_until:
-             remaining = self.loss_cooldown_until - time.time()
-             LOGGER.warning("In 2-min Penalty Box (%.1fs left); skipping entry alert %s", remaining, alert_id)
-             return
-
-        # Volatility Filter (ENTRY ONLY)
-        # If we are FLAT (position == 0) and range is too low, skip entry.
-        # Exits are ALWAYS allowed (so if position != 0, we ignore this check).
-        # if position == 0 and range_cents > 0 and range_cents <= self.min_range_cents:
-        #     LOGGER.info("Skipping entry for %s: Volatility range %.2fc <= %.2fc", symbol, range_cents, self.min_range_cents)
-        #     return
-
-        # Cooldown check
-        cooldown_seconds = 30.0
-        last_exit = self.last_exit_time.get(symbol, 0)
-        if time.time() - last_exit < cooldown_seconds:
-            # We are in cooldown. Only allow logical exits?
-            # Actually, if we are in cooldown, it means we just exited.
-            # So we shouldn't be entering.
-            # But what if we are closing a position during cooldown? 
-            # (e.g. manual intervention or some other logic).
-            # The request is "wait 30s before trading the next alert".
-            # This usually implies ENTRY. Exits should always be allowed.
-            pass
-
-        if direction == "ask-heavy":
-            # Check if already short - skip to avoid stacking
-            if position < 0:
-                LOGGER.info("Already short %s; skip stacking", symbol)
-                return
-            
-            # If currently long, close the long position first (use initial_entry_size)
-            if position > 0:
-                LOGGER.info("Closing long position on %s (Exit Only - No Flip)", symbol)
-                # FORCE MARKET CLOSE FOR EXITS
-                self._submit_order(
-                    alert_id=alert_id,
-                    symbol=symbol,
-                    direction=direction,
-                    side="SELL",
-                    qty=self.initial_entry_size,
-                    price=price,
-                    order_type="MARKET",
-                )
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
                 with self._lock:
-                    self.last_exit_time[symbol] = time.time()
-                return # EXIT ONLY - NO FLIP
+                    position = self.positions.get(symbol, 0)
 
-            # We are flat. Check Cooldown before Entry.
-            if time.time() - self.last_exit_time.get(symbol, 0) < cooldown_seconds:
-                 LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Short entry", 
-                             symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
-                 return
+                # Penalty Box Check: Block NEW ENTRIES if in cooldown
+                # Exits/Flips from existing positions are allowed.
+                if position == 0 and time.time() < self.loss_cooldown_until:
+                     remaining = self.loss_cooldown_until - time.time()
+                     LOGGER.warning("In 2-min Penalty Box (%.1fs left); skipping entry alert %s", remaining, alert_id)
+                     return
 
-            # Now enter the short position
-            # Use Default (Limit if configured)
-            self._submit_order(
-                alert_id=alert_id,
-                symbol=symbol,
-                direction=direction,
-                side="SHORT",
-                qty=self.initial_entry_size,
-                price=price,
-                order_type="LIMIT",
-            )
-        elif direction == "bid-heavy":
-            # Check if already long - skip to avoid stacking
-            if position > 0:
-                LOGGER.info("Already long %s; skip stacking", symbol)
-                return
+                # Volatility Filter (ENTRY ONLY)
+                # If we are FLAT (position == 0) and range is too low, skip entry.
+                # Exits are ALWAYS allowed (so if position != 0, we ignore this check).
+                # if position == 0 and range_cents > 0 and range_cents <= self.min_range_cents:
+                #     LOGGER.info("Skipping entry for %s: Volatility range %.2fc <= %.2fc", symbol, range_cents, self.min_range_cents)
+                #     return
+
+                # Cooldown check
+                cooldown_seconds = 30.0
+                last_exit = self.last_exit_time.get(symbol, 0)
+                if time.time() - last_exit < cooldown_seconds:
+                    # We are in cooldown. Only allow logical exits?
+                    # Actually, if we are in cooldown, it means we just exited.
+                    # So we shouldn't be entering.
+                    # But what if we are closing a position during cooldown? 
+                    # (e.g. manual intervention or some other logic).
+                    # The request is "wait 30s before trading the next alert".
+                    # This usually implies ENTRY. Exits should always be allowed.
+                    pass
+
+                if direction == "ask-heavy":
+                    # Check if already short - skip to avoid stacking
+                    if position < 0:
+                        LOGGER.info("Already short %s; skip stacking", symbol)
+                        return
+                    
+                    # If currently long, close the long position first (use initial_entry_size)
+                    if position > 0:
+                        LOGGER.info("Closing long position on %s (Exit Only - No Flip)", symbol)
+                        # FORCE MARKET CLOSE FOR EXITS
+                        self._submit_order(
+                            alert_id=alert_id,
+                            symbol=symbol,
+                            direction=direction,
+                            side="SELL",
+                            qty=self.initial_entry_size,
+                            price=price,
+                            order_type="MARKET",
+                        )
+                        with self._lock:
+                            self.last_exit_time[symbol] = time.time()
+                        return # EXIT ONLY - NO FLIP
+
+                    # We are flat. Check Cooldown before Entry.
+                    if time.time() - self.last_exit_time.get(symbol, 0) < cooldown_seconds:
+                         LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Short entry", 
+                                     symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
+                         return
+
+                    # Now enter the short position
+                    # Use Default (Limit if configured)
+                    self._submit_order(
+                        alert_id=alert_id,
+                        symbol=symbol,
+                        direction=direction,
+                        side="SHORT",
+                        qty=self.initial_entry_size,
+                        price=price,
+                        order_type="LIMIT",
+                    )
+                elif direction == "bid-heavy":
+                    # Check if already long - skip to avoid stacking
+                    if position > 0:
+                        LOGGER.info("Already long %s; skip stacking", symbol)
+                        return
+                    
+                    # If currently short, close the short position first (use initial_entry_size)
+                    if position < 0:
+                        LOGGER.info("Closing short position on %s (Exit Only - No Flip)", symbol)
+                        # FORCE MARKET CLOSE FOR EXITS
+                        self._submit_order(
+                            alert_id=alert_id,
+                            symbol=symbol,
+                            direction=direction,
+                            side="COVER",
+                            qty=self.initial_entry_size,
+                            price=price,
+                            order_type="MARKET",
+                        )
+                        with self._lock:
+                            self.last_exit_time[symbol] = time.time()
+                        return # EXIT ONLY - NO FLIP
+
+                    # We are flat. Check Cooldown before Entry.
+                    if time.time() - self.last_exit_time.get(symbol, 0) < cooldown_seconds:
+                         LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Long entry", 
+                                     symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
+                         return
+
+                    # Now enter the long position
+                    # Use Default (Limit if configured)
+                    self._submit_order(
+                        alert_id=alert_id,
+                        symbol=symbol,
+                        direction=direction,
+                        side="BUY",
+                        qty=self.initial_entry_size,
+                        price=price,
+                        order_type="LIMIT",
+                    )
+                
+                # If successful, break out of retry loop
+                break 
             
-            # If currently short, close the short position first (use initial_entry_size)
-            if position < 0:
-                LOGGER.info("Closing short position on %s (Exit Only - No Flip)", symbol)
-                # FORCE MARKET CLOSE FOR EXITS
-                self._submit_order(
-                    alert_id=alert_id,
-                    symbol=symbol,
-                    direction=direction,
-                    side="COVER",
-                    qty=self.initial_entry_size,
-                    price=price,
-                    order_type="MARKET",
-                )
-                with self._lock:
-                    self.last_exit_time[symbol] = time.time()
-                return # EXIT ONLY - NO FLIP
-
-            # We are flat. Check Cooldown before Entry.
-            if time.time() - self.last_exit_time.get(symbol, 0) < cooldown_seconds:
-                 LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Long entry", 
-                             symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
-                 return
-
-            # Now enter the long position
-            # Use Default (Limit if configured)
-            self._submit_order(
-                alert_id=alert_id,
-                symbol=symbol,
-                direction=direction,
-                side="BUY",
-                qty=self.initial_entry_size,
-                price=price,
-                order_type="LIMIT",
-            )
+            except BoxedPositionError as e:
+                LOGGER.warning("Boxed Position Error caught: %s. Attempt %d/%d. Reconciling and retrying...", e, attempt + 1, max_retries)
+                self._reconcile_positions_on_startup()
+                time.sleep(1.0) # Give broker a moment to update
+                if attempt == max_retries - 1:
+                    LOGGER.error("Max retries reached for Boxed Position Error. Skipping alert %s.", alert_id)
+            except Exception as e:
+                LOGGER.error("An unexpected error occurred in _handle_alert for alert %s: %s", alert_id, e)
+                break # Don't retry for other unexpected errors
 
     def process_alert(
         self,
