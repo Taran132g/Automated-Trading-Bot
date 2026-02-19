@@ -104,13 +104,14 @@ def load_live_positions():
 
 def is_backend_running():
     """Check if backend processes are running."""
-    result = subprocess.run(["pgrep", "-f", "grok.py"], capture_output=True)
-    return result.returncode == 0
+    # Check for either the restart loop or grok.py directly
+    loop_result = subprocess.run(["pgrep", "-f", "restart_loop.sh"], capture_output=True)
+    grok_result = subprocess.run(["pgrep", "-f", "grok.py"], capture_output=True)
+    return loop_result.returncode == 0 or grok_result.returncode == 0
 
 def start_backend():
-    """Start the backend processes."""
+    """Start the backend via restart loop (auto-restarts on crash)."""
     try:
-        # Get project root (parent of pages/)
         project_root = Path(__file__).parent.parent.resolve()
         
         # Remove kill switch if exists
@@ -118,28 +119,28 @@ def start_backend():
         if kill_switch.exists():
             kill_switch.unlink()
         
-        # Start backend directly (grok.py manages paper_trader)
-        # Redirect output to grok.log
-        log_path = project_root / "grok.log"
-        import sys
-        with open(log_path, "a") as log_file:
-            subprocess.Popen(
-                [sys.executable, "grok.py"], 
-                stdout=log_file, 
-                stderr=subprocess.STDOUT,
-                cwd=str(project_root),
-                start_new_session=True
-            )
-        return "✅ Backend starting..."
+        # Start via manage_backend.sh which launches the restart loop
+        loop_script = project_root / "restart_loop.sh"
+        loop_script.chmod(0o755)
+        
+        subprocess.Popen(
+            ["bash", str(loop_script)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=str(project_root),
+            start_new_session=True
+        )
+        return "✅ Backend starting (auto-restart enabled)..."
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
 def stop_backend():
-    """Stop the backend processes."""
+    """Stop the backend — kills restart loop + all processes."""
     try:
-        # grok.py handles paper_trader shutdown on exit
+        # Kill the restart loop first
+        subprocess.run(["pkill", "-f", "restart_loop.sh"], capture_output=True)
+        # Then kill grok and paper trader
         subprocess.run(["pkill", "-f", "grok.py"], capture_output=True)
-        # Ensure paper_trader is gone (safety net)
         subprocess.run(["pkill", "-f", "paper_trader.py"], capture_output=True)
         
         Path("kill_switch.flag").touch()
