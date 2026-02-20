@@ -1230,16 +1230,17 @@ class LiveTrader:
                         LOGGER.info("Already short %s; skip stacking", symbol)
                         return
                     
-                    # If currently long, close the long position first (use initial_entry_size)
+                    # If currently long, close the long position first (use actual position size)
                     if position > 0:
-                        LOGGER.info("Closing long position on %s (Exit Only - No Flip)", symbol)
+                        close_qty = abs(position)
+                        LOGGER.info("Closing long position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
                         # FORCE MARKET CLOSE FOR EXITS
                         self._submit_order(
                             alert_id=alert_id,
                             symbol=symbol,
                             direction=direction,
                             side="SELL",
-                            qty=self.initial_entry_size,
+                            qty=close_qty,
                             price=price,
                             order_type="MARKET",
                         )
@@ -1270,16 +1271,17 @@ class LiveTrader:
                         LOGGER.info("Already long %s; skip stacking", symbol)
                         return
                     
-                    # If currently short, close the short position first (use initial_entry_size)
+                    # If currently short, close the short position first (use actual position size)
                     if position < 0:
-                        LOGGER.info("Closing short position on %s (Exit Only - No Flip)", symbol)
+                        close_qty = abs(position)
+                        LOGGER.info("Closing short position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
                         # FORCE MARKET CLOSE FOR EXITS
                         self._submit_order(
                             alert_id=alert_id,
                             symbol=symbol,
                             direction=direction,
                             side="COVER",
-                            qty=self.initial_entry_size,
+                            qty=close_qty,
                             price=price,
                             order_type="MARKET",
                         )
