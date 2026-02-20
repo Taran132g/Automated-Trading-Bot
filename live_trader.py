@@ -463,6 +463,7 @@ class LiveTrader:
         self.trade_timestamps: list[float] = []
         self.trade_timestamps: list[float] = []
         self.position_entry_times: Dict[str, float] = {}
+        self.last_entry_attempt: Dict[str, float] = {}  # Cooldown after failed limit entries
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
@@ -1295,9 +1296,16 @@ class LiveTrader:
                                      symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
                          return
 
+                    # Check entry attempt cooldown (prevents rapid re-entry after failed limit)
+                    entry_cooldown = 10.0
+                    if time.time() - self.last_entry_attempt.get(symbol, 0) < entry_cooldown:
+                        LOGGER.info("Entry attempt cooldown for %s (%.1fs remaining); skipping",
+                                    symbol, entry_cooldown - (time.time() - self.last_entry_attempt.get(symbol, 0)))
+                        return
+
                     # Now enter the short position
-                    # Use Default (Limit if configured)
-                    self._submit_order(
+                    self.last_entry_attempt[symbol] = time.time()
+                    filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
                         direction=direction,
@@ -1306,6 +1314,8 @@ class LiveTrader:
                         price=price,
                         order_type="LIMIT",
                     )
+                    if filled:
+                        self.last_entry_attempt.pop(symbol, None)  # Clear on success
                 elif direction == "bid-heavy":
                     # Check if already long - skip to avoid stacking
                     if position > 0:
@@ -1336,9 +1346,16 @@ class LiveTrader:
                                      symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
                          return
 
+                    # Check entry attempt cooldown (prevents rapid re-entry after failed limit)
+                    entry_cooldown = 10.0
+                    if time.time() - self.last_entry_attempt.get(symbol, 0) < entry_cooldown:
+                        LOGGER.info("Entry attempt cooldown for %s (%.1fs remaining); skipping",
+                                    symbol, entry_cooldown - (time.time() - self.last_entry_attempt.get(symbol, 0)))
+                        return
+
                     # Now enter the long position
-                    # Use Default (Limit if configured)
-                    self._submit_order(
+                    self.last_entry_attempt[symbol] = time.time()
+                    filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
                         direction=direction,
@@ -1347,6 +1364,8 @@ class LiveTrader:
                         price=price,
                         order_type="LIMIT",
                     )
+                    if filled:
+                        self.last_entry_attempt.pop(symbol, None)  # Clear on success
                 
                 # If successful, break out of retry loop
                 break 
