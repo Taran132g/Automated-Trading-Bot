@@ -365,24 +365,65 @@ class SchwabOrderExecutor:
         return self._send(builder, symbol=symbol, side=side.upper(), qty=qty)
 
     def cancel_all_orders(self) -> bool:
-        """Attempt to cancel all open orders on the account."""
-
+        """Cancel all open/working orders on the account.
+        
+        Tries native cancel_all first; falls back to fetching all orders
+        and cancelling each WORKING one individually.
+        """
         if self.dry_run:
             LOGGER.info("[DRY-RUN] Skip cancel_all_orders")
             return True
 
+        # Try native cancel_all first
         cancel_all = getattr(self.client, "cancel_all_orders", None)
-        if cancel_all is None:
-            LOGGER.warning("Schwab client does not expose cancel_all_orders; skipping")
+        if cancel_all is not None:
+            try:
+                cancel_all(self.account_id)
+                LOGGER.info("Cancel-all request sent (native)")
+                return True
+            except Exception as exc:
+                LOGGER.warning("Native cancel_all failed: %s. Falling back to individual cancels.", exc)
+
+        # Fallback: fetch all orders and cancel each WORKING one
+        get_orders = getattr(self.client, "get_orders_for_account", None) or getattr(self.client, "get_orders", None)
+        if get_orders is None:
+            LOGGER.warning("Schwab client does not expose get_orders; cannot cancel working orders")
             return False
 
         try:
-            cancel_all(self.account_id)
-            LOGGER.info("Cancel-all request sent")
-            return True
-        except Exception as exc:  # pragma: no cover - network interaction
-            LOGGER.error("Failed to cancel all orders: %s", exc)
+            from datetime import datetime, timedelta
+            # Fetch today's orders
+            now = datetime.utcnow()
+            start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            response = get_orders(self.account_id, from_entered_datetime=start, to_entered_datetime=now)
+            orders = response.json() if hasattr(response, "json") else response
+        except Exception as exc:
+            LOGGER.error("Failed to fetch orders for cancel-all fallback: %s", exc)
             return False
+
+        if not isinstance(orders, list):
+            LOGGER.warning("Unexpected orders response type: %s", type(orders))
+            return False
+
+        cancelled_count = 0
+        cancel_one = getattr(self.client, "cancel_order", None)
+        if cancel_one is None:
+            LOGGER.warning("Schwab client does not expose cancel_order; cannot cancel")
+            return False
+
+        for order in orders:
+            status = (order.get("status") or "").upper()
+            order_id = order.get("orderId")
+            if status in ("WORKING", "QUEUED", "PENDING_ACTIVATION", "ACCEPTED") and order_id:
+                try:
+                    cancel_one(order_id, self.account_id)
+                    LOGGER.info("Cancelled order %s (was %s)", order_id, status)
+                    cancelled_count += 1
+                except Exception as exc:
+                    LOGGER.warning("Failed to cancel order %s: %s", order_id, exc)
+
+        LOGGER.info("Cancel-all fallback complete: cancelled %d orders", cancelled_count)
+        return True
 
 
 class LiveTrader:
