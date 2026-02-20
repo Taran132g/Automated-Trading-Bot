@@ -1091,9 +1091,9 @@ class LiveTrader:
                  result["filled_qty"] = 0
              
         else:
-            # Still Open (WORKING, QUEUED, etc) -> CANCEL IT
-            LOGGER.info("Order %s not filled (Status: %s). Cancelling...", order_id, order_status)
-            cancel_success = self.executor.cancel_order(order_id)
+            # Still Open (WORKING, QUEUED, etc) -> CANCEL ALL WORKING ORDERS
+            LOGGER.info("Order %s not filled (Status: %s). Cancelling ALL working orders...", order_id, order_status)
+            cancel_success = self.executor.cancel_all_orders()
             
             if cancel_success:
                 LOGGER.info("Order %s cancelled request sent. Verifying final status...", order_id)
