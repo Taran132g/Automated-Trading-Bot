@@ -655,15 +655,18 @@ def on_book(msg: dict):
         })
         direction = None
         
-        # Dynamic L2 threshold by time of day (UTC)
-        # 3-4pm EST (hour 20 UTC) = power hour -> lower threshold
-        # 12-2pm EST (hours 17-18 UTC) = lunch lull -> higher threshold
+        # Dynamic L2 threshold by time of day (UTC hours, server is UTC)
+        # EST = UTC - 5
+        # 10-12pm EST (15-16 UTC) = default threshold 4
+        # 12-2pm  EST (17-18 UTC) = lunch lull -> raise to 5
+        # 2-3pm   EST (19 UTC)    = default threshold 4
+        # 3-4pm   EST (20 UTC)    = power hour -> lower to 3
         imbalance_threshold = 4
         current_hour = datetime.fromtimestamp(now).hour
-        if current_hour == 15:
-            imbalance_threshold = 3   # 10-11am EST: lower for open momentum
+        if current_hour == 20:
+            imbalance_threshold = 3   # 3-4pm EST: power hour, institutional flow
         elif current_hour in (17, 18):
-            imbalance_threshold = 5   # 12-2pm EST: raise to filter lunch noise
+            imbalance_threshold = 5   # 12-2pm EST: lunch lull, filter noise
 
         if not DISABLE_BID_HEAVY and metrics.bid_heavy_venues >= metrics.ask_heavy_venues + imbalance_threshold:
             direction = "bid-heavy"
