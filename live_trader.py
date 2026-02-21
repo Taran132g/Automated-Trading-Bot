@@ -466,6 +466,7 @@ class LiveTrader:
         self.last_entry_attempt: Dict[str, float] = {}  # Cooldown after failed limit entries
         self.recent_pi: list[float] = []  # Rolling PI per share for last 5 trades
         self.pi_cooldown_until: float = 0.0  # Timestamp when PI cooldown ends
+        self.pending_limit_orders: Dict[str, str] = {}  # symbol -> order_id (prevent duplicates)
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
@@ -1051,6 +1052,13 @@ class LiveTrader:
         self, *, alert_id: int, symbol: str, direction: str, side: str, qty: int, price: Optional[float] = None
     ) -> bool:
         """Submit a limit order at Bid/Ask and cancel if not filled within timeout."""
+
+        # Dedup guard: skip if there's already a pending limit order for this symbol
+        existing = self.pending_limit_orders.get(symbol)
+        if existing:
+            LOGGER.info("Limit order %s already pending for %s; skipping duplicate", existing, symbol)
+            return False
+
         limit_price = 0.0
 
         # Preference 1: Use passed price if valid
@@ -1121,114 +1129,116 @@ class LiveTrader:
              LOGGER.error("No order_id returned for limit order")
              return False
 
-        # Wait and Poll
-        LOGGER.info("Waiting %.1fs for fill on order %s...", self.limit_poll_interval, order_id)
-        time.sleep(self.limit_poll_interval)
-        
-        status = self.executor.fetch_order_status(order_id)
-        order_status = status.get("status", "").upper()
-        filled_qty = status.get("filled_quantity") or 0
-        avg_price = status.get("avg_fill_price")
-        
-        LOGGER.info("Order %s status: %s (Filled: %s)", order_id, order_status, filled_qty)
+        # Track this as a pending order to prevent duplicates
+        self.pending_limit_orders[symbol] = order_id
 
-        final_filled = False
+        try:
+            # Wait and Poll
+            LOGGER.info("Waiting %.1fs for fill on order %s...", self.limit_poll_interval, order_id)
+            time.sleep(self.limit_poll_interval)
         
-        if order_status in {"FILLED", "EXPIRED"} or filled_qty == qty:
-            # Filled!
-            final_filled = True
-            realized_price = float(avg_price) if avg_price else limit_price
-            # Use actual filled qty if available, otherwise assume full qty if status is FILLED
-            actual_fill = int(filled_qty) if filled_qty > 0 else qty
-            self._record_fill(symbol=symbol, side=side, qty=actual_fill, price=realized_price)
-            result["fill_status"] = "FILLED"
-            result["filled_qty"] = actual_fill
-            
-            # Calculate PI on limit fill
-            # PI = how much better we filled vs where we would have filled at market
-            # For limit buys at bid, PI = ask - fill_price (we bought below the ask)
-            # For limit sells at ask, PI = fill_price - bid (we sold above the bid)
-            quote = self.executor.fetch_quote(symbol)
-            if quote:
-                quoted_bid = float(quote.get("bidPrice", 0))
-                quoted_ask = float(quote.get("askPrice", 0))
-                if side in ("BUY", "COVER") and quoted_ask > 0:
-                    pi = quoted_ask - realized_price
-                    self._record_pi(max(pi, 0.0))
-                elif side in ("SELL", "SHORT") and quoted_bid > 0:
-                    pi = realized_price - quoted_bid
-                    self._record_pi(max(pi, 0.0))
+            status = self.executor.fetch_order_status(order_id)
+            order_status = status.get("status", "").upper()
+            filled_qty = status.get("filled_quantity") or 0
+            avg_price = status.get("avg_fill_price")
         
-        elif order_status in {"CANCELED", "REJECTED"}:
-             LOGGER.warning("Order %s was already %s", order_id, order_status)
-             # Even if canceled, check if there was partial fill
-             if filled_qty > 0:
-                 realized_price = float(avg_price) if avg_price else limit_price
-                 self._record_fill(symbol=symbol, side=side, qty=int(filled_qty), price=realized_price)
-                 result["fill_status"] = "PARTIAL_CANCELED"
-                 result["filled_qty"] = int(filled_qty)
-             else:
-                 result["fill_status"] = order_status
-                 result["filled_qty"] = 0
-             
-        else:
-            # Still Open (WORKING, QUEUED, etc) -> CANCEL ALL WORKING ORDERS
-            LOGGER.info("Order %s not filled (Status: %s). Cancelling ALL working orders...", order_id, order_status)
-            cancel_success = self.executor.cancel_all_orders()
+            LOGGER.info("Order %s status: %s (Filled: %s)", order_id, order_status, filled_qty)
+
+            final_filled = False
+        
+            if order_status in {"FILLED", "EXPIRED"} or filled_qty == qty:
+                # Filled!
+                final_filled = True
+                realized_price = float(avg_price) if avg_price else limit_price
+                # Use actual filled qty if available, otherwise assume full qty if status is FILLED
+                actual_fill = int(filled_qty) if filled_qty > 0 else qty
+                self._record_fill(symbol=symbol, side=side, qty=actual_fill, price=realized_price)
+                result["fill_status"] = "FILLED"
+                result["filled_qty"] = actual_fill
             
-            if cancel_success:
-                LOGGER.info("Order %s cancelled request sent. Verifying final status...", order_id)
-                time.sleep(1.0) # Give Schwab a moment to process the cancel vs fill race
-                final_status = self.executor.fetch_order_status(order_id)
-                final_state = final_status.get("status", "").upper()
-                final_filled_qty = final_status.get("filled_quantity") or 0
-                
-                # Update logic: Handle ANY fill amount, full or partial
-                if final_filled_qty > 0:
-                     LOGGER.warning("Order %s had fill qty %s after cancel!", order_id, final_filled_qty)
-                     final_filled = True # Consider it "filled" (at least partially) for return value purposes? 
-                     # Actually return True usually implies "Action Complete", partial might be tricky. 
-                     # But for "did we do something", yes.
-                     avg_price = final_status.get("avg_fill_price")
+                # Calculate PI on limit fill
+                quote = self.executor.fetch_quote(symbol)
+                if quote:
+                    quoted_bid = float(quote.get("bidPrice", 0))
+                    quoted_ask = float(quote.get("askPrice", 0))
+                    if side in ("BUY", "COVER") and quoted_ask > 0:
+                        pi = quoted_ask - realized_price
+                        self._record_pi(max(pi, 0.0))
+                    elif side in ("SELL", "SHORT") and quoted_bid > 0:
+                        pi = realized_price - quoted_bid
+                        self._record_pi(max(pi, 0.0))
+        
+            elif order_status in {"CANCELED", "REJECTED"}:
+                 LOGGER.warning("Order %s was already %s", order_id, order_status)
+                 # Even if canceled, check if there was partial fill
+                 if filled_qty > 0:
                      realized_price = float(avg_price) if avg_price else limit_price
-                     self._record_fill(symbol=symbol, side=side, qty=int(final_filled_qty), price=realized_price)
-                     
-                     if final_filled_qty >= qty:
-                         result["fill_status"] = "FILLED"
-                     else:
-                         result["fill_status"] = "PARTIAL_CANCELED"
-                     result["filled_qty"] = int(final_filled_qty)
-                else:
-                     LOGGER.info("Order %s confirmed cancelled (Status: %s)", order_id, final_state)
-                     result["fill_status"] = "CANCELED_TIMEOUT"
+                     self._record_fill(symbol=symbol, side=side, qty=int(filled_qty), price=realized_price)
+                     result["fill_status"] = "PARTIAL_CANCELED"
+                     result["filled_qty"] = int(filled_qty)
+                 else:
+                     result["fill_status"] = order_status
                      result["filled_qty"] = 0
+             
             else:
-                # If cancel failed, it might have just filled?
-                # Re-check status one last time?
-                LOGGER.warning("Failed to cancel order %s. Re-checking status...", order_id)
-                status = self.executor.fetch_order_status(order_id)
-                last_filled = status.get("filled_quantity") or 0
+                # Still Open (WORKING, QUEUED, etc) -> CANCEL ALL WORKING ORDERS
+                LOGGER.info("Order %s not filled (Status: %s). Cancelling ALL working orders...", order_id, order_status)
+                cancel_success = self.executor.cancel_all_orders()
+            
+                if cancel_success:
+                    LOGGER.info("Order %s cancelled request sent. Verifying final status...", order_id)
+                    time.sleep(1.0) # Give Schwab a moment to process the cancel vs fill race
+                    final_status = self.executor.fetch_order_status(order_id)
+                    final_state = final_status.get("status", "").upper()
+                    final_filled_qty = final_status.get("filled_quantity") or 0
                 
-                if last_filled > 0:
-                     final_filled = True
-                     avg_price = status.get("avg_fill_price")
-                     realized_price = float(avg_price) if avg_price else limit_price
-                     self._record_fill(symbol=symbol, side=side, qty=int(last_filled), price=realized_price)
-                     result["fill_status"] = "FILLED" if last_filled >= qty else "PARTIAL_UNK"
-                     result["filled_qty"] = int(last_filled)
+                    # Update logic: Handle ANY fill amount, full or partial
+                    if final_filled_qty > 0:
+                         LOGGER.warning("Order %s had fill qty %s after cancel!", order_id, final_filled_qty)
+                         final_filled = True
+                         avg_price = final_status.get("avg_fill_price")
+                         realized_price = float(avg_price) if avg_price else limit_price
+                         self._record_fill(symbol=symbol, side=side, qty=int(final_filled_qty), price=realized_price)
+                     
+                         if final_filled_qty >= qty:
+                             result["fill_status"] = "FILLED"
+                         else:
+                             result["fill_status"] = "PARTIAL_CANCELED"
+                         result["filled_qty"] = int(final_filled_qty)
+                    else:
+                         LOGGER.info("Order %s confirmed cancelled (Status: %s)", order_id, final_state)
+                         result["fill_status"] = "CANCELED_TIMEOUT"
+                         result["filled_qty"] = 0
                 else:
-                     result["fill_status"] = "CANCEL_FAILED"
+                    # If cancel failed, it might have just filled?
+                    LOGGER.warning("Failed to cancel order %s. Re-checking status...", order_id)
+                    status = self.executor.fetch_order_status(order_id)
+                    last_filled = status.get("filled_quantity") or 0
+                
+                    if last_filled > 0:
+                         final_filled = True
+                         avg_price = status.get("avg_fill_price")
+                         realized_price = float(avg_price) if avg_price else limit_price
+                         self._record_fill(symbol=symbol, side=side, qty=int(last_filled), price=realized_price)
+                         result["fill_status"] = "FILLED" if last_filled >= qty else "PARTIAL_UNK"
+                         result["filled_qty"] = int(last_filled)
+                    else:
+                         result["fill_status"] = "CANCEL_FAILED"
         
-        self._record_order(
-            alert_id=alert_id,
-            symbol=symbol,
-            direction=direction,
-            side=side,
-            qty=qty,
-            price=limit_price,
-            result=result,
-        )
-        return final_filled
+            self._record_order(
+                alert_id=alert_id,
+                symbol=symbol,
+                direction=direction,
+                side=side,
+                qty=qty,
+                price=limit_price,
+                result=result,
+            )
+            return final_filled
+
+        finally:
+            # Always clear pending order when done (even on exception)
+            self.pending_limit_orders.pop(symbol, None)
 
     def _submit_order(
         self,
