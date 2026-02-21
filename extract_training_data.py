@@ -7,9 +7,13 @@ not just ALERT rows. This gives us:
   - Alert rows (market data just before a trade fired) -> alert=1
 
 For each row we look forward in time (per symbol) to compute:
-  change_10s, change_30s, change_60s  (fractional price change, e.g. 0.0035 = +0.35%)
+  change_10s, change_30s, change_60s  (fractional price change)
 
-These three columns become the regression target(s) in train_model.py.
+MEMORY-SAFE: Uses a two-pass streaming approach so it can process
+logs with 50M+ lines on a 2GB server without crashing.
+
+  Pass 1: Build compact price timeline + alert set (lightweight dicts)
+  Pass 2: Stream IMBALANCE_DEBUG rows and write CSV directly
 
 Run on the server:
   python3 extract_training_data.py
@@ -18,27 +22,77 @@ Run on the server:
 import json
 import csv
 import sys
+import bisect
 from collections import defaultdict
+from datetime import datetime
 
 LOG_FILE  = "grok.log"
 OUT_FILE  = "training_data.csv"
 
 LOOKAHEAD = [10, 30, 60]   # seconds to look forward for price change
 
-# ── Parse ────────────────────────────────────────────────────────────────────
 
-def parse_log(path: str):
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _parse_ts(raw_line: str, brace_pos: int) -> float:
+    """Parse timestamp from log prefix. Returns 0.0 on failure."""
+    try:
+        # "2026-02-20 16:07:57,688 - INFO - {json...}"
+        # grab the datetime part before " - INFO"
+        prefix = raw_line[:brace_pos]
+        dash_info = prefix.find(" - ")
+        if dash_info > 0:
+            dt_str = prefix[:dash_info].strip()
+        else:
+            dt_str = prefix.strip()
+        return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S,%f").timestamp()
+    except Exception:
+        return 0.0
+
+
+def price_at(timeline_ts, timeline_px, target_ts):
+    """Binary search for the closest price at or after target_ts."""
+    idx = bisect.bisect_left(timeline_ts, target_ts)
+    if idx < len(timeline_ts):
+        return timeline_px[idx]
+    return None
+
+
+# ── Pass 1: Build price timeline + alert set (low memory) ───────────────────
+
+def pass1_build_indexes(path: str):
     """
-    Yield dicts for every IMBALANCE_DEBUG and ALERT line in the log.
-    Each dict has keys: ts (float), event (str), plus all JSON payload fields.
+    Stream through the entire log once. Only store:
+      - price_ts[symbol] = [timestamps...]  (sorted)
+      - price_px[symbol] = [prices...]       (parallel array)
+      - alert_set = set of (symbol, rounded_ts)
+
+    Each entry is just a float + float = ~16 bytes.
+    Even 5M price points = ~80MB — fits in 2GB easily.
     """
+    price_ts = defaultdict(list)     # symbol -> [ts, ts, ...]
+    price_px = defaultdict(list)     # symbol -> [price, price, ...]
+    alert_set = set()                # (symbol, rounded_ts)
+
+    row_count = 0
+    relevant_count = 0
+
+    print(f"Pass 1: Building price timeline from {path} ...")
+
     with open(path, "r", errors="replace") as fh:
         for raw in fh:
-            # Log format: "2024-01-15 10:00:01,123 - INFO - {json}"
-            # Find the first '{' to locate the JSON payload
+            row_count += 1
+            if row_count % 5_000_000 == 0:
+                print(f"  ... scanned {row_count:,} lines  ({relevant_count:,} relevant)")
+
             brace = raw.find("{")
             if brace == -1:
                 continue
+
+            # Quick pre-filter before JSON parse (much faster)
+            if "IMBALANCE_DEBUG" not in raw and "ALERT" not in raw:
+                continue
+
             try:
                 payload = json.loads(raw[brace:])
             except json.JSONDecodeError:
@@ -48,118 +102,96 @@ def parse_log(path: str):
             if event not in ("IMBALANCE_DEBUG", "ALERT"):
                 continue
 
-            # Parse timestamp from the log prefix  "2024-01-15 10:00:01,123"
-            prefix = raw[:brace].strip(" -\t")
-            try:
-                # Remove trailing " - INFO" / " - WARNING" etc.
-                dt_part = prefix.split("-")[0].strip()
-                from datetime import datetime
-                ts = datetime.strptime(dt_part, "%Y-%m-%d %H:%M:%S,%f").timestamp()
-            except Exception:
-                ts = 0.0
+            relevant_count += 1
+            ts = _parse_ts(raw, brace)
+            sym = payload.get("symbol") or payload.get("sym", "")
+            price = payload.get("price", 0.0)
 
-            payload["_ts"] = ts
-            yield payload
+            if sym and price and ts:
+                price_ts[sym].append(ts)
+                price_px[sym].append(price)
+
+            if event == "ALERT" and sym and ts:
+                alert_set.add((sym, round(ts, 1)))
+
+    print(f"  Pass 1 complete: {row_count:,} lines scanned, {relevant_count:,} relevant")
+    for sym in sorted(price_ts):
+        print(f"    {sym}: {len(price_ts[sym]):,} price points")
+    print(f"    Alert timestamps: {len(alert_set):,}")
+
+    return price_ts, price_px, alert_set
 
 
-# ── Build per-symbol price timeline ──────────────────────────────────────────
+# ── Pass 2: Stream IMBALANCE_DEBUG rows → CSV ───────────────────────────────
 
-def build_price_timeline(rows):
+def pass2_write_csv(path: str, price_ts, price_px, alert_set):
     """
-    Returns dict: symbol -> sorted list of (ts, price)
-    Used to look up the price at ts+N seconds.
+    Stream through the log again. For each IMBALANCE_DEBUG row:
+      - Look up forward prices using the pre-built timeline
+      - Write directly to CSV (no in-memory accumulation)
     """
-    timeline = defaultdict(list)
-    for r in rows:
-        sym = r.get("symbol") or r.get("sym")
-        price = r.get("price", 0.0)
-        ts = r.get("_ts", 0.0)
-        if sym and price and ts:
-            timeline[sym].append((ts, price))
-    for sym in timeline:
-        timeline[sym].sort()
-    return timeline
-
-
-def price_at(timeline, sym, target_ts):
-    """Binary search for the closest price at or after target_ts."""
-    entries = timeline.get(sym, [])
-    lo, hi = 0, len(entries) - 1
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if entries[mid][0] < target_ts:
-            lo = mid + 1
-        else:
-            hi = mid
-    if lo < len(entries):
-        return entries[lo][1]
-    return None
-
-
-# ── Build alert timestamp set ─────────────────────────────────────────────────
-
-def build_alert_set(rows):
-    """Returns set of (sym, ts_rounded) for rows where event=ALERT."""
-    alerts = set()
-    for r in rows:
-        if r.get("event") == "ALERT":
-            sym = r.get("symbol") or r.get("sym")
-            ts = round(r.get("_ts", 0.0), 1)
-            if sym:
-                alerts.add((sym, ts))
-    return alerts
-
-
-# ── Main ─────────────────────────────────────────────────────────────────────
-
-def main():
-    print(f"Reading {LOG_FILE} …  (this may take a while for large files)")
-
-    all_rows = list(parse_log(LOG_FILE))
-    print(f"  Parsed {len(all_rows):,} IMBALANCE_DEBUG + ALERT rows")
-
-    timeline  = build_price_timeline(all_rows)
-    alert_set = build_alert_set(all_rows)
-
-    # Keep only IMBALANCE_DEBUG rows for the final dataset
-    debug_rows = [r for r in all_rows if r.get("event") == "IMBALANCE_DEBUG"]
-    print(f"  IMBALANCE_DEBUG rows: {len(debug_rows):,}")
-
     fieldnames = [
         "timestamp", "symbol",
         "ratio", "total_bids", "total_asks",
         "heavy_venues", "vol_per_min",
         "price",
-        "alert",          # 1 if an ALERT fired within ±1s of this snapshot
+        "alert",
         "change_10s", "change_30s", "change_60s",
     ]
 
     written = 0
     skipped = 0
+    row_count = 0
 
-    with open(OUT_FILE, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames)
+    print(f"\nPass 2: Writing training data to {OUT_FILE} ...")
+
+    with open(OUT_FILE, "w", newline="") as out_fh, \
+         open(path, "r", errors="replace") as in_fh:
+
+        writer = csv.DictWriter(out_fh, fieldnames=fieldnames)
         writer.writeheader()
 
-        for r in debug_rows:
-            ts     = r.get("_ts", 0.0)
-            sym    = r.get("symbol") or r.get("sym", "")
-            bids   = r.get("bids", 0)
-            asks   = r.get("asks", 0)
-            ratio  = round(bids / asks, 4) if asks else 0.0
-            heavy  = r.get("bid_heavy", 0) - r.get("ask_heavy", 0)  # net heavy venues
-            vol    = r.get("vol_per_min", 0.0)
-            price  = r.get("price", 0.0)
+        for raw in in_fh:
+            row_count += 1
+            if row_count % 5_000_000 == 0:
+                print(f"  ... scanned {row_count:,} lines  (written {written:,})")
 
-            if not price or not sym:
+            # Quick pre-filter
+            if "IMBALANCE_DEBUG" not in raw:
+                continue
+
+            brace = raw.find("{")
+            if brace == -1:
+                continue
+
+            try:
+                payload = json.loads(raw[brace:])
+            except json.JSONDecodeError:
+                continue
+
+            if payload.get("event") != "IMBALANCE_DEBUG":
+                continue
+
+            ts    = _parse_ts(raw, brace)
+            sym   = payload.get("symbol") or payload.get("sym", "")
+            bids  = payload.get("bids", 0)
+            asks  = payload.get("asks", 0)
+            ratio = round(bids / asks, 4) if asks else 0.0
+            heavy = payload.get("bid_heavy", 0) - payload.get("ask_heavy", 0)
+            vol   = payload.get("vol_per_min", 0.0)
+            price = payload.get("price", 0.0)
+
+            if not price or not sym or not ts:
                 skipped += 1
                 continue
 
             # Compute forward price changes
+            sym_ts = price_ts.get(sym, [])
+            sym_px = price_px.get(sym, [])
             changes = {}
             ok = True
             for sec in LOOKAHEAD:
-                future_price = price_at(timeline, sym, ts + sec)
+                future_price = price_at(sym_ts, sym_px, ts + sec)
                 if future_price is None:
                     ok = False
                     break
@@ -178,23 +210,30 @@ def main():
             )
 
             writer.writerow({
-                "timestamp":   round(ts, 3),
-                "symbol":      sym,
-                "ratio":       ratio,
-                "total_bids":  bids,
-                "total_asks":  asks,
+                "timestamp":    round(ts, 3),
+                "symbol":       sym,
+                "ratio":        ratio,
+                "total_bids":   bids,
+                "total_asks":   asks,
                 "heavy_venues": heavy,
-                "vol_per_min": vol,
-                "price":       price,
-                "alert":       is_alert,
+                "vol_per_min":  vol,
+                "price":        price,
+                "alert":        is_alert,
                 **changes,
             })
             written += 1
 
             if written % 50_000 == 0:
-                print(f"  … {written:,} rows written")
+                print(f"  ... {written:,} rows written")
 
     print(f"\nDone. Wrote {written:,} rows to {OUT_FILE}  (skipped {skipped:,})")
+
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    price_ts, price_px, alert_set = pass1_build_indexes(LOG_FILE)
+    pass2_write_csv(LOG_FILE, price_ts, price_px, alert_set)
 
 
 if __name__ == "__main__":
