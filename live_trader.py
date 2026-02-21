@@ -467,6 +467,7 @@ class LiveTrader:
         self.recent_pi: list[float] = []  # Rolling PI per share for last 5 trades
         self.pi_cooldown_until: float = 0.0  # Timestamp when PI cooldown ends
         self.pending_limit_orders: Dict[str, str] = {}  # symbol -> order_id (prevent duplicates)
+        self.active_limit_stops: Dict[str, bool] = {}  # symbol -> True (if a limit lock-in is active)
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
@@ -902,6 +903,58 @@ class LiveTrader:
     def _check_time_stops(self) -> None:
         """Disabled — positions close only on opposing signals."""
         pass
+
+    def _check_profit_limits(self) -> None:
+        """Lock in profits with a limit order if PnL crosses $0.03 threshold."""
+        if not self.positions:
+            return
+
+        with self._lock:
+            # Snapshot positions to iterate safely
+            current_positions = dict(self.positions)
+
+        for symbol, qty in current_positions.items():
+            if qty == 0:
+                self.active_limit_stops.pop(symbol, None)
+                continue
+
+            if self.active_limit_stops.get(symbol):
+                continue  # Limit already submitted
+
+            entry_price = self.position_entry_prices.get(symbol, 0.0)
+            if entry_price <= 0:
+                continue
+
+            current_price = self._latest_price(symbol)
+            if not current_price or current_price <= 0:
+                continue
+
+            direction = "LONG" if qty > 0 else "SHORT"
+            pnl = (current_price - entry_price) if direction == "LONG" else (entry_price - current_price)
+
+            if pnl >= 0.03:
+                target_price = entry_price + 0.01 if direction == "LONG" else entry_price - 0.01
+                side = "SELL" if direction == "LONG" else "BUY"
+
+                LOGGER.info("💰 Profit limit trigger for %s at Current: $%.4f (Entry: $%.4f). Submitting target Limit %s at $%.4f", 
+                            symbol, current_price, entry_price, side, target_price)
+
+                # Mark as active *before* submitting to prevent duplicate submissions on the next poll
+                self.active_limit_stops[symbol] = True
+
+                try:
+                    self._submit_order(
+                        alert_id=-1,
+                        symbol=symbol,
+                        direction="profit-limit",
+                        side=side,
+                        qty=abs(qty),
+                        price=target_price,
+                        order_type="LIMIT",
+                    )
+                except Exception as exc:
+                    LOGGER.error("Failed to submit profit limit for %s: %s", symbol, exc)
+                    self.active_limit_stops.pop(symbol, None)  # Re-allow attempt if failed
 
     # ------------------------------------------------------------------
     # Order + alert processing
@@ -1549,6 +1602,7 @@ class LiveTrader:
             
             self._check_kill_switch()
             self._check_time_stops()
+            self._check_profit_limits()
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
