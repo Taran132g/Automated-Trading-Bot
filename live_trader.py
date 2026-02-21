@@ -872,28 +872,8 @@ class LiveTrader:
             self._engage_emergency_shutdown("Kill switch activated")
 
     def _check_time_stops(self) -> None:
-        """Close positions held longer than 10 minutes."""
-        now = time.time()
-        limit = 600  # 10 minutes in seconds
-        
-        for symbol, entry_time in list(self.position_entry_times.items()):
-            if symbol not in self.positions:
-                continue
-            
-            duration = now - entry_time
-            if duration > limit:
-                qty = self.positions[symbol]
-                side = "SELL" if qty > 0 else "COVER"
-                price = self._latest_price(symbol) or 0.0
-                LOGGER.info("Time stop triggered for %s (held %.1fs)", symbol, duration)
-                self._submit_order(
-                    alert_id=-1,
-                    symbol=symbol,
-                    direction="time-stop",
-                    side=side,
-                    qty=abs(qty),
-                    price=price,
-                )
+        """Disabled — positions close only on opposing signals."""
+        pass
 
     # ------------------------------------------------------------------
     # Order + alert processing
