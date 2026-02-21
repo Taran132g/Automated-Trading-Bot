@@ -464,6 +464,8 @@ class LiveTrader:
         self.trade_timestamps: list[float] = []
         self.position_entry_times: Dict[str, float] = {}
         self.last_entry_attempt: Dict[str, float] = {}  # Cooldown after failed limit entries
+        self.recent_pi: list[float] = []  # Rolling PI per share for last 5 trades
+        self.pi_cooldown_until: float = 0.0  # Timestamp when PI cooldown ends
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
@@ -957,6 +959,20 @@ class LiveTrader:
                 ),
             )
             conn.commit()
+    def _record_pi(self, pi_per_share: float) -> None:
+        """Track price improvement per share for last 5 trades."""
+        self.recent_pi.append(pi_per_share)
+        if len(self.recent_pi) > 5:
+            self.recent_pi.pop(0)
+        avg_pi = sum(self.recent_pi) / len(self.recent_pi)
+        LOGGER.info("PI per share: $%.4f  (avg last %d: $%.4f)",
+                    pi_per_share, len(self.recent_pi), avg_pi)
+        if len(self.recent_pi) >= 5 and avg_pi <= 0.001:
+            self.pi_cooldown_until = time.time() + 1800  # 30 minutes
+            LOGGER.warning("⚠️ PI COOLDOWN: Avg PI $%.4f <= $0.001 over last 5 trades. "
+                          "Pausing entries until %s",
+                          avg_pi, time.strftime('%H:%M:%S', time.localtime(self.pi_cooldown_until)))
+
     def _record_and_apply_market(
         self, *, alert_id: int, symbol: str, direction: str, side: str, qty: int, price: float
     ) -> bool:
@@ -981,9 +997,13 @@ class LiveTrader:
             fill_status = "FILLED"
             result["filled_via"] = "MARKET"
 
-            # Fetch actual fill price for bad fill detection
+            # Fetch actual fill price for bad fill detection and PI tracking
             order_id = result.get("order_id")
             if order_id and not result.get("dry_run"):
+                # Fetch quote for PI calculation before waiting
+                quote = self.executor.fetch_quote(symbol)
+                quoted_bid = float(quote.get("bidPrice", 0)) if quote else 0.0
+                quoted_ask = float(quote.get("askPrice", 0)) if quote else 0.0
                 # Give Schwab a moment to process the fill
                 time.sleep(0.5)
                 status = self.executor.fetch_order_status(order_id)
@@ -991,6 +1011,13 @@ class LiveTrader:
                 if avg_price:
                     actual_price = float(avg_price)
                     self._check_fill_quality(side, actual_price)
+                    # Calculate PI: how much better than NBBO
+                    if side in ("BUY", "COVER") and quoted_ask > 0:
+                        pi = quoted_ask - actual_price
+                        self._record_pi(max(pi, 0.0))
+                    elif side in ("SELL", "SHORT") and quoted_bid > 0:
+                        pi = actual_price - quoted_bid
+                        self._record_pi(max(pi, 0.0))
         else:
             fill_status = "FAILED"
             # CHECK FOR BOXED POSITION ERROR
@@ -1117,8 +1144,20 @@ class LiveTrader:
             result["fill_status"] = "FILLED"
             result["filled_qty"] = actual_fill
             
-            # Check bad fill on limit? (Less likely if we set limit, but maybe if we crossed)
-            # self._check_fill_quality(side, realized_price) 
+            # Calculate PI on limit fill
+            # PI = how much better we filled vs where we would have filled at market
+            # For limit buys at bid, PI = ask - fill_price (we bought below the ask)
+            # For limit sells at ask, PI = fill_price - bid (we sold above the bid)
+            quote = self.executor.fetch_quote(symbol)
+            if quote:
+                quoted_bid = float(quote.get("bidPrice", 0))
+                quoted_ask = float(quote.get("askPrice", 0))
+                if side in ("BUY", "COVER") and quoted_ask > 0:
+                    pi = quoted_ask - realized_price
+                    self._record_pi(max(pi, 0.0))
+                elif side in ("SELL", "SHORT") and quoted_bid > 0:
+                    pi = realized_price - quoted_bid
+                    self._record_pi(max(pi, 0.0))
         
         elif order_status in {"CANCELED", "REJECTED"}:
              LOGGER.warning("Order %s was already %s", order_id, order_status)
@@ -1303,7 +1342,11 @@ class LiveTrader:
                                     symbol, entry_cooldown - (time.time() - self.last_entry_attempt.get(symbol, 0)))
                         return
 
-                    # Now enter the short position
+                    # Check PI cooldown (avg PI too low = poor fills, take a break)
+                    if time.time() < self.pi_cooldown_until:
+                        remaining = self.pi_cooldown_until - time.time()
+                        LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
+                        return
                     self.last_entry_attempt[symbol] = time.time()
                     filled = self._submit_order(
                         alert_id=alert_id,
@@ -1353,7 +1396,11 @@ class LiveTrader:
                                     symbol, entry_cooldown - (time.time() - self.last_entry_attempt.get(symbol, 0)))
                         return
 
-                    # Now enter the long position
+                    # Check PI cooldown (avg PI too low = poor fills, take a break)
+                    if time.time() < self.pi_cooldown_until:
+                        remaining = self.pi_cooldown_until - time.time()
+                        LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
+                        return
                     self.last_entry_attempt[symbol] = time.time()
                     filled = self._submit_order(
                         alert_id=alert_id,
