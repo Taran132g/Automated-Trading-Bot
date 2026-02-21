@@ -1345,19 +1345,12 @@ class LiveTrader:
                                      symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
                          return
 
-                    # Check entry attempt cooldown (prevents rapid re-entry after failed limit)
-                    entry_cooldown = 10.0
-                    if time.time() - self.last_entry_attempt.get(symbol, 0) < entry_cooldown:
-                        LOGGER.info("Entry attempt cooldown for %s (%.1fs remaining); skipping",
-                                    symbol, entry_cooldown - (time.time() - self.last_entry_attempt.get(symbol, 0)))
-                        return
 
                     # Check PI cooldown (avg PI too low = poor fills, take a break)
                     if time.time() < self.pi_cooldown_until:
                         remaining = self.pi_cooldown_until - time.time()
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
                         return
-                    self.last_entry_attempt[symbol] = time.time()
                     filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
@@ -1367,8 +1360,6 @@ class LiveTrader:
                         price=price,
                         order_type="LIMIT",
                     )
-                    if filled:
-                        self.last_entry_attempt.pop(symbol, None)  # Clear on success
                 elif direction == "bid-heavy":
                     # Check if already long - skip to avoid stacking
                     if position > 0:
@@ -1399,19 +1390,12 @@ class LiveTrader:
                                      symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
                          return
 
-                    # Check entry attempt cooldown (prevents rapid re-entry after failed limit)
-                    entry_cooldown = 10.0
-                    if time.time() - self.last_entry_attempt.get(symbol, 0) < entry_cooldown:
-                        LOGGER.info("Entry attempt cooldown for %s (%.1fs remaining); skipping",
-                                    symbol, entry_cooldown - (time.time() - self.last_entry_attempt.get(symbol, 0)))
-                        return
 
                     # Check PI cooldown (avg PI too low = poor fills, take a break)
                     if time.time() < self.pi_cooldown_until:
                         remaining = self.pi_cooldown_until - time.time()
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
                         return
-                    self.last_entry_attempt[symbol] = time.time()
                     filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
@@ -1421,8 +1405,6 @@ class LiveTrader:
                         price=price,
                         order_type="LIMIT",
                     )
-                    if filled:
-                        self.last_entry_attempt.pop(symbol, None)  # Clear on success
                 
                 # If successful, break out of retry loop
                 break 
