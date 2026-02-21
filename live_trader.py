@@ -1602,7 +1602,6 @@ class LiveTrader:
             
             self._check_kill_switch()
             self._check_time_stops()
-            self._check_profit_limits()
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:

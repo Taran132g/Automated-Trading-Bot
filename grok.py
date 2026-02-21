@@ -1178,6 +1178,29 @@ async def main():
     if SHOW_BOOK:
         book_task = asyncio.create_task(_book_monitor_task())
 
+    async def _profit_limit_monitor_task() -> None:
+        """Periodically check inline traders for limit lock-in thresholds."""
+        while True:
+            try:
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=len(traders)) as executor:
+                    futures = []
+                    for name, trader in traders:
+                        if hasattr(trader, "_check_profit_limits"):
+                            futures.append(executor.submit(trader._check_profit_limits))
+                    
+                    for future in concurrent.futures.as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            log_structured("LIMIT_MONITOR_ERROR", {"error": str(e)})
+            except Exception as exc:
+                log_structured("LIMIT_MONITOR_CRITICAL", {"error": str(exc)})
+            
+            await asyncio.sleep(0.5)
+
+    profit_task = asyncio.create_task(_profit_limit_monitor_task())
+
     try:
         while True:
             try:
