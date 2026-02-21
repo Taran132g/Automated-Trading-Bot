@@ -571,6 +571,7 @@ class LiveTrader:
                 self.account_details = data.get("account_details", {})
                 self.consecutive_loss_cents = float(data.get("consecutive_loss_cents", 0.0))
                 self.loss_cooldown_until = float(data.get("loss_cooldown_until", 0.0))
+                self.pi_cooldown_until = float(data.get("pi_cooldown_until", 0.0))
             LOGGER.info("Loaded state: %s positions", len(self.positions))
         except Exception as exc:
             LOGGER.warning("Failed to load state: %s", exc)
@@ -578,6 +579,31 @@ class LiveTrader:
     def _save_state(self) -> None:
         if self.dry_run:
             return
+        now = time.time()
+        # Build active cooldowns list for UI display
+        active_cooldowns = []
+        if now < self.pi_cooldown_until:
+            active_cooldowns.append({
+                "reason": "PI Cooldown",
+                "detail": "Avg price improvement ≤ $0.001 over last 5 trades",
+                "remaining_seconds": round(self.pi_cooldown_until - now),
+                "until": self.pi_cooldown_until,
+            })
+        if now < self.loss_cooldown_until:
+            active_cooldowns.append({
+                "reason": "Loss Cooldown",
+                "detail": f"Consecutive losses exceeded threshold",
+                "remaining_seconds": round(self.loss_cooldown_until - now),
+                "until": self.loss_cooldown_until,
+            })
+        if hasattr(self, '_emergency_shutdown') and self._emergency_shutdown:
+            active_cooldowns.append({
+                "reason": "Account Stop Loss",
+                "detail": "Daily loss limit reached — trading halted",
+                "remaining_seconds": -1,
+                "until": 0,
+            })
+
         with self._lock:
             payload = {
                 "positions": self.positions,
@@ -587,6 +613,8 @@ class LiveTrader:
                 "account_details": self.account_details,
                 "consecutive_loss_cents": self.consecutive_loss_cents,
                 "loss_cooldown_until": self.loss_cooldown_until,
+                "pi_cooldown_until": self.pi_cooldown_until,
+                "active_cooldowns": active_cooldowns,
             }
         try:
             self.state_path.write_text(json.dumps(payload, indent=2))

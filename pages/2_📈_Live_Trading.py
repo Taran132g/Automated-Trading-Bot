@@ -132,6 +132,23 @@ st.markdown("""
             border: 1px solid #FF3366;
             color: #FF3366;
         }
+        .cooldown-banner {
+            background: linear-gradient(135deg, rgba(255, 165, 0, 0.15), rgba(255, 69, 0, 0.15));
+            border: 1px solid #FF6B35;
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 10px;
+            color: #FF6B35;
+            font-weight: 500;
+        }
+        .cooldown-banner.critical {
+            background: linear-gradient(135deg, rgba(255, 51, 102, 0.15), rgba(220, 20, 60, 0.15));
+            border-color: #FF3366;
+            color: #FF3366;
+        }
+        .cooldown-reason { font-weight: 700; font-size: 1rem; }
+        .cooldown-detail { font-size: 0.85rem; opacity: 0.85; }
+        .cooldown-timer { font-size: 0.9rem; font-weight: 600; float: right; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -170,6 +187,7 @@ def load_live_data():
     state = load_live_state()
     data['positions'] = state.get('positions', {})
     data['account_details'] = state.get('account_details', {})
+    data['active_cooldowns'] = state.get('active_cooldowns', [])
     
     with closing(get_db_connection()) as conn:
         # Live trades
@@ -419,6 +437,32 @@ with left_col:
 
 
 with right_col:
+    # --- Active Cooldowns ---
+    if data.get('active_cooldowns'):
+        st.subheader("⚠️ Active Cooldowns")
+        for cd in data['active_cooldowns']:
+            remaining = cd.get('remaining_seconds', 0)
+            if remaining > 0:
+                mins = remaining // 60
+                secs = remaining % 60
+                timer_text = f"{mins}m {secs}s remaining"
+            elif remaining == -1:
+                timer_text = "Until restart"
+            else:
+                timer_text = "Expiring..."
+            
+            is_critical = cd.get('reason') == 'Account Stop Loss'
+            css_class = 'cooldown-banner critical' if is_critical else 'cooldown-banner'
+            
+            st.markdown(f"""
+                <div class="{css_class}">
+                    <span class="cooldown-timer">⏱ {timer_text}</span>
+                    <div class="cooldown-reason">🚫 {cd['reason']}</div>
+                    <div class="cooldown-detail">{cd.get('detail', '')}</div>
+                </div>
+            """, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
     # Live Positions
     st.subheader("💼 Live Positions")
     
