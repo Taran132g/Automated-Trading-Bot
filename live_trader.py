@@ -212,6 +212,19 @@ class SchwabOrderExecutor:
             status = payload.get("status") or payload.get("orderStatus") or payload.get("order_status")
             filled_qty = payload.get("filledQuantity") or payload.get("filled_quantity")
             avg_fill_price = payload.get("averageExecutionPrice") or payload.get("avg_execution_price")
+            
+            # Schwab often omits averageExecutionPrice but provides the fill price
+            # inside orderActivityCollection[].executionLegs[].price
+            if not avg_fill_price:
+                try:
+                    activities = payload.get("orderActivityCollection", [])
+                    if activities:
+                        legs = activities[0].get("executionLegs", [])
+                        if legs:
+                            avg_fill_price = legs[0].get("price")
+                except (IndexError, KeyError, TypeError):
+                    pass
+            
             result["status"] = status
             result["filled_quantity"] = filled_qty
             result["avg_fill_price"] = avg_fill_price
