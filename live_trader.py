@@ -168,7 +168,7 @@ class SchwabOrderExecutor:
             return None
 
         try:
-            response = fetch_quote([symbol])
+            response = fetch_quote(symbol)
         except Exception as exc:  # pragma: no cover - network interaction
             LOGGER.warning("Quote fetch failed for %s: %s", symbol, exc)
             return None
