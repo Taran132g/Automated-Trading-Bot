@@ -934,7 +934,7 @@ class LiveTrader:
 
             if pnl >= 0.03:
                 target_price = entry_price + 0.01 if direction == "LONG" else entry_price - 0.01
-                side = "SELL" if direction == "LONG" else "BUY"
+                side = "SELL" if direction == "LONG" else "COVER"
 
                 LOGGER.info("💰 Profit limit trigger for %s at Current: $%.4f (Entry: $%.4f). Submitting target Limit %s at $%.4f", 
                             symbol, current_price, entry_price, side, target_price)
@@ -1070,16 +1070,21 @@ class LiveTrader:
                 time.sleep(2.0)
                 status = self.executor.fetch_order_status(order_id)
                 avg_price = status.get("avg_fill_price")
+                LOGGER.info("[PI-DEBUG] Order %s: avg_fill_price=%s, status=%s", order_id, avg_price, status.get("status"))
                 if avg_price:
                     actual_price = float(avg_price)
                     self._check_fill_quality(side, actual_price)
                     # Calculate PI: how much better than NBBO
                     if side in ("BUY", "COVER") and quoted_ask > 0:
                         pi = quoted_ask - actual_price
+                        LOGGER.info("[PI-DEBUG] BUY/COVER PI calc: ask=$%.4f - fill=$%.4f = $%.4f", quoted_ask, actual_price, pi)
                         self._record_pi(max(pi, 0.0))
                     elif side in ("SELL", "SHORT") and quoted_bid > 0:
                         pi = actual_price - quoted_bid
+                        LOGGER.info("[PI-DEBUG] SELL/SHORT PI calc: fill=$%.4f - bid=$%.4f = $%.4f", actual_price, quoted_bid, pi)
                         self._record_pi(max(pi, 0.0))
+                else:
+                    LOGGER.warning("[PI-DEBUG] No avg_fill_price for order %s. Raw status: %s", order_id, status)
         else:
             fill_status = "FAILED"
             # CHECK FOR BOXED POSITION ERROR
