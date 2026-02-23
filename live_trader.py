@@ -1067,7 +1067,7 @@ class LiveTrader:
                 quoted_bid = float(quote.get("bidPrice", 0)) if quote else 0.0
                 quoted_ask = float(quote.get("askPrice", 0)) if quote else 0.0
                 # Give Schwab a moment to process the fill
-                time.sleep(0.5)
+                time.sleep(2.0)
                 status = self.executor.fetch_order_status(order_id)
                 avg_price = status.get("avg_fill_price")
                 if avg_price:
