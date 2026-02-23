@@ -1248,11 +1248,24 @@ class LiveTrader:
             
                 if cancel_success:
                     LOGGER.info("Order %s cancelled request sent. Verifying final status...", order_id)
-                    time.sleep(1.0) # Give Schwab a moment to process the cancel vs fill race
+                    time.sleep(2.0) # Give Schwab time to propagate cancel vs fill race
                     final_status = self.executor.fetch_order_status(order_id)
                     final_state = final_status.get("status", "").upper()
                     final_filled_qty = final_status.get("filled_quantity") or 0
                 
+                    # Double-check: If Schwab says 0 fills, wait and ask again
+                    # (their API sometimes lags behind actual fill propagation)
+                    if final_filled_qty == 0 and final_state not in {"CANCELED", "REJECTED"}:
+                        LOGGER.info("Order %s shows 0 fills but status=%s. Double-checking in 2s...", order_id, final_state)
+                        time.sleep(2.0)
+                        recheck = self.executor.fetch_order_status(order_id)
+                        recheck_qty = recheck.get("filled_quantity") or 0
+                        if recheck_qty > 0:
+                            LOGGER.warning("Double-check caught partial fill! Order %s actually filled %s shares", order_id, recheck_qty)
+                            final_filled_qty = recheck_qty
+                            final_status = recheck
+                            final_state = recheck.get("status", "").upper()
+
                     # Update logic: Handle ANY fill amount, full or partial
                     if final_filled_qty > 0:
                          LOGGER.warning("Order %s had fill qty %s after cancel!", order_id, final_filled_qty)
@@ -1544,13 +1557,17 @@ class LiveTrader:
                 LOGGER.error("Failed to log account history: %s", exc)
 
     def _account_polling_loop(self) -> None:
-        """Background thread to poll account details."""
+        """Background thread to poll account details and reconcile positions."""
         LOGGER.info("Starting account polling thread...")
         while True:
             try:
                 self._poll_account_details()
             except Exception as exc:
                 LOGGER.error("Account polling error: %s", exc)
+            try:
+                self._reconcile_positions_on_startup()
+            except Exception as exc:
+                LOGGER.error("Position reconciliation error: %s", exc)
             time.sleep(10)
 
     def _start_account_polling_thread(self) -> None:
