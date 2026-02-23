@@ -1077,8 +1077,9 @@ class LiveTrader:
             if order_id and not result.get("dry_run"):
                 # Fetch quote for PI calculation before waiting
                 quote = self.executor.fetch_quote(symbol)
-                quoted_bid = float(quote.get("bidPrice", 0)) if quote else 0.0
-                quoted_ask = float(quote.get("askPrice", 0)) if quote else 0.0
+                quote_data = quote.get("quote", quote) if quote else {}
+                quoted_bid = float(quote_data.get("bidPrice", 0))
+                quoted_ask = float(quote_data.get("askPrice", 0))
                 # Give Schwab a moment to process the fill
                 time.sleep(2.0)
                 status = self.executor.fetch_order_status(order_id)
