@@ -853,6 +853,10 @@ class LiveTrader:
                 self._save_state()
             self.trade_timestamps.append(time.time())
         self._enforce_trade_rate_limit()
+        
+        # Aggressively clear all working orders to prevent ghosts
+        LOGGER.info("Trade finalized. Cancelling any remaining working orders to clear the book.")
+        self.executor.cancel_all_orders()
 
 
 
