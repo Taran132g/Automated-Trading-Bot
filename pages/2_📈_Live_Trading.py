@@ -188,6 +188,7 @@ def load_live_data():
     data['positions'] = state.get('positions', {})
     data['account_details'] = state.get('account_details', {})
     data['active_cooldowns'] = state.get('active_cooldowns', [])
+    data['rolling_pi'] = state.get('rolling_pi', 0.0)
     
     with closing(get_db_connection()) as conn:
         # Live trades
@@ -289,10 +290,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 st.caption(f"Last updated: {datetime.now().strftime('%H:%M:%S')} • Auto-refreshes every {REFRESH_INTERVAL}s")
 
-st.divider()
-
-# --- Metrics Row ---
-col1, col2, col3, col4 = st.columns(4)
+st.subheader("Global Metrics")
+col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
     # Use real PnL from Schwab if available
@@ -343,6 +342,12 @@ with col4:
     st.metric(
         label="Trades Today",
         value=trades_today
+    )
+
+with col5:
+    st.metric(
+        label="Rolling PI (Avg)",
+        value=f"${data.get('rolling_pi', 0.0):.4f}"
     )
 
 st.divider()
