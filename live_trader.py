@@ -1029,18 +1029,13 @@ class LiveTrader:
             )
             conn.commit()
     def _record_pi(self, pi_per_share: float) -> None:
-        """Track price improvement per share for last 5 trades."""
+        """Track cumulative price improvement per share since startup."""
         self.recent_pi.append(pi_per_share)
-        if len(self.recent_pi) > 5:
-            self.recent_pi.pop(0)
         avg_pi = sum(self.recent_pi) / len(self.recent_pi)
         self.rolling_pi = avg_pi
         
-        LOGGER.info("PI per share: $%.4f  (avg last %d: $%.4f)",
+        LOGGER.info("PI per share: $%.4f  (Cumulative Avg over %d trades: $%.4f)",
                     pi_per_share, len(self.recent_pi), avg_pi)
-        
-        if len(self.recent_pi) >= 5 and avg_pi <= 0.001:
-            LOGGER.warning("⚠️ Low Fill Quality: Avg PI $%.4f <= $0.001 over last 5 trades.", avg_pi)
 
     def _record_and_apply_market(
         self, *, alert_id: int, symbol: str, direction: str, side: str, qty: int, price: float
