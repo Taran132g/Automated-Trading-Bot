@@ -477,6 +477,7 @@ class LiveTrader:
         self.trade_timestamps: list[float] = []
         self.position_entry_times: Dict[str, float] = {}
         self.last_entry_attempt: Dict[str, float] = {}  # Cooldown after failed limit entries
+        self.rolling_pi: float = 0.0
         self.recent_pi: list[float] = []  # Rolling PI per share for last 5 trades
         self.pi_cooldown_until: float = 0.0  # Timestamp when PI cooldown ends
         self.pending_limit_orders: Dict[str, str] = {}  # symbol -> order_id (prevent duplicates)
@@ -596,13 +597,6 @@ class LiveTrader:
         now = time.time()
         # Build active cooldowns list for UI display
         active_cooldowns = []
-        if now < self.pi_cooldown_until:
-            active_cooldowns.append({
-                "reason": "PI Cooldown",
-                "detail": "Avg price improvement ≤ $0.001 over last 5 trades",
-                "remaining_seconds": round(self.pi_cooldown_until - now),
-                "until": self.pi_cooldown_until,
-            })
         if now < self.loss_cooldown_until:
             active_cooldowns.append({
                 "reason": "Loss Cooldown",
@@ -627,7 +621,7 @@ class LiveTrader:
                 "account_details": self.account_details,
                 "consecutive_loss_cents": self.consecutive_loss_cents,
                 "loss_cooldown_until": self.loss_cooldown_until,
-                "pi_cooldown_until": self.pi_cooldown_until,
+                "rolling_pi": getattr(self, "rolling_pi", 0.0),
                 "active_cooldowns": active_cooldowns,
             }
         try:
@@ -1040,13 +1034,13 @@ class LiveTrader:
         if len(self.recent_pi) > 5:
             self.recent_pi.pop(0)
         avg_pi = sum(self.recent_pi) / len(self.recent_pi)
+        self.rolling_pi = avg_pi
+        
         LOGGER.info("PI per share: $%.4f  (avg last %d: $%.4f)",
                     pi_per_share, len(self.recent_pi), avg_pi)
+        
         if len(self.recent_pi) >= 5 and avg_pi <= 0.001:
-            self.pi_cooldown_until = time.time() + 1800  # 30 minutes
-            LOGGER.warning("⚠️ PI COOLDOWN: Avg PI $%.4f <= $0.001 over last 5 trades. "
-                          "Pausing entries until %s",
-                          avg_pi, time.strftime('%H:%M:%S', time.localtime(self.pi_cooldown_until)))
+            LOGGER.warning("⚠️ Low Fill Quality: Avg PI $%.4f <= $0.001 over last 5 trades.", avg_pi)
 
     def _record_and_apply_market(
         self, *, alert_id: int, symbol: str, direction: str, side: str, qty: int, price: float
