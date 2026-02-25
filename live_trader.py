@@ -377,15 +377,15 @@ class SchwabOrderExecutor:
             builder = builder_factory(symbol=symbol, quantity=qty)
         return self._send(builder, symbol=symbol, side=side.upper(), qty=qty)
 
-    def cancel_all_orders(self) -> bool:
+    def cancel_all_orders(self) -> int:
         """Cancel all open/working orders on the account.
         
-        Tries native cancel_all first; falls back to fetching all orders
+        Returns the number of orders cancelled, or -1 if using native cancel.
         and cancelling each WORKING one individually.
         """
         if self.dry_run:
             LOGGER.info("[DRY-RUN] Skip cancel_all_orders")
-            return True
+            return 0
 
         # Try native cancel_all first
         cancel_all = getattr(self.client, "cancel_all_orders", None)
@@ -393,7 +393,7 @@ class SchwabOrderExecutor:
             try:
                 cancel_all(self.account_id)
                 LOGGER.info("Cancel-all request sent (native)")
-                return True
+                return -1
             except Exception as exc:
                 LOGGER.warning("Native cancel_all failed: %s. Falling back to individual cancels.", exc)
 
@@ -401,7 +401,7 @@ class SchwabOrderExecutor:
         get_orders = getattr(self.client, "get_orders_for_account", None) or getattr(self.client, "get_orders", None)
         if get_orders is None:
             LOGGER.warning("Schwab client does not expose get_orders; cannot cancel working orders")
-            return False
+            return 0
 
         try:
             from datetime import datetime, timedelta
@@ -412,17 +412,17 @@ class SchwabOrderExecutor:
             orders = response.json() if hasattr(response, "json") else response
         except Exception as exc:
             LOGGER.error("Failed to fetch orders for cancel-all fallback: %s", exc)
-            return False
+            return 0
 
         if not isinstance(orders, list):
             LOGGER.warning("Unexpected orders response type: %s", type(orders))
-            return False
+            return 0
 
         cancelled_count = 0
         cancel_one = getattr(self.client, "cancel_order", None)
         if cancel_one is None:
             LOGGER.warning("Schwab client does not expose cancel_order; cannot cancel")
-            return False
+            return 0
 
         for order in orders:
             status = (order.get("status") or "").upper()
@@ -436,7 +436,7 @@ class SchwabOrderExecutor:
                     LOGGER.warning("Failed to cancel order %s: %s", order_id, exc)
 
         LOGGER.info("Cancel-all fallback complete: cancelled %d orders", cancelled_count)
-        return True
+        return cancelled_count
 
 
 class LiveTrader:
@@ -1126,11 +1126,13 @@ class LiveTrader:
     ) -> bool:
         """Submit a limit order at Bid/Ask and cancel if not filled within timeout."""
 
-        # Dedup guard: skip if there's already a pending limit order for this symbol
-        existing = self.pending_limit_orders.get(symbol)
-        if existing:
-            LOGGER.info("Limit order %s already pending for %s; skipping duplicate", existing, symbol)
-            return False
+        # Dedup guard: MUST be inside lock to prevent immediate threading race condition
+        with self._lock:
+            existing = self.pending_limit_orders.get(symbol)
+            if existing:
+                LOGGER.info("Limit order %s already pending for %s; skipping duplicate", existing, symbol)
+                return False
+            self.pending_limit_orders[symbol] = "SUBMITTING"
 
         limit_price = 0.0
 
@@ -1200,10 +1202,13 @@ class LiveTrader:
         order_id = result.get("order_id")
         if not order_id:
              LOGGER.error("No order_id returned for limit order")
+             with self._lock:
+                 self.pending_limit_orders.pop(symbol, None)
              return False
 
         # Track this as a pending order to prevent duplicates
-        self.pending_limit_orders[symbol] = order_id
+        with self._lock:
+             self.pending_limit_orders[symbol] = order_id
 
         try:
             # Wait and Poll
@@ -1254,12 +1259,31 @@ class LiveTrader:
                      result["filled_qty"] = 0
              
             else:
-                # Still Open (WORKING, QUEUED, etc) -> CANCEL ALL WORKING ORDERS
-                LOGGER.info("Order %s not filled (Status: %s). Cancelling ALL working orders...", order_id, order_status)
-                cancel_success = self.executor.cancel_all_orders()
+                # Still Open (WORKING, QUEUED, etc) -> CANCEL AGGRESSIVELY
+                LOGGER.info("Order %s not filled (Status: %s). Aggressively cancelling...", order_id, order_status)
+                
+                # 1. Direct Cancel first
+                try:
+                     self.executor.client.cancel_order(order_id, self.executor.account_id)
+                except Exception:
+                     pass
+                     
+                # 2. Aggressive Sweep Loop for ghost orders
+                cancel_count = self.executor.cancel_all_orders()
+                retry = 0
+                while cancel_count == 0 and retry < 5:
+                    time.sleep(1.0)
+                    recheck = self.executor.fetch_order_status(order_id)
+                    if (recheck.get("filled_quantity") or 0) > 0:
+                        LOGGER.info("Abort cancel loop: Order %s filled in background", order_id)
+                        break
+                    
+                    LOGGER.warning("Cancel sweep found 0 orders. API delay? Retrying...")
+                    cancel_count = self.executor.cancel_all_orders()
+                    retry += 1
             
-                if cancel_success:
-                    LOGGER.info("Order %s cancelled request sent. Verifying final status...", order_id)
+                if True: # Always proceed to verification
+                    LOGGER.info("Order %s cancel procedure finished. Verifying final status...", order_id)
                     time.sleep(2.0) # Give Schwab time to propagate cancel vs fill race
                     final_status = self.executor.fetch_order_status(order_id)
                     final_state = final_status.get("status", "").upper()
@@ -1295,21 +1319,8 @@ class LiveTrader:
                          LOGGER.info("Order %s confirmed cancelled (Status: %s)", order_id, final_state)
                          result["fill_status"] = "CANCELED_TIMEOUT"
                          result["filled_qty"] = 0
-                else:
-                    # If cancel failed, it might have just filled?
-                    LOGGER.warning("Failed to cancel order %s. Re-checking status...", order_id)
-                    status = self.executor.fetch_order_status(order_id)
-                    last_filled = status.get("filled_quantity") or 0
-                
-                    if last_filled > 0:
-                         final_filled = True
-                         avg_price = status.get("avg_fill_price")
-                         realized_price = float(avg_price) if avg_price else limit_price
-                         self._record_fill(symbol=symbol, side=side, qty=int(last_filled), price=realized_price)
-                         result["fill_status"] = "FILLED" if last_filled >= qty else "PARTIAL_UNK"
-                         result["filled_qty"] = int(last_filled)
-                    else:
-                         result["fill_status"] = "CANCEL_FAILED"
+                         result["fill_status"] = "CANCELED_TIMEOUT"
+                         result["filled_qty"] = 0
         
             self._record_order(
                 alert_id=alert_id,
@@ -1324,7 +1335,8 @@ class LiveTrader:
 
         finally:
             # Always clear pending order when done (even on exception)
-            self.pending_limit_orders.pop(symbol, None)
+            with self._lock:
+                self.pending_limit_orders.pop(symbol, None)
 
     def _submit_order(
         self,
