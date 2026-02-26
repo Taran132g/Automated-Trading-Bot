@@ -188,6 +188,14 @@ if pasted_history:
         total_pi = advanced_results.get('total_pi', 0)
         total_trades_count = advanced_results.get('total_fills', 0)
         
+        # Sync win rate and counts for charts
+        win_rate = advanced_results.get('win_rate', 0.0)
+        wins = advanced_results.get('wins', 0)
+        losses = advanced_results.get('losses', 0)
+        
+        # Update trades for distribution charts
+        trades = hist_df
+
         st.info("📊 Currently displaying metrics based on Pasted Historical Data.")
 else:
     # Standard DB calculations
@@ -196,7 +204,10 @@ else:
         total_loss = abs(trades[trades['pnl'] < 0]['pnl'].sum())
         profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
         
-        win_rate = (len(trades[trades['pnl'] > 0]) / len(trades)) * 100 if len(trades) > 0 else 0
+        # Calculate wins/losses at trade level for DB fallback (consistent with existing logic)
+        wins = len(trades[trades['pnl'] > 0])
+        losses = len(trades[trades['pnl'] < 0])
+        win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
         
         avg_win = trades[trades['pnl'] > 0]['pnl'].mean() if len(trades[trades['pnl'] > 0]) > 0 else 0
         avg_loss = abs(trades[trades['pnl'] < 0]['pnl'].mean()) if len(trades[trades['pnl'] < 0]) > 0 else 0
@@ -208,6 +219,8 @@ else:
         total_loss = 0
         profit_factor = 0
         win_rate = 0
+        wins = 0
+        losses = 0
         risk_reward = 0
         total_trades_count = 0
 

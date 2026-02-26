@@ -104,7 +104,7 @@ if st.button("VERIFY SESSION", use_container_width=True):
         st.session_state.login_requested = False
         st.success("Authorization granted.")
         time.sleep(0.5)
-        st.switch_page("pages/3_⚙️_Admin_Controls.py")
+        st.switch_page("pages/5_⚙️_Admin_Controls.py")
     else:
         st.error("Invalid TOTP signature.")
 

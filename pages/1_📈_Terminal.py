@@ -8,8 +8,10 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime
 import plotly.graph_objects as go
+import plotly.graph_objects as go
 from dotenv import load_dotenv
 import sys
+import pytz
 
 # Load environment variables
 load_dotenv()
@@ -17,6 +19,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 import config_manager
 import auth_manager
+import ui_components
 
 # Check authentication
 # auth_manager.require_auth()
@@ -211,26 +214,46 @@ def load_live_data():
         except: pass
         
         try:
-            data['alerts'] = pd.read_sql_query("SELECT * FROM alerts ORDER BY timestamp DESC LIMIT 50", conn)
+            data['alerts'] = pd.read_sql_query("SELECT * FROM alerts ORDER BY timestamp DESC LIMIT 1000", conn)
             if not data['alerts'].empty:
                 data['alerts']['datetime'] = pd.to_datetime(data['alerts']['timestamp'], unit='s', utc=True).dt.tz_convert('US/Eastern')
+                
+                # --- Filter Alerts by Live Symbols ---
+                config = config_manager.load_config()
+                raw_live = config.get("live_symbols", "")
+                if raw_live:
+                    live_list = [s.strip().upper() for s in raw_live.split(",") if s.strip()]
+                    data['alerts'] = data['alerts'][data['alerts']['symbol'].isin(live_list)].copy()
         except: pass
         
         try:
             data['account_history'] = pd.read_sql_query("SELECT * FROM account_history ORDER BY timestamp ASC", conn)
             if not data['account_history'].empty:
                 data['account_history']['timestamp'] = pd.to_numeric(data['account_history']['timestamp'], errors='coerce')
-                data['account_history'] = data['account_history'].dropna(subset=['timestamp'])
+                # FIX: Explicitly cast liquidation_value to numeric as it is loaded from string in SQLite
+                data['account_history']['liquidation_value'] = pd.to_numeric(data['account_history']['liquidation_value'], errors='coerce')
+                data['account_history'] = data['account_history'].dropna(subset=['timestamp', 'liquidation_value'])
                 data['account_history']['datetime'] = pd.to_datetime(data['account_history']['timestamp'], unit='s', utc=True).dt.tz_convert('US/Eastern')
         except: pass
     
+    # Calculate Rolling PI per share (Daily PnL / Total Volume today)
+    data['rolling_pi_per_share'] = 0.0
+    if not data['trades'].empty:
+        try:
+            today_trades = data['trades'][data['trades']['timestamp'] >= today_start]
+            total_shares = abs(today_trades['qty']).sum()
+            if total_shares > 0:
+                data['rolling_pi_per_share'] = data['daily_pnl'] / total_shares
+        except: pass
+
     # Calculate Max Drawdown from Account History
     data['max_drawdown'] = 0.0
     if not data['account_history'].empty:
         df_hist = data['account_history'].copy()
+        df_hist['liquidation_value'] = pd.to_numeric(df_hist['liquidation_value'], errors='coerce')
         df_hist['peak'] = df_hist['liquidation_value'].cummax()
         df_hist['drawdown'] = (df_hist['peak'] - df_hist['liquidation_value']) / df_hist['peak'] * 100
-        data['max_drawdown'] = df_hist['drawdown'].max()
+        data['max_drawdown'] = round(df_hist['drawdown'].max(), 2) if not df_hist['drawdown'].empty else 0.0
         
     return data
 
@@ -238,68 +261,51 @@ data = load_live_data()
 
 # --- SIDEBAR: Navigation & System Status ---
 with st.sidebar:
-    st.markdown("### ⚡ QUANT_OS // V2.0")
-    st.markdown("<br>", unsafe_allow_html=True)
     
-    st.markdown('<div class="section-header">Core Modules</div>', unsafe_allow_html=True)
-    st.button("📈 Execution Terminal", use_container_width=True, type="primary")
-    if st.button("📊 Analytics & Risk", use_container_width=True):
-        st.switch_page("pages/2_📊_Analytics_&_Heatmap.py")
-    if st.button("⚙️ Admin Controls", use_container_width=True):
-        st.switch_page("pages/3_⚙️_Admin_Controls.py")
     
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="section-header">System Infrastructure</div>', unsafe_allow_html=True)
+    config = config_manager.load_config()
+    raw_symbols = config.get("live_symbols", "")
+    if not raw_symbols:
+        raw_symbols = os.getenv('LIVE_SYMBOLS', '')
+        
+    live_symbols = raw_symbols.split(',')
+    live_symbols = [s.strip().upper() for s in live_symbols if s.strip()]
     
-    import subprocess
-    def is_backend_running():
-        loop_result = subprocess.run(["pgrep", "-f", "restart_loop.sh"], capture_output=True)
-        grok_result = subprocess.run(["pgrep", "-f", "grok.py"], capture_output=True)
-        return loop_result.returncode == 0 or grok_result.returncode == 0
-
-    # System indicators
-    bot_status = "online" if is_backend_running() else "offline"
-    db_status = "online" if DB_PATH.exists() else "offline"
-    grok_status = "online" # Assuming grok is running if live state exists
-    schwab_status = "online" if data['account_details'] else "offline"
-    
-    st.markdown(f"""
-        <div class="sys-status-item" title="The master trading bot process handling entry/exit logic and auto-restarts">
-            <span class="status-dot {bot_status}"></span>
-            <span>Trading Bot Backend</span>
-        </div>
-        <div class="sys-status-item" title="Live connection to the Schwab API for executing orders">
-            <span class="status-dot {schwab_status}"></span>
-            <span>Schwab API Routing</span>
-        </div>
-        <div class="sys-status-item" title="The AI vision model generating real-time trading signals">
-            <span class="status-dot {grok_status}"></span>
-            <span>Grok Vision Engine</span>
-        </div>
-        <div class="sys-status-item" title="Local Time-Series Database storing historical trades and alerts">
-            <span class="status-dot {db_status}"></span>
-            <span>Local TSDB Sync</span>
-        </div>
-    """, unsafe_allow_html=True)
+    if live_symbols:
+        st.markdown('<div class="section-header">Live Symbols</div>', unsafe_allow_html=True)
+        st.markdown(" • ".join([f"**{s}**" for s in live_symbols]))
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+    ui_components.render_system_status()
     
     st.markdown("<br><br>", unsafe_allow_html=True)
-    if st.button("🔌 Disconnect Session", use_container_width=True):
-        auth_manager.logout()
-        st.switch_page("app.py")
+    if st.button("⚙️ Admin Controls", use_container_width=True):
+        st.switch_page("pages/5_⚙️_Admin_Controls.py")
 
 # --- MAIN DASHBOARD AREA ---
 top_col1, top_col2 = st.columns([3, 1])
 
 with top_col1:
-    st.markdown("""
+    now_est = datetime.now(pytz.timezone('US/Eastern'))
+    is_market_open = (
+        now_est.weekday() < 5 and 
+        ((now_est.hour == 9 and now_est.minute >= 30) or (9 < now_est.hour < 16))
+    )
+    
+    if is_market_open:
+        indicator_html = '<div class="live-indicator"><div class="pulse-dot"></div>MARKET LIVE</div>'
+    else:
+        indicator_html = '<div class="live-indicator" style="color: #64748B; border-color: #334155; background: rgba(0,0,0,0);"><div style="height:6px;width:6px;background-color:#64748B;border-radius:50%;margin-right:6px;"></div>MARKET CLOSED</div>'
+
+    st.markdown(f"""
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
             <h2 style="margin:0;">EXECUTION TERMINAL</h2>
-            <div class="live-indicator"><div class="pulse-dot"></div>MARKET LIVE</div>
+            {indicator_html}
         </div>
     """, unsafe_allow_html=True)
     
 with top_col2:
-    st.markdown(f"<div style='text-align: right; color: #64748B; font-family: monospace;'>SYS_TIME: {datetime.now().strftime('%H:%M:%S.%f')[:-3]}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align: right; color: #64748B; font-family: monospace;'>SYS_TIME: {datetime.now(pytz.timezone('US/Eastern')).strftime('%H:%M:%S.%f')[:-3]}</div>", unsafe_allow_html=True)
 
 # RISK DASHBOARD (KPIs)
 metric_cols = st.columns(5)
@@ -354,67 +360,64 @@ chart_col, tape_col = st.columns([7, 3])
 with chart_col:
     st.markdown('<div class="section-header">ACCOUNT TRAJECTORY & EXECUTION MAP</div>', unsafe_allow_html=True)
     
+    time_range = st.radio("Time Range", ["Today", "All Time"], horizontal=True, label_visibility="collapsed")
+    
     if not data['account_history'].empty:
         df_chart = data['account_history'].copy().sort_values('timestamp')
         df_trades = data['trades'].head(50).copy() if not data['trades'].empty else pd.DataFrame()
-    else:
-        # --- MOCK DATA FOR VISUALIZATION ---
-        import numpy as np
-        dates = pd.date_range(end=datetime.now(), periods=100, freq='5T')
-        equity = 100000 + np.cumsum(np.random.normal(0, 150, 100))
-        df_chart = pd.DataFrame({'datetime': dates, 'liquidation_value': equity})
         
-        # Mock 20 random trades over this period
-        trade_dates = np.random.choice(dates, 20, replace=False)
-        pnls = np.random.normal(0, 500, 20)
-        df_trades = pd.DataFrame({'datetime': trade_dates, 'pnl': pnls})
+        if time_range == "Today":
+            today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
+            df_chart = df_chart[df_chart['timestamp'] >= today_start].copy()
+            if not df_trades.empty:
+                df_trades = df_trades[df_trades['timestamp'] >= today_start].copy()
+    else:
+        df_chart = pd.DataFrame(columns=['datetime', 'liquidation_value'])
+        df_trades = pd.DataFrame(columns=['datetime', 'pnl'])
 
     # We will use an advanced area chart for the account trajectory
     fig = go.Figure()
     
+    # For multi-day view, an index-based x-axis prevents massive empty gaps over weekends/nights
+    if time_range == "All Time" and not df_chart.empty:
+        df_chart = df_chart.reset_index(drop=True)
+        x_values = df_chart.index
+        df_chart['date_str'] = df_chart['datetime'].dt.strftime('%b %d')
+        tick_vals, tick_text = [], []
+        last_date = None
+        for i, row in df_chart.iterrows():
+            curr_date = row['date_str']
+            if curr_date != last_date:
+                tick_vals.append(i)
+                tick_text.append(curr_date)
+                last_date = curr_date
+    else:
+        x_values = df_chart['datetime'] if not df_chart.empty else []
+
     # Add gradient fill area chart
     fig.add_trace(go.Scatter(
-        x=df_chart['datetime'],
+        x=x_values,
         y=df_chart['liquidation_value'],
         fill='tozeroy',
         fillcolor='rgba(0, 255, 153, 0.1)',
         mode='lines',
         line=dict(color='#00FF99', width=2),
         name='Account Value',
-        hovertemplate='%{x|%I:%M:%S %p}<br><b>$%{y:,.2f}</b><extra></extra>'
+        customdata=df_chart['datetime'].dt.strftime('%Y-%m-%d %I:%M:%S %p') if not df_chart.empty else [],
+        hovertemplate='%{customdata}<br><b>$%{y:,.2f}</b><extra></extra>'
     ))
     
-    # Overlay recent trades if any
-    if not df_trades.empty:
-        # Separate wins and losses for colored markers
-        wins = df_trades[df_trades['pnl'] > 0]
-        losses = df_trades[df_trades['pnl'] <= 0]
-        
-        # Note: A true candlestick needs OHLC data. Since we only have account value,
-        # we plot the equity curve and overlay PnL execution bubbles at the bottom to show activity.
-        
-        if not wins.empty:
-            fig.add_trace(go.Bar(
-                x=wins['datetime'],
-                y=wins['pnl'],
-                name='Win',
-                marker_color='#00FF99',
-                yaxis='y2',
-                hovertemplate='Win: $%{y:.2f}<extra></extra>'
-            ))
-            
-        if not losses.empty:
-            fig.add_trace(go.Bar(
-                x=losses['datetime'],
-                y=losses['pnl'],
-                name='Loss',
-                marker_color='#EF4444',
-                yaxis='y2',
-                hovertemplate='Loss: $%{y:.2f}<extra></extra>'
-            ))
-
     # Modern Institutional Chart Layout
-    y2_range = max(abs(df_trades['pnl']))*2 if not df_trades.empty else 1000
+    # Dynamically scale Y-Axis to fit the graph
+    y_min, y_max = 0, 100000
+    if not df_chart.empty:
+        min_val = df_chart['liquidation_value'].min()
+        max_val = df_chart['liquidation_value'].max()
+        pad = (max_val - min_val) * 0.1
+        if pad == 0: pad = max_val * 0.005 # Fallback if flat
+        y_min = min_val - pad
+        y_max = max_val + pad
+
     fig.update_layout(
         template='plotly_dark',
         paper_bgcolor='rgba(0,0,0,0)',
@@ -427,7 +430,10 @@ with chart_col:
             showgrid=True,
             gridcolor='#1F2937',
             gridwidth=1,
-            tickformat='%H:%M',
+            tickformat='%H:%M' if time_range == "Today" else None,
+            tickmode='array' if time_range == "All Time" else 'auto',
+            tickvals=tick_vals if time_range == "All Time" and not df_chart.empty else None,
+            ticktext=tick_text if time_range == "All Time" and not df_chart.empty else None,
             color='#94A3B8'
         ),
         yaxis=dict(
@@ -436,17 +442,8 @@ with chart_col:
             gridwidth=1,
             tickprefix='$',
             color='#94A3B8',
-            title_font=dict(color='#94A3B8')
-        ),
-        yaxis2=dict(
-            title='Trade PnL',
-            overlaying='y',
-            side='right',
-            showgrid=False,
-            zeroline=True,
-            zerolinecolor='#374151',
-            color='#94A3B8',
-            range=[-y2_range, y2_range] # Scale bars to bottom
+            title_font=dict(color='#94A3B8'),
+            range=[y_min, y_max]
         )
     )
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
@@ -458,22 +455,9 @@ with tape_col:
     tape_html = "<div style='height: 450px; overflow-y: auto; background: #111827; border: 1px solid #1F2937; border-radius: 8px;'>"
     
     if not data['alerts'].empty:
-        alerts_df = data['alerts'].head(100)
+        alerts_df = data['alerts'].head(1000)
     else:
-        # --- MOCK DATA ---
-        import random
-        symbols = ['AAPL', 'TSLA', 'SPY', 'QQQ', 'NVDA']
-        directions = ['bid-heavy', 'ask-heavy']
-        now = datetime.now()
-        alerts_data = []
-        for i in range(50):
-            alerts_data.append({
-                'datetime': now - pd.Timedelta(seconds=random.randint(1, 3600)),
-                'symbol': random.choice(symbols),
-                'price': random.uniform(100, 500),
-                'direction': random.choice(directions)
-            })
-        alerts_df = pd.DataFrame(alerts_data).sort_values('datetime', ascending=False)
+        alerts_df = pd.DataFrame(columns=['datetime', 'symbol', 'price', 'direction'])
         
     for _, row in alerts_df.iterrows():
         time_str = row['datetime'].strftime('%H:%M:%S')

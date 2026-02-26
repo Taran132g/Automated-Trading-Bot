@@ -3,7 +3,16 @@
 # Log file for the loop itself
 LOOP_LOG="loop_manager.log"
 
-echo "Starting Auto-Restart Loop..." >> "$LOOP_LOG"
+# Force correct working directory
+cd "$(dirname "$0")"
+source .env
+
+echo "Starting Auto-Restart Loop in $(pwd)..." >> "$LOOP_LOG"
+
+# Trap to kill background processes on exit
+trap "pkill -P $$; exit" SIGINT SIGTERM EXIT
+
+echo "Starting Auto-Restart Loop in $(pwd)..." >> "$LOOP_LOG"
 
 while true; do
     # Check for kill switch to terminate the auto-restart loop
@@ -12,19 +21,33 @@ while true; do
         break
     fi
 
-    # If Grok is NOT running, start it
-    if ! pgrep -f "python3 grok.py" > /dev/null; then
+    # Source env to get latest config flags
+    [ -f .env ] && source .env
+
+    # 1. Start Grok
+    if ! pgrep -f "grok.py" > /dev/null; then
         echo "Starting Grok at $(date)..." >> "$LOOP_LOG"
         .venv/bin/python3 grok.py >> grok.log 2>&1 &
-        GROK_PID=$!
-        echo "Grok started (PID: $GROK_PID)" >> "$LOOP_LOG"
-
-        # Wait for it to exit
-        wait $GROK_PID
-        EXIT_CODE=$?
-        echo "Grok stopped with code $EXIT_CODE at $(date). Restarting in 5s..." >> "$LOOP_LOG"
-        sleep 5
-    else
-        sleep 10
+        echo "Grok started (PID: $!)" >> "$LOOP_LOG"
     fi
+
+    # 2. Start Paper Trader
+    if [ "$RUN_PAPER_TRADER" = "1" ]; then
+        if ! pgrep -f "paper_trader.py" > /dev/null; then
+            echo "Starting Paper Trader at $(date)..." >> "$LOOP_LOG"
+            .venv/bin/python3 paper_trader.py >> paper_trader.log 2>&1 &
+            echo "Paper Trader started (PID: $!)" >> "$LOOP_LOG"
+        fi
+    fi
+
+    # 3. Start Live Trader
+    if [ "$RUN_LIVE_TRADER" = "1" ]; then
+        if ! pgrep -f "live_trader.py" > /dev/null; then
+            echo "Starting Live Trader at $(date)..." >> "$LOOP_LOG"
+            .venv/bin/python3 live_trader.py >> live_trader.log 2>&1 &
+            echo "Live Trader started (PID: $!)" >> "$LOOP_LOG"
+        fi
+    fi
+
+    sleep 10
 done

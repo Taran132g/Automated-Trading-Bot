@@ -882,7 +882,7 @@ async def main():
 
     # Auto-start paper_trader if requested (unified startup)
     paper_proc = None
-    if _bool_env("RUN_PAPER_TRADER", False):
+    if _bool_env("RUN_PAPER_TRADER", False) and not _bool_env("INLINE_DISPATCH_ONLY", False):
         import subprocess
         log_structured("STARTUP", {"message": "Launching paper_trader.py subprocess..."})
         try:
