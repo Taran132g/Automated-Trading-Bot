@@ -714,10 +714,13 @@ def on_book(msg: dict):
             # Helper to get net position
             net_pos = 0
             for _, trader in traders:
-                # LiveTrader puts positions in .positions dict
                 if hasattr(trader, "positions"):
-                    net_pos += trader.positions.get(sym, 0)
-            
+                    pos_val = trader.positions.get(sym, 0)
+                    if isinstance(pos_val, dict):
+                        net_pos += pos_val.get("qty", 0)
+                    else:
+                        net_pos += pos_val
+
             is_long = net_pos > 0
             is_short = net_pos < 0
             
@@ -971,31 +974,34 @@ async def main():
         trader_kind = "live"
         traders.clear()
         
-        if inline_dry_run:
-            from paper_trader import PaperTrader
-            traders.append(("paper", PaperTrader()))
-            trader_kind = "paper"
+        if not _bool_env("INLINE_DISPATCH_ONLY", False):
+            if inline_dry_run:
+                from paper_trader import PaperTrader
+                traders.append(("paper", PaperTrader()))
+                trader_kind = "paper"
+            else:
+                from live_trader import LiveTrader, SchwabOrderExecutor
+                
+                # Primary account (original settings)
+                traders.append(("primary", LiveTrader(dry_run=False, name="primary")))
+                
+                # ----------------------------------------------------------------
+                # MULTI-ACCOUNT TRADING (commented out for later use)
+                # To enable, set FRIEND_ACCOUNT_ID and FRIEND_TOKEN_PATH in .env
+                # ----------------------------------------------------------------
+                # friend_account = os.getenv("FRIEND_ACCOUNT_ID")
+                # friend_token = os.getenv("FRIEND_TOKEN_PATH")
+                # if friend_account and friend_token:
+                #     friend_executor = SchwabOrderExecutor(
+                #         dry_run=False,
+                #         account_id=friend_account,
+                #         token_path=friend_token,
+                #         name="friend"
+                #     )
+                #     traders.append(("friend", LiveTrader(dry_run=False, executor=friend_executor, name="friend")))
+                #     log_structured("MULTI_ACCOUNT", {"accounts": ["primary", "friend"]})
         else:
-            from live_trader import LiveTrader, SchwabOrderExecutor
-            
-            # Primary account (original settings)
-            traders.append(("primary", LiveTrader(dry_run=False, name="primary")))
-            
-            # ----------------------------------------------------------------
-            # MULTI-ACCOUNT TRADING (commented out for later use)
-            # To enable, set FRIEND_ACCOUNT_ID and FRIEND_TOKEN_PATH in .env
-            # ----------------------------------------------------------------
-            # friend_account = os.getenv("FRIEND_ACCOUNT_ID")
-            # friend_token = os.getenv("FRIEND_TOKEN_PATH")
-            # if friend_account and friend_token:
-            #     friend_executor = SchwabOrderExecutor(
-            #         dry_run=False,
-            #         account_id=friend_account,
-            #         token_path=friend_token,
-            #         name="friend"
-            #     )
-            #     traders.append(("friend", LiveTrader(dry_run=False, executor=friend_executor, name="friend")))
-            #     log_structured("MULTI_ACCOUNT", {"accounts": ["primary", "friend"]})
+            log_structured("STARTUP", {"message": "In-process (inline) traders disabled via INLINE_DISPATCH_ONLY=1"})
         
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue(maxsize=_get_int_env("INLINE_TRADER_QUEUE", 100, 10))
