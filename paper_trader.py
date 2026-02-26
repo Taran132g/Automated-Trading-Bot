@@ -14,8 +14,15 @@ from pathlib import Path
 import os
 
 DB_PATH = "penny_basing.db"
-POSITION_SIZE = int(os.getenv("POSITION_SIZE", "2500"))        # Long size
-SHORT_SIZE = int(os.getenv("POSITION_SIZE", "2500"))           # Short size
+
+import config_manager
+
+# Load position size from trading config
+_config = config_manager.load_config()
+_paper_size = int(_config.get("paper_position_size", 1000))
+
+POSITION_SIZE = _paper_size   # Long size
+SHORT_SIZE = _paper_size      # Short size
 SLIPPAGE = 0.001
 COMMISSION = 0.0
 STATE_FILE = "paper_trader_state.json"
@@ -289,7 +296,7 @@ class PaperTrader:
     # ============================================================
     # FLIP-ONLY ALERT LOGIC
     # ============================================================
-    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float) -> None:
+    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0) -> None:
         """Core flip-only logic shared by inline + DB polling paths."""
 
         self._record_seen_price(alert_id=alert_id, symbol=symbol, direction=direction, price=price)
@@ -335,12 +342,12 @@ class PaperTrader:
             )
             conn.commit()
 
-    def process_alert(self, alert_id: int, symbol: str, direction: str, price: float) -> None:
+    def process_alert(self, alert_id: int, symbol: str, direction: str, price: float, **kwargs) -> None:
         """Expose inline hook so grok can dispatch alerts directly."""
-
+        range_cents = kwargs.get("range_cents", 0.0)
         with self._lock:
             self.last_alert_id = max(self.last_alert_id, int(alert_id))
-            self._handle_alert(alert_id, symbol, direction, price)
+            self._handle_alert(alert_id, symbol, direction, price, range_cents)
             self.save_state()
 
     def monitor_alerts(self):

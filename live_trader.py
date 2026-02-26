@@ -1132,6 +1132,9 @@ class LiveTrader:
             if existing:
                 LOGGER.info("Limit order %s already pending for %s; skipping duplicate", existing, symbol)
                 return False
+            
+            # Aggressive stacking check: if we are already in the process of submitting or polling, stop.
+            # (Handled by the lock and 'SUBMITTING' state)
             self.pending_limit_orders[symbol] = "SUBMITTING"
 
         limit_price = 0.0
@@ -1379,6 +1382,15 @@ class LiveTrader:
         if symbol not in self.live_symbols:
             LOGGER.info("Skipping live trade for %s (not in LIVE_SYMBOLS)", symbol)
             return
+
+        # Aggressively clear ALL working orders before processing any new alert.
+        # This prevents stacking and ensures we are flat before any new entries or flips.
+        try:
+            cancelled = self.executor.cancel_all_orders()
+            if cancelled > 0 or cancelled == -1:
+                LOGGER.info("Cleared %s working orders before processing alert %s", "all" if cancelled == -1 else cancelled, alert_id)
+        except Exception as exc:
+            LOGGER.warning("Aggressive cancel failed: %s", exc)
 
         max_retries = 2
         for attempt in range(max_retries):
