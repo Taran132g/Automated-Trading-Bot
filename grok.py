@@ -1016,7 +1016,10 @@ async def main():
                     if lag > 0.5:
                         log_structured("INLINE_TRADER_LAG", {"alert_id": alert_id, "lag_sec": round(lag, 3)})
                     
-                    # Trade all accounts in parallel using threads
+                    if not traders:
+                        log_structured("INLINE_DISPATCH", {"alert_id": alert_id, "message": "No in-process traders to notify"})
+                        continue
+                        
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor(max_workers=len(traders)) as executor:
                         futures = []
@@ -1188,6 +1191,9 @@ async def main():
         """Periodically check inline traders for limit lock-in thresholds."""
         while True:
             try:
+                if not traders:
+                    await asyncio.sleep(1)
+                    continue
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=len(traders)) as executor:
                     futures = []
