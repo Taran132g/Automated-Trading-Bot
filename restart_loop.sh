@@ -6,6 +6,12 @@ LOOP_LOG="loop_manager.log"
 echo "Starting Auto-Restart Loop..." >> "$LOOP_LOG"
 
 while true; do
+    # Check for kill switch to terminate the auto-restart loop
+    if [ -f "kill_switch.flag" ]; then
+        echo "Kill switch detected at $(date). Exiting auto-restart loop." >> "$LOOP_LOG"
+        break
+    fi
+
     # If Grok is NOT running, start it
     if ! pgrep -f "python3 grok.py" > /dev/null; then
         echo "Starting Grok at $(date)..." >> "$LOOP_LOG"

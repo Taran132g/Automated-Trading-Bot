@@ -71,7 +71,8 @@ def analyze_trades(raw_text: str) -> dict:
         if len(parts) < 15:
             continue
 
-        side = parts[4].strip()
+        side_raw = parts[4].strip()
+        side = side_raw.upper()
         qty_str = parts[5].strip()
         pos_effect = parts[6].strip()
         symbol = parts[7].strip()
@@ -80,7 +81,7 @@ def analyze_trades(raw_text: str) -> dict:
         order_type = parts[14].strip() if len(parts) > 14 else ''
         exec_time = parts[2].strip()
 
-        if side not in ('BUY', 'SELL'):
+        if side not in ('BUY', 'SELL', 'SELL SHORT', 'BUY TO COVER', 'SHORT', 'COVER'):
             continue
 
         try:
@@ -113,7 +114,7 @@ def analyze_trades(raw_text: str) -> dict:
         shares_by_symbol.setdefault(symbol, 0)
 
         cash = qty * price
-        if side == 'BUY':
+        if side in ('BUY', 'BUY TO COVER', 'COVER'):
             pnl_by_symbol[symbol] -= cash
         else:
             pnl_by_symbol[symbol] += cash
@@ -138,7 +139,7 @@ def analyze_trades(raw_text: str) -> dict:
         symbol_summaries[sym] = {
             'pnl': pnl,
             'shares_traded': shares,
-            'pnl_per_share': pnl / shares if shares else 0,
+            'pnl_per_share': pnl / (shares / 2) if shares else 0,
             'fills': fills_by_symbol.get(sym, 0),
             'pi': pi_by_symbol.get(sym, 0.0),
         }
@@ -156,6 +157,6 @@ def analyze_trades(raw_text: str) -> dict:
         'symbol_summaries': symbol_summaries,
         'total_pnl': total_pnl,
         'total_shares': total_shares,
-        'total_pnl_per_share': total_pnl / total_shares if total_shares else 0,
+        'total_pnl_per_share': total_pnl / (total_shares / 2) if total_shares else 0,
         'trades': trades,
     }

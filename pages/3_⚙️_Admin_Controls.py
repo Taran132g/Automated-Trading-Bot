@@ -6,7 +6,6 @@ import streamlit as st
 from pathlib import Path
 import sys
 
-# Add project root to path
 sys.path.append(str(Path(__file__).parent.parent))
 import config_manager
 import auth_manager
@@ -18,73 +17,108 @@ auth_manager.require_auth()
 
 st.set_page_config(
     page_title="Admin Controls | Dashboard",
-    layout="centered",
-    page_icon="⚙️"
+    layout="wide",
+    page_icon="⚙️",
+    initial_sidebar_state="expanded"
 )
 
-# Check main authentication first
-# if 'authenticated' not in st.session_state or not st.session_state.authenticated:
-#     st.switch_page("app.py")
-
-# CSS
+# CSS Styling (Terminal Theme)
 st.markdown("""
     <style>
-        .block-container { 
-            padding-top: 2rem;
-            max-width: 600px;
+        .stApp {
+            background-color: #0B0E14; 
+            color: #E2E8F0;
+            font-family: 'Inter', sans-serif;
         }
+        #MainMenu, header, footer { visibility: hidden; }
+        .block-container { padding-top: 1rem; max-width: 98%; }
+        
+        .section-header {
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: #94A3B8;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 1rem;
+            border-bottom: 1px solid #1F2937;
+            padding-bottom: 5px;
+        }
+        
+        /* Admin Controls Styling */
         .admin-header {
-            background: linear-gradient(135deg, #1e40af 0%, #1e3a5f 100%);
-            border-radius: 16px;
+            background: linear-gradient(90deg, #111827 0%, #1F2937 100%);
+            border-radius: 8px;
             padding: 1.5rem;
-            border: 1px solid #3b82f6;
-            text-align: center;
+            border-left: 4px solid #3b82f6;
             margin-bottom: 1.5rem;
         }
         .admin-title {
+            font-family: 'Inter', sans-serif;
             font-size: 1.8rem;
             font-weight: 700;
-            color: #60a5fa;
+            color: #F8FAFC;
             margin-bottom: 0.25rem;
+            letter-spacing: -0.5px;
         }
         .admin-subtitle {
-            color: #93c5fd;
-            font-size: 0.85rem;
+            color: #94A3B8;
+            font-size: 0.9rem;
+            font-family: 'Roboto Mono', monospace;
         }
         .status-box {
             padding: 1rem;
-            border-radius: 12px;
+            border-radius: 8px;
             margin-bottom: 1rem;
             display: flex;
             justify-content: space-between;
             align-items: center;
+            font-family: 'Roboto Mono', monospace;
         }
         .status-running {
-            background: rgba(0, 255, 153, 0.1);
-            border: 1px solid #00FF99;
+            background: rgba(0, 255, 153, 0.05);
+            border: 1px solid rgba(0, 255, 153, 0.3);
+            color: #00FF99;
         }
         .status-stopped {
-            background: rgba(255, 51, 102, 0.1);
-            border: 1px solid #FF3366;
+            background: rgba(239, 68, 68, 0.05);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #EF4444;
         }
         .position-item {
-            background: rgba(30, 41, 59, 0.8);
+            background: #111827;
             padding: 0.75rem 1rem;
-            border-radius: 8px;
+            border-radius: 4px;
             margin-bottom: 0.5rem;
             display: flex;
             justify-content: space-between;
+            border: 1px solid #1F2937;
+            font-family: 'Roboto Mono', monospace;
         }
         .destruct-box {
-            background: linear-gradient(135deg, #450a0a 0%, #1c0606 100%);
-            border-radius: 16px;
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.1) 0%, rgba(28, 6, 6, 0.5) 100%);
+            border-radius: 8px;
             padding: 1.5rem;
-            border: 2px solid #dc2626;
+            border: 1px solid #EF4444;
             text-align: center;
             margin-top: 1rem;
         }
     </style>
 """, unsafe_allow_html=True)
+
+with st.sidebar:
+    st.markdown("### ⚡ QUANT_OS // V2.0")
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Core Modules</div>', unsafe_allow_html=True)
+    if st.button("📈 Execution Terminal", use_container_width=True):
+        st.switch_page("pages/1_📈_Terminal.py")
+    if st.button("📊 Analytics & Risk", use_container_width=True):
+        st.switch_page("pages/2_📊_Analytics_&_Heatmap.py")
+    st.button("⚙️ Admin Controls", use_container_width=True, type="primary")
+    
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    if st.button("🔌 Disconnect Session", use_container_width=True):
+        # auth_manager.logout()
+        st.switch_page("app.py")
 
 # Load live positions
 LIVE_STATE_PATH = Path("live_trader_state.json").resolve()
@@ -175,7 +209,7 @@ def flatten_all_positions():
                     else:
                         results.append(f"✅ SOLD {qty} {symbol}")
                 else:
-                    res = executor.submit_market(symbol=symbol, qty=abs(qty), side="BUY")
+                    res = executor.submit_market(symbol=symbol, qty=abs(qty), side="COVER")
                     if res.get("error"):
                         results.append(f"❌ Failed {symbol}: {res['error']}")
                     else:
@@ -380,14 +414,4 @@ if True:
             else:
                 st.error("Failed to save configuration.")
 
-# Sidebar nav
-with st.sidebar:
-    st.markdown("### 📍 Navigation")
-    if st.button("📈 Live Trading", use_container_width=True):
-        st.switch_page("pages/2_📈_Live_Trading.py")
-    if st.button("🔬 Backtesting", use_container_width=True):
-        st.switch_page("pages/3_🔬_Backtest.py")
-
-    if st.button("🚪 Logout", use_container_width=True):
-        auth_manager.logout()
-        st.rerun()
+# End of script
