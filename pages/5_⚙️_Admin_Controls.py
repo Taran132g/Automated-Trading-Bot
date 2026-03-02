@@ -107,10 +107,6 @@ st.markdown("""
 
 with st.sidebar:
     ui_components.render_system_status()
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    if st.button("🔌 Disconnect Session", use_container_width=True):
-        auth_manager.logout()
-        st.switch_page("app.py")
 
 # Load live positions
 LIVE_STATE_PATH = Path("live_trader_state.json").resolve()

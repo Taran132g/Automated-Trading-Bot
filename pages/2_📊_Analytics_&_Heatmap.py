@@ -73,19 +73,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("### ⚡ QUANT_OS // V2.0")
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="section-header">Core Modules</div>', unsafe_allow_html=True)
-    if st.button("📈 Execution Terminal", use_container_width=True):
-        st.switch_page("pages/1_📈_Terminal.py")
-    st.button("📊 Analytics & Risk", use_container_width=True, type="primary")
-    if st.button("⚙️ Admin Controls", use_container_width=True):
-        st.switch_page("pages/3_⚙️_Admin_Controls.py")
-    
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    if st.button("🔌 Disconnect Session", use_container_width=True):
-        auth_manager.logout()
-        st.switch_page("app.py")
+    import ui_components
+    ui_components.render_system_status()
 
 st.markdown("""
     <div style="margin-bottom: 20px;">
