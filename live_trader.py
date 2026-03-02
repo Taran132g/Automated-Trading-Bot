@@ -30,6 +30,7 @@ from dotenv import load_dotenv
 from schwab.auth import easy_client
 from schwab.orders import equities as equity_orders
 import config_manager
+from telegram_notifier import TelegramNotifier
 
 load_dotenv()
 
@@ -495,9 +496,10 @@ class LiveTrader:
         self.min_range_cents = int(os.getenv("MIN_RANGE_CENTS", "2"))
         
         # Penalty Box State
-        # Penalty Box State
         self.consecutive_loss_cents: float = 0.0
         self.loss_cooldown_until: float = 0.0
+        self.pi_cooldown_until: float = 0.0
+        self.telegram = TelegramNotifier()
         
         self._lock = threading.RLock()
 
@@ -825,6 +827,7 @@ class LiveTrader:
                         msg = f"🚨 PENALTY BOX TRIGGERED: Cumulative Loss >= $0.02/share. Cooldown for 2 minutes."
                         LOGGER.warning(msg)
                         print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
+                        self.telegram.notify_cooldown("Loss Cooldown", 120)
                 else:
                     # Empathetic Reset: Any profitable trade resets the anxiety bucket
                     if self.consecutive_loss_cents > 0:
@@ -1577,9 +1580,14 @@ class LiveTrader:
                     LOGGER.info("📊 New Day Anchor: %s (Liquidation: $%.2f)", self.daily_date, self.start_day_liquidation)
                 
                 # Update PnL based on liquidation change
+                old_pnl = self.daily_pnl
                 self.daily_pnl = liquidation_value - self.start_day_liquidation
                 details['day_pnl'] = self.daily_pnl
                 self.account_details = details
+                
+                # Notify on significant PnL change (>$1.00)
+                if abs(self.daily_pnl - old_pnl) >= 1.0:
+                    self.telegram.notify_account_update(details)
             
             self._save_state()
             
