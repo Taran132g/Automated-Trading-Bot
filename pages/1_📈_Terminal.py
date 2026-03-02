@@ -370,7 +370,7 @@ st.markdown("<br>", unsafe_allow_html=True)
 chart_col, tape_col = st.columns([7, 3])
 
 with chart_col:
-    st.markdown('<div class="section-header">ACCOUNT TRAJECTORY & EXECUTION MAP</div>', unsafe_allow_html=True)
+    st.markdown('<div class="section-header">ACCOUNT VALUE TRAJECTORY (VERIFIED)</div>', unsafe_allow_html=True)
     
     time_range = st.radio("Time Range", ["Today", "All Time"], horizontal=True, label_visibility="collapsed")
     
