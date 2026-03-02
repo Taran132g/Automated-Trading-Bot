@@ -487,10 +487,10 @@ class LiveTrader:
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
         self.daily_pnl: float = 0.0
         self.daily_date: str = time.strftime("%Y-%m-%d")
+        self.start_day_liquidation: float = 0.0
         self.check_bad_fills = _bool_env("LIVE_CHECK_BAD_FILLS", True)
         self.consecutive_bad_fills: int = 0  # Track consecutive bad fills
         self.live_symbols = self._parse_live_symbols()
-        self.account_details: Dict[str, float] = {}
         self.account_details: Dict[str, float] = {}
         self.min_range_cents = int(os.getenv("MIN_RANGE_CENTS", "2"))
         
@@ -583,7 +583,9 @@ class LiveTrader:
                 self.position_entry_times = {k: float(v) for k, v in data.get("position_entry_times", {}).items()}
                 self.last_exit_time = {k: float(v) for k, v in data.get("last_exit_time", {}).items()}
                 self.last_alert_id = int(data.get("last_alert_id", 0))
-                self.account_details = data.get("account_details", {})
+                self.start_day_liquidation = float(data.get("start_day_liquidation", 0.0))
+                self.daily_pnl = float(data.get("daily_pnl", 0.0))
+                self.daily_date = data.get("daily_date", time.strftime("%Y-%m-%d"))
                 self.consecutive_loss_cents = float(data.get("consecutive_loss_cents", 0.0))
                 self.loss_cooldown_until = float(data.get("loss_cooldown_until", 0.0))
                 self.pi_cooldown_until = float(data.get("pi_cooldown_until", 0.0))
@@ -619,6 +621,9 @@ class LiveTrader:
                 "last_exit_time": self.last_exit_time,
                 "last_alert_id": self.last_alert_id,
                 "account_details": self.account_details,
+                "daily_pnl": self.daily_pnl,
+                "daily_date": self.daily_date,
+                "start_day_liquidation": self.start_day_liquidation,
                 "consecutive_loss_cents": self.consecutive_loss_cents,
                 "loss_cooldown_until": self.loss_cooldown_until,
                 "rolling_pi": getattr(self, "rolling_pi", 0.0),
@@ -1564,7 +1569,16 @@ class LiveTrader:
                 print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
                 self._engage_emergency_shutdown("Account Stop Loss Triggered")
 
+            today = time.strftime("%Y-%m-%d")
             with self._lock:
+                if today != self.daily_date or self.start_day_liquidation <= 0:
+                    self.daily_date = today
+                    self.start_day_liquidation = liquidation_value
+                    LOGGER.info("📊 New Day Anchor: %s (Liquidation: $%.2f)", self.daily_date, self.start_day_liquidation)
+                
+                # Update PnL based on liquidation change
+                self.daily_pnl = liquidation_value - self.start_day_liquidation
+                details['day_pnl'] = self.daily_pnl
                 self.account_details = details
             
             self._save_state()
