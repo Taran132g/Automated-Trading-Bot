@@ -189,6 +189,8 @@ def load_live_data():
     data['positions'] = state.get('positions', {})
     data['account_details'] = state.get('account_details', {})
     data['rolling_pi'] = state.get('rolling_pi', 0.0)
+    data['daily_pnl_persistent'] = state.get('daily_pnl', 0.0)
+    data['start_day_liquidation'] = state.get('start_day_liquidation', 0.0)
     
     with closing(get_db_connection()) as conn:
         try:
@@ -325,9 +327,9 @@ metric_cols = st.columns(5)
 metrics = [
     {
         "label": "DAILY PNL (SCHWAB)", 
-        "value": f"${data['account_details'].get('day_pnl', data['daily_pnl']):,.2f}", 
-        "delta": "REALIZED", 
-        "color": "#00FF99" if data['daily_pnl'] >= 0 else "#EF4444"
+        "value": f"${data.get('daily_pnl_persistent', data['daily_pnl']):,.2f}", 
+        "delta": "REALIZED + UNREALIZED", 
+        "color": "#00FF99" if data.get('daily_pnl_persistent', data['daily_pnl']) >= 0 else "#EF4444"
     },
     {
         "label": "ACCOUNT VALUE", 
