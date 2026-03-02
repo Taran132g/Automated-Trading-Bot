@@ -102,3 +102,22 @@ def render_system_status():
             <span>{live_pos_text}</span>
         </div>
     """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown('<div class="section-header">Core Modules</div>', unsafe_allow_html=True)
+    
+    # Unified Navigation
+    if st.button("📈 Execution Terminal", use_container_width=True):
+        st.switch_page("pages/1_📈_Terminal.py")
+        
+    if st.button("📊 Analytics & Risk", use_container_width=True):
+        st.switch_page("pages/2_📊_Analytics_&_Heatmap.py")
+        
+    if st.button("⚙️ Admin Controls", use_container_width=True):
+        st.switch_page("pages/5_⚙️_Admin_Controls.py")
+        
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    if st.button("🔌 Disconnect Session", use_container_width=True):
+        import auth_manager
+        auth_manager.logout()
+        st.switch_page("app.py")
