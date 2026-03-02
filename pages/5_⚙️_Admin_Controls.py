@@ -128,10 +128,16 @@ def load_live_positions():
             return {}
     return {}
 
+def is_loop_running():
+    return subprocess.run(["pgrep", "-f", "restart_loop.sh"], capture_output=True).returncode == 0
+
+def is_trader_running():
+    # Only checks for the actual execution engine
+    return subprocess.run(["pgrep", "-f", "live_trader.py"], capture_output=True).returncode == 0
+
 def is_backend_running():
-    loop_result = subprocess.run(["pgrep", "-f", "restart_loop.sh"], capture_output=True)
-    grok_result = subprocess.run(["pgrep", "-f", "grok.py"], capture_output=True)
-    return loop_result.returncode == 0 or grok_result.returncode == 0
+    # Keep original name for compatibility, but check for either
+    return is_loop_running() or is_trader_running()
 
 def start_backend():
     try:
@@ -163,16 +169,24 @@ def stop_backend():
         return f"❌ Error: {str(e)}"
 
 def flatten_all_positions():
-    if is_backend_running():
-        return "❌ Error: Backend is running. Stop it first to avoid state corruption."
+    if is_trader_running():
+        return "❌ Error: Live Trader is actively running. Stop it first to avoid order conflicts."
     
     try:
         from live_trader import SchwabOrderExecutor
-        executor = SchwabOrderExecutor(dry_run=False)
+        try:
+            executor = SchwabOrderExecutor(dry_run=False)
+        except Exception as exc:
+            if "EOF" in str(exc) or "auth" in str(exc).lower():
+                return "❌ Error: Schwab tokens are expired or invalid. Please re-authenticate in the Token Management section below before flattening."
+            return f"❌ Failed to init Schwab client: {exc}"
         
         # Reconciliation check: Fetch ACTUAL positions from Schwab
         st.info("🔄 Fetching live positions from Schwab...")
-        positions = executor.fetch_positions()
+        try:
+            positions = executor.fetch_positions()
+        except Exception as exc:
+            return f"❌ Failed to fetch positions from Schwab: {exc}"
         
         if not positions:
             # Even if Schwab is flat, we should clear the local state to be safe
@@ -206,7 +220,7 @@ def flatten_all_positions():
             
         return "\n".join(results) if results else "No positions to flatten"
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Unexpected Error: {str(e)}"
 
 # Header
 st.markdown("""
@@ -226,11 +240,16 @@ left_col, right_col = st.columns(2)
 with left_col:
     st.markdown('<div class="section-header">🖥️ Backend Status</div>', unsafe_allow_html=True)
     
-    if backend_running:
-        st.markdown("""
-            <div class="status-box status-running">
-                <span style="font-weight: bold; color: #00FF99;">🟢 RUNNING</span>
-                <span style="color: #94a3b8;">Backend processes active</span>
+    loop_running = is_loop_running()
+    trader_running = is_trader_running()
+    
+    if loop_running:
+        status_color = "#00FF99" if trader_running else "#3b82f6"
+        status_text = "🟢 RUNNING" if trader_running else "🔵 LOOP ACTIVE (TRADER SHUTDOWN)"
+        st.markdown(f"""
+            <div class="status-box status-running" style="border-color: {status_color};">
+                <span style="font-weight: bold; color: {status_color};">{status_text}</span>
+                <span style="color: #94a3b8;">Supervisor logic active</span>
             </div>
         """, unsafe_allow_html=True)
     else:
@@ -243,12 +262,12 @@ with left_col:
     
     b1, b2 = st.columns(2)
     with b1:
-        if st.button("▶️ START", type="primary", use_container_width=True, disabled=backend_running):
+        if st.button("▶️ START", type="primary", use_container_width=True, disabled=loop_running):
             result = start_backend()
             st.success(result)
             st.rerun()
     with b2:
-        if st.button("⏹️ STOP", type="secondary", use_container_width=True, disabled=not backend_running):
+        if st.button("⏹️ STOP", type="secondary", use_container_width=True, disabled=not loop_running):
             result = stop_backend()
             st.warning(result)
             st.rerun()
@@ -268,10 +287,13 @@ with left_col:
                     </div>
                 """, unsafe_allow_html=True)
         
-        if st.button("🔴 FLATTEN ALL", type="primary", use_container_width=True, disabled=backend_running):
+        if st.button("🔴 FLATTEN ALL", type="primary", use_container_width=True, disabled=trader_running):
             with st.spinner("Flattening positions..."):
                 result = flatten_all_positions()
-            st.success(result)
+            if "✅" in result:
+                st.success(result)
+            else:
+                st.error(result)
             st.rerun()
     else:
         st.info("No open positions")
