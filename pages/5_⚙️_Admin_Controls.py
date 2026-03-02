@@ -136,29 +136,29 @@ def is_backend_running():
 def start_backend():
     try:
         project_root = Path(__file__).parent.parent.resolve()
-        kill_switch = project_root / "kill_switch.flag"
-        if kill_switch.exists():
-            kill_switch.unlink()
-        loop_script = project_root / "restart_loop.sh"
-        loop_script.chmod(0o755)
-        subprocess.Popen(
-            ["bash", str(loop_script)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        manager_script = project_root / "manager.sh"
+        manager_script.chmod(0o755)
+        
+        # We call the manager.sh start command
+        subprocess.run(
+            ["bash", str(manager_script), "start"],
             cwd=str(project_root),
-            start_new_session=True
+            capture_output=True
         )
-        return "✅ Backend starting (auto-restart enabled)..."
+        return "✅ Backend starting (Auto-restart via restart_loop.sh active)..."
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
 def stop_backend():
     try:
-        subprocess.run(["pkill", "-f", "restart_loop.sh"], capture_output=True)
-        subprocess.run(["pkill", "-f", "grok.py"], capture_output=True)
-        subprocess.run(["pkill", "-f", "paper_trader.py"], capture_output=True)
-        Path("kill_switch.flag").touch()
-        return "✅ Backend stopped"
+        project_root = Path(__file__).parent.parent.resolve()
+        manager_script = project_root / "manager.sh"
+        subprocess.run(
+            ["bash", str(manager_script), "stop"],
+            cwd=str(project_root),
+            capture_output=True
+        )
+        return "✅ Backend stopped (Kill Switch Activated)"
     except Exception as e:
         return f"❌ Error: {str(e)}"
 
