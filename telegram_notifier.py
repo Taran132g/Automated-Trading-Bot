@@ -7,8 +7,9 @@ LOGGER = logging.getLogger("TelegramNotifier")
 class TelegramNotifier:
     def __init__(self):
         self.enabled = False
-        self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        # Fallbacks provided by user for quick deployment
+        self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or "8281503085:AAHvQyEUnpmnriaYN4ngaiYLfDJ_SzLjHNc"
+        self.chat_id = os.getenv("TELEGRAM_CHAT_ID") or "8196739097"
         
         if self.bot_token and self.chat_id:
             self.enabled = True
