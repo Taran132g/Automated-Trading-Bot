@@ -33,22 +33,7 @@ class TelegramNotifier:
         except Exception as e:
             LOGGER.error("Failed to send telegram message: %s", e)
 
-    def notify_account_update(self, details: dict):
-        if not self.enabled:
-            return
-        
-        liq = details.get("liquidation_value", 0.0)
-        pnl = details.get("day_pnl", 0.0)
-        pnl_str = f"+${pnl:,.2f}" if pnl >= 0 else f"-${abs(pnl):,.2f}"
-        
-        msg = (
-            f"💰 *Account Update*\n"
-            f"Liquidation: `${liq:,.2f}`\n"
-            f"Daily PnL: `{pnl_str}`"
-        )
-        self.send_message(msg)
-
-    def notify_cooldown(self, cooldown_type: str, duration_sec: int):
+    def notify_cooldown(self, cooldown_type: str, account_value: float):
         if not self.enabled:
             return
         
@@ -56,6 +41,6 @@ class TelegramNotifier:
         msg = (
             f"{emoji} *Cooldown Triggered*\n"
             f"Type: `{cooldown_type}`\n"
-            f"Duration: `{duration_sec}s`"
+            f"Account Value: `${account_value:,.2f}`"
         )
         self.send_message(msg)

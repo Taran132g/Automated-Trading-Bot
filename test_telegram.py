@@ -19,17 +19,13 @@ def test_notifier():
     print("📤 Sending generic message...")
     notifier.send_message("⚡ *Bot Test*: System integration active.")
     
-    # Test 2: Account Update
-    print("📤 Sending account update...")
-    test_details = {
-        "liquidation_value": 25000.50,
-        "day_pnl": 125.75
-    }
-    notifier.notify_account_update(test_details)
+    # Test 2: Cooldown Message with Account Value
+    print("📤 Sending cooldown alert (PI)...")
+    notifier.notify_cooldown("PI Cooldown", 25000.50)
     
-    # Test 3: Cooldown
-    print("📤 Sending cooldown alert...")
-    notifier.notify_cooldown("Loss Cooldown (Test)", 120)
+    # Test 3: Cooldown Message with Account Value
+    print("📤 Sending cooldown alert (Loss)...")
+    notifier.notify_cooldown("Loss Cooldown", 24980.25)
     
     print("\n🎉 Test cycle complete. Check your Telegram!")
 

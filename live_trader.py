@@ -827,7 +827,7 @@ class LiveTrader:
                         msg = f"🚨 PENALTY BOX TRIGGERED: Cumulative Loss >= $0.02/share. Cooldown for 2 minutes."
                         LOGGER.warning(msg)
                         print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
-                        self.telegram.notify_cooldown("Loss Cooldown", 120)
+                        self.telegram.notify_cooldown("Loss Cooldown", self.account_details.get("liquidation_value", 0.0))
                 else:
                     # Empathetic Reset: Any profitable trade resets the anxiety bucket
                     if self.consecutive_loss_cents > 0:
@@ -1048,6 +1048,15 @@ class LiveTrader:
         
         LOGGER.info("PI per share: $%.4f  (Cumulative Avg over %d trades: $%.4f)",
                     pi_per_share, len(self.recent_pi), avg_pi)
+        
+        # Trigger PI Cooldown if avg PI < $0.0005 (5.0 per-10k shares logic)
+        if len(self.recent_pi) >= 5 and avg_pi < 0.0005:
+            if time.time() >= self.pi_cooldown_until:
+                self.pi_cooldown_until = time.time() + 300 # 5 minutes
+                msg = f"❄️ PI COOLDOWN TRIGGERED: Avg PI ${avg_pi:.5f} < $0.0005. Frozen for 5m."
+                LOGGER.warning(msg)
+                print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
+                self.telegram.notify_cooldown("PI Cooldown", self.account_details.get("liquidation_value", 0.0))
 
     def _record_and_apply_market(
         self, *, alert_id: int, symbol: str, direction: str, side: str, qty: int, price: float
@@ -1585,9 +1594,9 @@ class LiveTrader:
                 details['day_pnl'] = self.daily_pnl
                 self.account_details = details
                 
-                # Notify on significant PnL change (>$1.00)
-                if abs(self.daily_pnl - old_pnl) >= 1.0:
-                    self.telegram.notify_account_update(details)
+                # Notify on significant PnL change (REMOVED - User only wants cooldowns)
+                # if abs(self.daily_pnl - old_pnl) >= 1.0:
+                #    self.telegram.notify_account_update(details)
             
             self._save_state()
             
