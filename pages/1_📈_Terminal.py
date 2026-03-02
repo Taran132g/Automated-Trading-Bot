@@ -303,6 +303,19 @@ with top_col1:
             {indicator_html}
         </div>
     """, unsafe_allow_html=True)
+
+    # --- Active Cooldown Banners ---
+    now = time.time()
+    state = load_live_state()
+    loss_cooldown = state.get("loss_cooldown_until", 0.0)
+    pi_cooldown = state.get("pi_cooldown_until", 0.0)
+    
+    if now < loss_cooldown:
+        remaining = int(loss_cooldown - now)
+        st.error(f"⚠️ **LOSS COOLDOWN ACTIVE**: Trading paused for {remaining}s due to consecutive losses.", icon="🚨")
+    elif now < pi_cooldown:
+        remaining = int(pi_cooldown - now)
+        st.warning(f"🕒 **PI COOLDOWN ACTIVE**: Skipping entries for {remaining}s due to low fill quality.", icon="⏳")
     
 with top_col2:
     st.markdown(f"<div style='text-align: right; color: #64748B; font-family: monospace;'>SYS_TIME: {datetime.now(pytz.timezone('US/Eastern')).strftime('%H:%M:%S.%f')[:-3]}</div>", unsafe_allow_html=True)
