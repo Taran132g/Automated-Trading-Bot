@@ -194,7 +194,8 @@ def load_live_data():
     
     with closing(get_db_connection()) as conn:
         try:
-            data['trades'] = pd.read_sql_query("SELECT * FROM live_trades ORDER BY timestamp DESC", conn)
+            # Optimize: Only load today's trades for individual list view to save memory
+            data['trades'] = pd.read_sql_query(f"SELECT * FROM live_trades WHERE timestamp >= {today_start} ORDER BY timestamp DESC", conn)
             if not data['trades'].empty:
                 data['trades']['datetime'] = pd.to_datetime(data['trades']['timestamp'], unit='s', utc=True).dt.tz_convert('US/Eastern')
         except: pass
@@ -210,8 +211,8 @@ def load_live_data():
         except: pass
         
         try:
-            wins = pd.read_sql_query(f"SELECT COUNT(*) as count FROM live_trades WHERE pnl > 0 AND timestamp >= {today_start}", conn).iloc[0]['count']
-            total = pd.read_sql_query(f"SELECT COUNT(*) as count FROM live_trades WHERE timestamp >= {today_start}", conn).iloc[0]['count']
+            wins = pd.read_sql_query(f"SELECT COUNT(*) as count FROM live_trades WHERE pnl > 0 AND side IN ('SELL', 'COVER') AND timestamp >= {today_start}", conn).iloc[0]['count']
+            total = pd.read_sql_query(f"SELECT COUNT(*) as count FROM live_trades WHERE side IN ('SELL', 'COVER') AND timestamp >= {today_start}", conn).iloc[0]['count']
             data['win_rate'] = (wins / total * 100) if total > 0 else 0.0
         except: pass
         
@@ -229,7 +230,17 @@ def load_live_data():
         except: pass
         
         try:
-            data['account_history'] = pd.read_sql_query("SELECT * FROM account_history ORDER BY timestamp ASC", conn)
+            # Optimize: Load detailed data for today, and heavily downsample historical data to prevent OOM
+            hist_query = f"""
+                SELECT * FROM account_history WHERE timestamp >= {today_start}
+                UNION ALL
+                SELECT * FROM (
+                    SELECT * FROM account_history 
+                    WHERE timestamp < {today_start} AND rowid % 50 = 0
+                )
+                ORDER BY timestamp ASC
+            """
+            data['account_history'] = pd.read_sql_query(hist_query, conn)
             if not data['account_history'].empty:
                 data['account_history']['timestamp'] = pd.to_numeric(data['account_history']['timestamp'], errors='coerce')
                 # FIX: Explicitly cast liquidation_value to numeric as it is loaded from string in SQLite
@@ -280,6 +291,9 @@ with st.sidebar:
         
     ui_components.render_system_status()
     
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    if st.button("⚙️ Admin Controls", use_container_width=True):
+        st.switch_page("pages/5_⚙️_Admin_Controls.py")
 
 # --- MAIN DASHBOARD AREA ---
 top_col1, top_col2 = st.columns([3, 1])
@@ -324,9 +338,9 @@ metric_cols = st.columns(5)
 metrics = [
     {
         "label": "DAILY PNL (SCHWAB)", 
-        "value": f"${data.get('daily_pnl_persistent', data['daily_pnl']):,.2f}", 
+        "value": f"${data.get('daily_pnl_persistent') if data.get('daily_pnl_persistent') is not None else data.get('daily_pnl', 0.0):,.2f}", 
         "delta": "REALIZED + UNREALIZED", 
-        "color": "#00FF99" if data.get('daily_pnl_persistent', data['daily_pnl']) >= 0 else "#EF4444"
+        "color": "#00FF99" if (data.get('daily_pnl_persistent') if data.get('daily_pnl_persistent') is not None else data.get('daily_pnl', 0.0)) >= 0 else "#EF4444"
     },
     {
         "label": "ACCOUNT VALUE", 
@@ -467,7 +481,7 @@ with tape_col:
     tape_html = "<div style='height: 450px; overflow-y: auto; background: #111827; border: 1px solid #1F2937; border-radius: 8px;'>"
     
     if not data['alerts'].empty:
-        alerts_df = data['alerts'].head(1000)
+        alerts_df = data['alerts'].head(20)
     else:
         alerts_df = pd.DataFrame(columns=['datetime', 'symbol', 'price', 'direction'])
         

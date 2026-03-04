@@ -37,7 +37,7 @@ def has_live_position():
     state = load_live_state()
     positions = state.get('positions', {})
     # Return true if any position qty is != 0
-    return any(qty != 0 for qty in positions.values())
+    return positions and any(qty != 0 for qty in positions.values())
 
 def render_system_status():
     # Hide Admin Controls from auto-generated sidebar nav (we have a button for it)
@@ -107,14 +107,10 @@ def render_system_status():
     st.markdown('<div class="section-header">Core Modules</div>', unsafe_allow_html=True)
     
     # Unified Navigation
-    if st.button("📈 Execution Terminal", use_container_width=True):
-        st.switch_page("pages/1_📈_Terminal.py")
-        
-    if st.button("📊 Analytics & Risk", use_container_width=True):
-        st.switch_page("pages/2_📊_Analytics_&_Heatmap.py")
-        
-    if st.button("⚙️ Admin Controls", use_container_width=True):
-        st.switch_page("pages/5_⚙️_Admin_Controls.py")
+    st.page_link("pages/1_📈_Terminal.py", label="Execution Terminal", icon="📈", use_container_width=True)
+    st.page_link("pages/2_📊_Analytics_&_Heatmap.py", label="Analytics & Risk", icon="📊", use_container_width=True)
+    st.page_link("pages/2_🔍_Backtest.py", label="Paper Trading", icon="🔍", use_container_width=True)
+    st.page_link("pages/5_⚙️_Admin_Controls.py", label="Admin Controls", icon="⚙️", use_container_width=True)
         
     st.markdown("<br><br>", unsafe_allow_html=True)
     if st.button("🔌 Disconnect Session", use_container_width=True):

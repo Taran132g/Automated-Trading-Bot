@@ -135,11 +135,27 @@ def load_db_data():
             trades['datetime'] = pd.to_datetime(trades['timestamp'], unit='s', utc=True).dt.tz_convert('US/Eastern')
             trades['date'] = trades['datetime'].dt.date
             
-            # Daily aggregation
-            daily = trades.groupby('date').agg(
-                daily_pnl=('pnl', 'sum'),
-                trade_count=('id', 'count')
-            ).reset_index()
+            # Read daily PnL from account_history for the heatmap
+            try:
+                history = pd.read_sql_query("SELECT timestamp, day_pnl FROM account_history", conn)
+                if not history.empty:
+                    history['datetime'] = pd.to_datetime(history['timestamp'], unit='s', utc=True).dt.tz_convert('US/Eastern')
+                    history['date'] = history['datetime'].dt.date
+                    
+                    # Take the last recorded day_pnl for each date
+                    daily = history.sort_values('timestamp').groupby('date').tail(1).reset_index()
+                    daily = daily.rename(columns={'day_pnl': 'daily_pnl'})
+                else:
+                    daily = pd.DataFrame(columns=['date', 'daily_pnl'])
+            except:
+                daily = pd.DataFrame(columns=['date', 'daily_pnl'])
+
+            # Fallback to trade aggregation if account_history is empty or missing
+            if daily.empty and not trades.empty:
+                daily = trades.groupby('date').agg(
+                    daily_pnl=('pnl', 'sum'),
+                    trade_count=('id', 'count')
+                ).reset_index()
             
             return trades, daily
     except Exception as e:
@@ -189,20 +205,23 @@ if pasted_history:
 else:
     # Standard DB calculations
     if not trades.empty:
-        total_profit = trades[trades['pnl'] > 0]['pnl'].sum()
-        total_loss = abs(trades[trades['pnl'] < 0]['pnl'].sum())
+        # Calculate wins/losses at trade level for DB fallback only counting round trips
+        round_trips = trades[trades['side'].isin(['SELL', 'COVER'])]
+        
+        total_profit = round_trips[round_trips['pnl'] > 0]['pnl'].sum()
+        total_loss = abs(round_trips[round_trips['pnl'] < 0]['pnl'].sum())
         profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
         
-        # Calculate wins/losses at trade level for DB fallback (consistent with existing logic)
-        wins = len(trades[trades['pnl'] > 0])
-        losses = len(trades[trades['pnl'] < 0])
-        win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+        wins = len(round_trips[round_trips['pnl'] > 0])
+        losses = len(round_trips[round_trips['pnl'] <= 0])
+        total_round_trips = len(round_trips)
+        win_rate = (wins / total_round_trips * 100) if total_round_trips > 0 else 0
         
-        avg_win = trades[trades['pnl'] > 0]['pnl'].mean() if len(trades[trades['pnl'] > 0]) > 0 else 0
-        avg_loss = abs(trades[trades['pnl'] < 0]['pnl'].mean()) if len(trades[trades['pnl'] < 0]) > 0 else 0
+        avg_win = round_trips[round_trips['pnl'] > 0]['pnl'].mean() if wins > 0 else 0
+        avg_loss = abs(round_trips[round_trips['pnl'] < 0]['pnl'].mean()) if losses > 0 else 0
         risk_reward = avg_win / avg_loss if avg_loss > 0 else float('inf')
         
-        total_trades_count = len(trades)
+        total_trades_count = total_round_trips
     else:
         total_profit = 0
         total_loss = 0
@@ -303,7 +322,7 @@ else:
     with col4:
         st.markdown(f"""
             <div class="adv-metric">
-                <div class="adv-metric-title">Total Trades Executed</div>
+                <div class="adv-metric-title">Round-Trip Sessions</div>
                 <div class="adv-metric-value" style="color: #F8FAFC;">{total_trades_count}</div>
             </div>
         """, unsafe_allow_html=True)
@@ -346,8 +365,9 @@ else:
     with chart_col2:
         st.markdown('<div class="section-header">WIN / LOSS DISTRIBUTION</div>', unsafe_allow_html=True)
         if not trades.empty:
-            wins = len(trades[trades['pnl'] > 0])
-            losses = len(trades[trades['pnl'] <= 0])
+            round_trips_chart = trades[trades['side'].isin(['SELL', 'COVER'])]
+            wins = len(round_trips_chart[round_trips_chart['pnl'] > 0])
+            losses = len(round_trips_chart[round_trips_chart['pnl'] <= 0])
         else:
             wins, losses = 0, 0
             

@@ -365,6 +365,7 @@ def process_book(book: _Book, sym: str) -> BookMetrics:
 # the top of this section.
 SYMBOLS: List[str] = []
 WINDOW_SECONDS: int = 60
+VOL_WINDOW_SECONDS: int = 180
 HEARTBEAT_SEC: int = 5
 MIN_ASK_HEAVY: int = 4
 MIN_BID_HEAVY: int = 4
@@ -419,7 +420,7 @@ def _touch():
 
 def _prune(sym: str, now_ts: float):
     q = trades[sym]
-    cutoff = now_ts - WINDOW_SECONDS
+    cutoff = now_ts - max(WINDOW_SECONDS, VOL_WINDOW_SECONDS)
     while q and q[0].ts < cutoff:
         q.popleft()
 
@@ -428,22 +429,34 @@ def _summarize(sym: str, now: float):
     if not q:
         log_structured("ROLL", {"symbol": sym, "message": "No prints yet"})
         return 0
-    hi = max(t.px for t in q)
-    lo = min(t.px for t in q)
-    vol = sum(t.sz for t in q)
+    
+    # Price range logic (1-minute window)
+    price_q = [t for t in q if t.ts >= now - WINDOW_SECONDS]
+    if price_q:
+        hi = max(t.px for t in price_q)
+        lo = min(t.px for t in price_q)
+    else:
+        hi, lo = 0.0, 0.0
+
+    # Volume logic (3-minute window)
+    vol_q = [t for t in q if t.ts >= now - VOL_WINDOW_SECONDS]
+    vol = sum(t.sz for t in vol_q)
     volume_window[sym].append(vol)
     smoothed_vol = sum(volume_window[sym]) / len(volume_window[sym]) if volume_window[sym] else vol
-    window_duration = max(min(now - q[0].ts, WINDOW_SECONDS), 1.0) if q else WINDOW_SECONDS
-    vol_per_min = (smoothed_vol / (window_duration / 60)) if window_duration > 0 else 0
+    
+    vol_window_duration = max(min(now - vol_q[0].ts, VOL_WINDOW_SECONDS), 1.0) if vol_q else VOL_WINDOW_SECONDS
+    vol_per_min = (smoothed_vol / (vol_window_duration / 60)) if vol_window_duration > 0 else 0
+    
     log_structured("ROLL", {
         "symbol": sym,
         "window_sec": WINDOW_SECONDS,
+        "vol_window_sec": VOL_WINDOW_SECONDS,
         "high": hi,
         "low": lo,
-        "range_cents": (hi - lo) * 100.0,
+        "range_cents": (hi - lo) * 100.0 if hi and lo else 0.0,
         "volume": vol,
         "vol_per_min": vol_per_min,
-        "window_duration": window_duration
+        "window_duration": vol_window_duration
     })
     if DEBUG:
         log_structured("VOLUME_DEBUG", {
@@ -452,7 +465,7 @@ def _summarize(sym: str, now: float):
             "smoothed_volume": smoothed_vol,
             "volume_window": list(volume_window[sym]),
             "vol_per_min": vol_per_min,
-            "window_duration": window_duration
+            "window_duration": vol_window_duration
         })
     return vol_per_min
 
@@ -629,7 +642,7 @@ def on_book(msg: dict):
             })
             if (now - _last_volume_fallback_ts[sym]) >= 10.0:
                 est_volume = (metrics.total_bids + metrics.total_asks) // 2
-                est_volume_per_min = (est_volume / (WINDOW_SECONDS / 60)) if est_volume > 0 else 0
+                est_volume_per_min = (est_volume / (VOL_WINDOW_SECONDS / 60)) if est_volume > 0 else 0
                 trades[sym].append(Trade(now, price or bid_price or ask_price or 0.0, est_volume))
                 _last_volume_fallback_ts[sym] = now
                 _prune(sym, now)
@@ -669,7 +682,7 @@ def on_book(msg: dict):
         elif (h == 15 and m >= 30) or h == 16:
             imbalance_threshold = 3   # 10:30am-12pm EST: morning surge
         elif h in (17, 18):
-            imbalance_threshold = 4   # 12-2pm EST: lunch lull
+            imbalance_threshold = 5   # 12-2pm EST: lunch lull
 
         if not DISABLE_BID_HEAVY and metrics.bid_heavy_venues >= metrics.ask_heavy_venues + imbalance_threshold:
             direction = "bid-heavy"
@@ -753,24 +766,25 @@ def on_book(msg: dict):
                 if len(alert_history[sym]) > 10:
                     alert_history[sym].pop(0)
                 global inline_only_next_alert_id
+                c = conn.cursor()
                 if inline_only_mode:
                     inline_only_next_alert_id += 1
                     next_alert_id = inline_only_next_alert_id
                 else:
-                    c = conn.cursor()
                     c.execute("SELECT IFNULL(MAX(rowid), 0) FROM alerts")
                     next_alert_id = (c.fetchone() or [0])[0] + 1
                 inline_ok = True
                 if inline_trader_dispatch:
                     inline_ok = inline_trader_dispatch(next_alert_id, alert)
-                if not inline_only_mode or not inline_ok:
-                    c.execute(
-                        "INSERT INTO alerts (rowid, timestamp, symbol, ratio, total_bids, total_asks, heavy_venues, direction, price, vol_per_min, range_cents) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        (next_alert_id, alert["timestamp"], alert["symbol"], alert["ratio"], alert["total_bids"],
-                         alert["total_asks"], alert["heavy_venues"], alert["direction"], alert["price"], alert["vol_per_min"], alert["range_cents"])
-                    )
-                    conn.commit()
+                
+                # Always insert to DB for history, even if inline dispatch happened
+                c.execute(
+                    "INSERT INTO alerts (rowid, timestamp, symbol, ratio, total_bids, total_asks, heavy_venues, direction, price, vol_per_min, range_cents) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (next_alert_id, alert["timestamp"], alert["symbol"], alert["ratio"], alert["total_bids"],
+                     alert["total_asks"], alert["heavy_venues"], alert["direction"], alert["price"], alert["vol_per_min"], alert["range_cents"])
+                )
+                conn.commit()
                 last_alert[sym] = now
                 log_structured("ALERT", {
                     "symbol": sym,
@@ -888,7 +902,7 @@ async def main():
 
     # Auto-start paper_trader if requested (unified startup)
     paper_proc = None
-    if _bool_env("RUN_PAPER_TRADER", False) and not _bool_env("INLINE_DISPATCH_ONLY", False):
+    if _bool_env("RUN_PAPER_TRADER", False) and not _bool_env("ENABLE_INLINE_DISPATCH", False):
         import subprocess
         log_structured("STARTUP", {"message": "Launching paper_trader.py subprocess..."})
         try:
@@ -902,12 +916,13 @@ async def main():
         except Exception as e:
             log_structured("STARTUP_ERROR", {"error": f"Failed to start paper_trader: {e}"})
 
-    global WINDOW_SECONDS, HEARTBEAT_SEC, MIN_ASK_HEAVY, MIN_BID_HEAVY
+    global WINDOW_SECONDS, VOL_WINDOW_SECONDS, HEARTBEAT_SEC, MIN_ASK_HEAVY, MIN_BID_HEAVY
     global MAX_RANGE_CENTS, MIN_RANGE_CENTS, MIN_VOLUME, MIN_IMBALANCE_DURATION_SEC
     global DB_PATH, SYMBOLS, DISABLE_BID_HEAVY, trades, msg_count, _book_raw_remaining
     global DEBUG_BOOK_RAW, JSON_BOOK, SHOW_BOOK, BOOK_INTERVAL_SEC, DEBUG_INSTR, DEBUG
 
     WINDOW_SECONDS = args.window if args.window is not None else _get_int_env("WINDOW_SECONDS", 60, 30)
+    VOL_WINDOW_SECONDS = _get_int_env("VOL_WINDOW_SECONDS", 180, 60)
     HEARTBEAT_SEC = args.heartbeat if args.heartbeat is not None else _get_int_env("HEARTBEAT_SEC", 5, 1)
     MIN_ASK_HEAVY = args.min_venues if args.min_venues is not None else _get_int_env("MIN_ASK_HEAVY", 4, 1)
     MIN_BID_HEAVY = args.min_venues if args.min_venues is not None else _get_int_env("MIN_BID_HEAVY", 4, 1)
@@ -917,7 +932,7 @@ async def main():
     MIN_IMBALANCE_DURATION_SEC = args.min_imbalance_duration if args.min_imbalance_duration is not None else _get_float_env("MIN_IMBALANCE_DURATION_SEC", 10.0, 0.0)
     DB_PATH = args.db_path if args.db_path is not None else os.getenv("DB_PATH", "penny_basing.db")
     os.environ["DB_PATH"] = str(DB_PATH)
-    inline_only_requested = _bool_env("INLINE_DISPATCH_ONLY", False)
+    inline_only_requested = _bool_env("ENABLE_INLINE_DISPATCH", False)
     inline_dry_run = _bool_env(
         "INLINE_DRY_RUN",
         _bool_env("INLINE_LIVE_DRY_RUN", _bool_env("LIVE_DRY_RUN", False)),
@@ -977,7 +992,9 @@ async def main():
         trader_kind = "live"
         traders.clear()
         
-        if not _bool_env("INLINE_DISPATCH_ONLY", False):
+        inline_requests = _bool_env("ENABLE_INLINE_DISPATCH", False)
+        
+        if inline_requests:
             if inline_dry_run:
                 from paper_trader import PaperTrader
                 traders.append(("paper", PaperTrader()))
@@ -1004,7 +1021,7 @@ async def main():
                 #     traders.append(("friend", LiveTrader(dry_run=False, executor=friend_executor, name="friend")))
                 #     log_structured("MULTI_ACCOUNT", {"accounts": ["primary", "friend"]})
         else:
-            log_structured("STARTUP", {"message": "In-process (inline) traders disabled via INLINE_DISPATCH_ONLY=1"})
+            log_structured("STARTUP", {"message": "In-process (inline) traders disabled via ENABLE_INLINE_DISPATCH=0"})
         
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue(maxsize=_get_int_env("INLINE_TRADER_QUEUE", 100, 10))
@@ -1254,4 +1271,9 @@ if __name__ == "__main__":
         log_structured("STOP", {"message": "User stopped"})
     except Exception as e:
         log_structured("FATAL_ERROR", {"error": str(e)})
+        try:
+            from telegram_notifier import TelegramNotifier
+            TelegramNotifier().notify_error("Grok Pipeline Fatal Crash", str(e))
+        except Exception:
+            pass
         sys.exit(5)

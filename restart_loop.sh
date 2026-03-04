@@ -32,7 +32,7 @@ while true; do
     fi
 
     # 2. Start Paper Trader
-    if [ "$RUN_PAPER_TRADER" = "1" ]; then
+    if [ "$RUN_PAPER_TRADER" = "1" ] && [ "$ENABLE_INLINE_DISPATCH" != "1" ]; then
         if ! pgrep -f "paper_trader.py" > /dev/null; then
             echo "Starting Paper Trader at $(date)..." >> "$LOOP_LOG"
             .venv/bin/python3 paper_trader.py >> paper_trader.log 2>&1 &
@@ -41,7 +41,7 @@ while true; do
     fi
 
     # 3. Start Live Trader
-    if [ "$RUN_LIVE_TRADER" = "1" ]; then
+    if [ "$RUN_LIVE_TRADER" = "1" ] && [ "$ENABLE_INLINE_DISPATCH" != "1" ]; then
         if ! pgrep -f "live_trader.py" > /dev/null; then
             echo "Starting Live Trader at $(date)..." >> "$LOOP_LOG"
             .venv/bin/python3 live_trader.py >> live_trader.log 2>&1 &

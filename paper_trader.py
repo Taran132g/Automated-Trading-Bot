@@ -10,6 +10,7 @@ import threading
 import json
 import atexit
 from pathlib import Path
+from contextlib import closing
 
 import os
 
@@ -84,7 +85,7 @@ class PaperTrader:
         return conn
 
     def _init_db_schema(self) -> None:
-        with self._open_conn() as conn:
+        with closing(self._open_conn()) as conn:
             cur = conn.cursor()
 
             cur.execute("""
@@ -132,7 +133,7 @@ class PaperTrader:
             conn.commit()
 
     def _get_last_alert_id(self) -> int:
-        with self._open_conn() as conn:
+        with closing(self._open_conn()) as conn:
             cur = conn.cursor()
             try:
                 cur.execute("SELECT MAX(rowid) FROM alerts")
@@ -143,7 +144,7 @@ class PaperTrader:
                 return 0
 
     def _get_current_price(self, symbol: str) -> float:
-        with self._open_conn() as conn:
+        with closing(self._open_conn()) as conn:
             cur = conn.cursor()
             cur.execute(
                 "SELECT price FROM alerts WHERE symbol=? ORDER BY timestamp DESC LIMIT 1",
@@ -242,7 +243,7 @@ class PaperTrader:
             f.write(str(self.daily_pnl))
 
         # Log to DB
-        with self._open_conn() as conn:
+        with closing(self._open_conn()) as conn:
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO paper_trades
@@ -264,7 +265,7 @@ class PaperTrader:
     # ============================================================
     def _update_position_db(self, symbol, cur_price=None):
         if symbol not in self.positions:
-            with self._open_conn() as conn:
+            with closing(self._open_conn()) as conn:
                 cur = conn.cursor()
                 cur.execute("DELETE FROM paper_positions WHERE symbol=?", (symbol,))
                 conn.commit()
@@ -284,7 +285,7 @@ class PaperTrader:
         cost_basis = abs(qty) * entry
         pnl_pct = (pnl / cost_basis) * 100 if cost_basis != 0 else 0
 
-        with self._open_conn() as conn:
+        with closing(self._open_conn()) as conn:
             cur = conn.cursor()
             cur.execute("""
                 INSERT OR REPLACE INTO paper_positions
@@ -331,7 +332,7 @@ class PaperTrader:
             flush=True,
         )
 
-        with self._open_conn() as conn:
+        with closing(self._open_conn()) as conn:
             cur = conn.cursor()
             cur.execute(
                 """
@@ -375,7 +376,7 @@ class PaperTrader:
         last_db_mtime = db_path.stat().st_mtime if db_path.exists() else 0.0
 
         while True:
-            with self._open_conn() as conn:
+            with closing(self._open_conn()) as conn:
                 cur = conn.cursor()
                 try:
                     cur.execute("""
