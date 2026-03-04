@@ -449,8 +449,9 @@ class LiveTrader:
     and a kill-switch file.
     """
 
-    def __init__(self, *, dry_run: bool = False, executor: Optional[SchwabOrderExecutor] = None, name: str = "default") -> None:
+    def __init__(self, *, dry_run: bool = False, executor: Optional[SchwabOrderExecutor] = None, name: str = "default", inline: bool = False) -> None:
         self.name = name  # Identifier for multi-account logging
+        self.inline = inline
         self.db_path = Path(os.getenv("DB_PATH", "penny_basing.db"))
         
         # Load dynamic config
@@ -1452,6 +1453,7 @@ class LiveTrader:
                     if position > 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing long position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
+                            
                         # FORCE MARKET CLOSE FOR EXITS
                         self._submit_order(
                             alert_id=alert_id,
@@ -1497,6 +1499,7 @@ class LiveTrader:
                     if position < 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing short position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
+                            
                         # FORCE MARKET CLOSE FOR EXITS
                         self._submit_order(
                             alert_id=alert_id,
@@ -1542,8 +1545,16 @@ class LiveTrader:
                 time.sleep(1.0) # Give broker a moment to update
                 if attempt == max_retries - 1:
                     LOGGER.error("Max retries reached for Boxed Position Error. Skipping alert %s.", alert_id)
+                    try:
+                        self.telegram.notify_error("Boxed Position Reached", f"Skipping alert {alert_id}")
+                    except Exception:
+                        pass
             except Exception as e:
                 LOGGER.error("An unexpected error occurred in _handle_alert for alert %s: %s", alert_id, e)
+                try:
+                    self.telegram.notify_error("Schwab API / Trade Execution", f"Alert {alert_id}: {e}")
+                except Exception:
+                    pass
                 break # Don't retry for other unexpected errors
 
     def process_alert(
@@ -1652,6 +1663,20 @@ class LiveTrader:
         LOGGER.info("Starting LiveTrader loop...")
         self._check_kill_switch()
         
+        if self.inline:
+            LOGGER.info("LiveTrader is running INLINE. Skipping DB polling loop.")
+            # Keep the background account polling thread alive
+            while True:
+                self._check_kill_switch()
+                self._check_time_stops()
+                time.sleep(1.0)
+        
+        # High-frequency polling back-off
+        min_sleep = 0.05
+        max_sleep = self.poll_interval
+        idle_sleep = min_sleep
+        db_mtime = 0.0
+        
         while True:
             try:
                 # Poll for new alerts
@@ -1674,14 +1699,40 @@ class LiveTrader:
                         
                         self.process_alert(alert_id, symbol, direction, price, range_cents=range_cents)
                     
-                    # Short sleep if we had activity
-                    time.sleep(0.05)
+                    # Update mtime so we don't immediately wake up for old writes
+                    try:
+                        db_mtime = os.stat(self.db_path).st_mtime
+                    except Exception:
+                        pass
+                    
+                    idle_sleep = min_sleep
+                    time.sleep(0.01)
                 else:
-                    # Sleep longer if no activity
-                    time.sleep(self.poll_interval)
+                    # Low-latency idle sleep: check DB modified time every 10ms
+                    target_sleep = min(idle_sleep * 2, max_sleep)
+                    wake_deadline = time.monotonic() + target_sleep
+                    
+                    woke_for_write = False
+                    mtime_probe = 0.01
+                    while time.monotonic() < wake_deadline:
+                        try:
+                            current_mtime = os.stat(self.db_path).st_mtime
+                            if current_mtime > db_mtime:
+                                db_mtime = current_mtime
+                                woke_for_write = True
+                                break
+                        except Exception:
+                            pass
+                        time.sleep(mtime_probe)
+                    
+                    idle_sleep = min_sleep if woke_for_write else target_sleep
                     
             except Exception as exc:
                 LOGGER.error("Error in main loop: %s", exc)
+                try:
+                    self.telegram.notify_error("LiveTrader Crash Loop", str(exc))
+                except Exception:
+                    pass
                 time.sleep(1.0)
             
             self._check_kill_switch()
