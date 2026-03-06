@@ -374,7 +374,7 @@ with left_col:
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     
     st.markdown('<div class="section-header">SYMBOL PERFORMANCE</div>', unsafe_allow_html=True)
-    time_range = st.radio("Time Range", ["All Time", "Today"], horizontal=True, label_visibility="collapsed")
+    time_range = st.radio("Time Range", ["Today", "All Time"], horizontal=True, label_visibility="collapsed")
     
     if not data['trades'].empty:
         trades_to_show = data['trades']
