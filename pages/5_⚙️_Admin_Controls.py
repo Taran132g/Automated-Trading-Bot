@@ -31,7 +31,7 @@ st.markdown("""
             color: #E2E8F0;
             font-family: 'Inter', sans-serif;
         }
-        #MainMenu, header, footer { visibility: hidden; }
+        #MainMenu, footer { visibility: hidden; }
         .block-container { padding-top: 1rem; max-width: 98%; }
         
         .section-header {
@@ -138,7 +138,7 @@ def is_backend_running():
 def start_backend():
     try:
         project_root = Path(__file__).parent.parent.resolve()
-        manager_script = project_root / "manager.sh"
+        manager_script = project_root / "manage_backend.sh"
         manager_script.chmod(0o755)
         
         # We call the manager.sh start command
@@ -154,7 +154,7 @@ def start_backend():
 def stop_backend():
     try:
         project_root = Path(__file__).parent.parent.resolve()
-        manager_script = project_root / "manager.sh"
+        manager_script = project_root / "manage_backend.sh"
         subprocess.run(
             ["bash", str(manager_script), "stop"],
             cwd=str(project_root),
@@ -240,11 +240,11 @@ with left_col:
     trader_running = is_trader_running()
     
     if loop_running:
-        status_color = "#00FF99" if trader_running else "#3b82f6"
-        status_text = "🟢 RUNNING" if trader_running else "🔵 LOOP ACTIVE (TRADER SHUTDOWN)"
+        # Determine specific text based on whether the separate live_trader script is visible
+        status_text = "🟢 RUNNING" if trader_running else "🟢 RUNNING (INLINE DISPATCH)"
         st.markdown(f"""
-            <div class="status-box status-running" style="border-color: {status_color};">
-                <span style="font-weight: bold; color: {status_color};">{status_text}</span>
+            <div class="status-box status-running" style="border-color: #00FF99;">
+                <span style="font-weight: bold; color: #00FF99;">{status_text}</span>
                 <span style="color: #94a3b8;">Supervisor logic active</span>
             </div>
         """, unsafe_allow_html=True)

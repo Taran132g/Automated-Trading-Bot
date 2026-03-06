@@ -135,6 +135,7 @@ def pass2_write_csv(path: str, price_ts, price_px, alert_set):
         "ratio", "total_bids", "total_asks",
         "heavy_venues", "vol_per_min",
         "price",
+        "rolling_pi",
         "alert",
         "change_10s", "change_30s", "change_60s",
     ]
@@ -180,6 +181,7 @@ def pass2_write_csv(path: str, price_ts, price_px, alert_set):
             heavy = payload.get("bid_heavy", 0) - payload.get("ask_heavy", 0)
             vol   = payload.get("vol_per_min", 0.0)
             price = payload.get("price", 0.0)
+            rolling_pi = payload.get("rolling_pi", 0.0)
 
             if not price or not sym or not ts:
                 skipped += 1
@@ -218,6 +220,7 @@ def pass2_write_csv(path: str, price_ts, price_px, alert_set):
                 "heavy_venues": heavy,
                 "vol_per_min":  vol,
                 "price":        price,
+                "rolling_pi":   rolling_pi,
                 "alert":        is_alert,
                 **changes,
             })

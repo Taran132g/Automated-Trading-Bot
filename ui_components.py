@@ -41,19 +41,10 @@ def has_live_position():
 
 def render_system_status():
     # Hide Admin Controls from auto-generated sidebar nav (we have a button for it)
-    # Also prevent sidebar from being collapsed
+    # The sidebar is allowed to be collapsed.
     st.markdown("""
         <style>
             [data-testid="stSidebarNav"] li:last-child { display: none; }
-            [data-testid="collapsedControl"] { display: none !important; }
-            [data-testid="stSidebarCollapseButton"] { display: none !important; }
-            section[data-testid="stSidebar"] {
-                min-width: 300px !important;
-                width: 300px !important;
-                transform: none !important;
-                visibility: visible !important;
-            }
-            section[data-testid="stSidebar"] > div { width: 300px !important; }
         </style>
     """, unsafe_allow_html=True)
     
@@ -103,15 +94,6 @@ def render_system_status():
         </div>
     """, unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="section-header">Core Modules</div>', unsafe_allow_html=True)
-    
-    # Unified Navigation
-    st.page_link("pages/1_📈_Terminal.py", label="Execution Terminal", icon="📈", use_container_width=True)
-    st.page_link("pages/2_📊_Analytics_&_Heatmap.py", label="Analytics & Risk", icon="📊", use_container_width=True)
-    st.page_link("pages/2_🔍_Backtest.py", label="Paper Trading", icon="🔍", use_container_width=True)
-    st.page_link("pages/5_⚙️_Admin_Controls.py", label="Admin Controls", icon="⚙️", use_container_width=True)
-        
     st.markdown("<br><br>", unsafe_allow_html=True)
     if st.button("🔌 Disconnect Session", use_container_width=True):
         import auth_manager

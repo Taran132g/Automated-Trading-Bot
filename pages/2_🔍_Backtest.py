@@ -41,7 +41,7 @@ st.markdown("""
             font-family: 'Inter', sans-serif;
         }
         
-        #MainMenu, header, footer { visibility: hidden; }
+        #MainMenu, footer { visibility: hidden; }
         .block-container { padding-top: 1rem; max-width: 98%; }
         
         /* Metrics / KPIs */

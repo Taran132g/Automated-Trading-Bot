@@ -1,6 +1,7 @@
 import streamlit as st
 import auth_manager
 import os
+import time
 
 st.set_page_config(
     page_title="Terminal Login",

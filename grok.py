@@ -515,7 +515,11 @@ def on_level1(msg: dict):
             
             try:
                 price = float(price)
-                # last_l1 is already updated
+                # Zero-latency price routing to inline live traders for Profit Monitoring
+                if traders:
+                    for name, trader in traders:
+                        if hasattr(trader, "update_live_price"):
+                            trader.update_live_price(sym, price)
             except (TypeError, ValueError):
                 log_structured("L1_WARNING", {"symbol": sym, "message": "Invalid price", "value": price})
                 continue
@@ -606,9 +610,27 @@ def on_timesale(msg: dict):
             if msg_count[sym] % PRINT_EVERY == 0:
                 _summarize(sym, now)
 
+_last_pi_read_ts = 0.0
+_cached_rolling_pi = 0.0
+
 def on_book(msg: dict):
-    global _last_msg_ts
+    global _last_msg_ts, _last_pi_read_ts, _cached_rolling_pi
     now = time()
+    
+    # Lightweight cache refresh for Rolling PI to avoid disk IO bottleneck
+    if now - _last_pi_read_ts > 5.0:
+        _last_pi_read_ts = now
+        try:
+            import json
+            from pathlib import Path
+            state_path = Path(__file__).parent / "live_trader_state.json"
+            if state_path.exists():
+                with open(state_path, "r") as f:
+                    state = json.load(f)
+                    _cached_rolling_pi = float(state.get("rolling_pi", 0.0))
+        except Exception:
+            pass
+            
     for it in msg.get("content", []):
         sym = it.get("key")
         if sym not in SYMBOLS:
@@ -664,7 +686,8 @@ def on_book(msg: dict):
             "bids": metrics.total_bids,
             "asks": metrics.total_asks,
             "vol_per_min": vol_per_min,
-            "price": price
+            "price": price,
+            "rolling_pi": _cached_rolling_pi
         })
         direction = None
         
@@ -744,11 +767,34 @@ def on_book(msg: dict):
                (is_short and direction == "bid-heavy"):
                  curr_min_duration = 2.0
             
+            # Time-based venue threshold (ET):
+            #   10:30–12:00 → 3 venues (active open)
+            #   12:00–14:00 → 5 venues (midday lull, stricter)
+            #   15:00–16:00 → 3 venues (close rush)
+            #   otherwise   → default (MIN_ASK_HEAVY)
+            import datetime as _dt
+            _now_et = _dt.datetime.now(_dt.timezone(
+                _dt.timedelta(hours=-5 if _dt.datetime.now(_dt.timezone.utc).month < 3
+                              or (_dt.datetime.now(_dt.timezone.utc).month == 3
+                                  and _dt.datetime.now(_dt.timezone.utc).day < 9)
+                              else -4)
+            ))
+            _et_h = _now_et.hour + _now_et.minute / 60.0
+            if 10.5 <= _et_h < 12.0:
+                curr_min_venues = 3
+            elif 12.0 <= _et_h < 14.0:
+                curr_min_venues = 5
+            elif 15.0 <= _et_h < 16.0:
+                curr_min_venues = 3
+            else:
+                curr_min_venues = max(MIN_ASK_HEAVY, MIN_BID_HEAVY)
+
             if (imbalance_duration >= curr_min_duration and
-                metrics.valid_exchanges >= max(MIN_ASK_HEAVY, MIN_BID_HEAVY) and 
+                metrics.valid_exchanges >= curr_min_venues and
                 vol_per_min >= MIN_VOLUME):
                 ratio = metrics.ask_to_bid_ratio if direction == "ask-heavy" else metrics.bid_to_ask_ratio
                 heavy_venues = metrics.ask_heavy_venues if direction == "ask-heavy" else metrics.bid_heavy_venues
+                target_limit_price = bid_price if direction == "bid-heavy" else ask_price
                 alert = {
                     "timestamp": now,
                     "symbol": sym,
@@ -758,6 +804,7 @@ def on_book(msg: dict):
                     "heavy_venues": heavy_venues,
                     "direction": direction,
                     "price": price,
+                    "target_limit_price": target_limit_price,
                     "vol_per_min": vol_per_min,
                     "range_cents": range_cents,
                     "exchanges": [EXCHANGE_MAP.get(ex, ex) for ex in metrics.per_venue.keys()]
