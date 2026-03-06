@@ -1466,7 +1466,7 @@ class LiveTrader:
                 #     return
 
                 # Cooldown check
-                cooldown_seconds = 60.0
+                cooldown_seconds = 30.0
                 last_exit = self.last_exit_time.get(symbol, 0)
                 if time.time() - last_exit < cooldown_seconds:
                     # We are in cooldown. Only allow logical exits?
