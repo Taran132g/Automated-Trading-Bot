@@ -1724,17 +1724,19 @@ class LiveTrader:
         idle_sleep = min_sleep
         db_mtime = 0.0
         
+        monitor_conn = self._open_conn()
+        monitor_conn.isolation_level = None
+        monitor_cur = monitor_conn.cursor()
+
         while True:
             try:
                 # Poll for new alerts
                 new_alerts = []
-                with self._open_conn() as conn:
-                    cur = conn.cursor()
-                    cur.execute(
-                        "SELECT rowid, symbol, direction, price, range_cents FROM alerts WHERE rowid > ? ORDER BY rowid ASC",
-                        (self.last_alert_id,)
-                    )
-                    new_alerts = cur.fetchall()
+                monitor_cur.execute(
+                    "SELECT rowid, symbol, direction, price, range_cents FROM alerts WHERE rowid > ? ORDER BY rowid ASC",
+                    (self.last_alert_id,)
+                )
+                new_alerts = monitor_cur.fetchall()
                 
                 if new_alerts:
                     for row in new_alerts:

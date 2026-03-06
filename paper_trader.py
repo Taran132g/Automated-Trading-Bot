@@ -375,21 +375,24 @@ class PaperTrader:
         db_path = Path(DB_PATH)
         last_db_mtime = db_path.stat().st_mtime if db_path.exists() else 0.0
 
+        # Open one long-lived connection for monitoring
+        monitor_conn = self._open_conn()
+        monitor_conn.isolation_level = None # Ensure auto-commit mode to see fresh data
+        cur = monitor_conn.cursor()
+
         while True:
-            with closing(self._open_conn()) as conn:
-                cur = conn.cursor()
-                try:
-                    cur.execute("""
-                        SELECT rowid, symbol, direction, price
-                        FROM alerts
-                        WHERE rowid > ?
-                        ORDER BY rowid ASC
-                    """, (self.last_alert_id,))
-                    rows = cur.fetchall()
-                except sqlite3.OperationalError:
-                    # Table might not exist yet if grok.py is starting up
-                    time.sleep(1)
-                    continue
+            try:
+                cur.execute("""
+                    SELECT rowid, symbol, direction, price
+                    FROM alerts
+                    WHERE rowid > ?
+                    ORDER BY rowid ASC
+                """, (self.last_alert_id,))
+                rows = cur.fetchall()
+            except sqlite3.OperationalError:
+                # Table might not exist yet if grok.py is starting up
+                time.sleep(1)
+                continue
 
             for row in rows:
                 alert_id, symbol, direction, price = row
