@@ -8,6 +8,7 @@ start_backend() {
         echo "Backend is already running."
     else
         echo "Starting Backend (Auto-Restart Active)..."
+        rm -f kill_switch.flag
         chmod +x "$LOOP_SCRIPT"
         nohup ./"$LOOP_SCRIPT" > /dev/null 2>&1 &
         echo "Backend Started."
@@ -16,6 +17,7 @@ start_backend() {
 
 stop_backend() {
     echo "Stopping Backend..."
+    touch kill_switch.flag
     pkill -f "$LOOP_SCRIPT" 2>/dev/null
     pkill -f "python3 grok.py" 2>/dev/null
     pkill -f "python3 live_trader.py" 2>/dev/null

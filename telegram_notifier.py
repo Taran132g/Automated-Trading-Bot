@@ -45,3 +45,13 @@ class TelegramNotifier:
             f"Account Value: `${account_value:,.2f}`"
         )
         self.send_message(msg)
+
+    def notify_error(self, context: str, error_msg: str):
+        if not self.enabled:
+            return
+        msg = (
+            f"❌ *System Error*\n"
+            f"Context: `{context}`\n"
+            f"Details: `{error_msg}`"
+        )
+        self.send_message(msg)

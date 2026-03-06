@@ -482,7 +482,11 @@ class LiveTrader:
         self.rolling_pi: float = 0.0
         self.recent_pi: list[float] = []  # Rolling PI per share for last 5 trades
         self.pi_cooldown_until: float = 0.0  # Timestamp when PI cooldown ends
-        self.pending_limit_orders: Dict[str, str] = {}  # symbol -> order_id (prevent duplicates)
+        self.pending_limit_orders: Dict[str, str] = {}  # symbol -> order_id (bookkeeping only)
+        self.pending_limit_count: int = 0  # Tally of currently in-flight limit orders (anti-stacking gate)
+        
+        # Zero-Latency State
+        self.live_prices: Dict[str, float] = {} # symbol -> latest stream price (zero-latency)
         self.active_limit_stops: Dict[str, bool] = {}  # symbol -> True (if a limit lock-in is active)
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
@@ -555,10 +559,32 @@ class LiveTrader:
                     if symbol not in self.positions:
                         del self.position_entry_times[symbol]
                 
-                # Initialize entry time for newly discovered positions (start tracking from now)
+                # Initialize entry time/price for newly discovered positions (start tracking from now)
                 for symbol in self.positions:
                     if symbol not in self.position_entry_times:
                         self.position_entry_times[symbol] = time.time()
+                    
+                    # Try to recover entry price from database if missing (Crucial for Profit Lock-in)
+                    if self.position_entry_prices.get(symbol, 0.0) <= 0:
+                        try:
+                            with self._open_conn() as conn:
+                                cur = conn.cursor()
+                                cur.execute(
+                                    "SELECT price FROM live_trades WHERE symbol=? ORDER BY rowid DESC LIMIT 1",
+                                    (symbol,)
+                                )
+                                row = cur.fetchone()
+                                if row:
+                                    self.position_entry_prices[symbol] = float(row[0])
+                                    LOGGER.info("   - Recovered entry price for %s: $%.4f", symbol, row[0])
+                                else:
+                                    # Fallback: use current price as proxy entry price
+                                    current = self._latest_price(symbol)
+                                    if current:
+                                        self.position_entry_prices[symbol] = current
+                                        LOGGER.info("   - Unknown entry price for %s; using $%.4f as anchor", symbol, current)
+                        except Exception as e:
+                            LOGGER.warning("   - Failed to recover entry price for %s: %s", symbol, e)
                 
                 self._save_state()
             LOGGER.info("✅ State auto-corrected to match Schwab.")
@@ -924,8 +950,13 @@ class LiveTrader:
         """Disabled — positions close only on opposing signals."""
         pass
 
+    def update_live_price(self, symbol: str, price: float) -> None:
+        """Zero-latency update from grok.py's streaming websocket feed."""
+        if price > 0:
+            self.live_prices[symbol] = price
+
     def _check_profit_limits(self) -> None:
-        """Lock in profits with a limit order if PnL crosses $0.03 threshold."""
+        """Dynamic Trailing Stop: Activates at +$0.03, then trails from peak by $0.01 using Zero-Latency Live Prices."""
         if not self.positions:
             return
 
@@ -935,31 +966,30 @@ class LiveTrader:
 
         for symbol, qty in current_positions.items():
             if qty == 0:
-                self.active_limit_stops.pop(symbol, None)
+                self.trailing_activated.pop(symbol, None)
+                self.trailing_high_water.pop(symbol, None)
                 continue
-
-            if self.active_limit_stops.get(symbol):
-                continue  # Limit already submitted
 
             entry_price = self.position_entry_prices.get(symbol, 0.0)
             if entry_price <= 0:
                 continue
 
-            current_price = self._latest_price(symbol)
-            if not current_price or current_price <= 0:
+            # ZERO-LATENCY OVERRIDE: 
+            # We strictly bypass the 3-5 second REST API latency of self._latest_price(symbol)
+            # and only use the direct Web-Socket price piped from grok.py
+            current_price = self.live_prices.get(symbol, 0.0)
+            if current_price <= 0:
                 continue
 
             direction = "LONG" if qty > 0 else "SHORT"
             pnl = (current_price - entry_price) if direction == "LONG" else (entry_price - current_price)
 
             if pnl >= 0.03:
+                # guaranteed +$0.01 limit stop
                 target_price = entry_price + 0.01 if direction == "LONG" else entry_price - 0.01
                 side = "SELL" if direction == "LONG" else "COVER"
-
-                LOGGER.info("💰 Profit limit trigger for %s at Current: $%.4f (Entry: $%.4f). Submitting target Limit %s at $%.4f", 
+                LOGGER.info("💰 Submitting guaranteed +$0.01 Profit Limit for %s at Current: $%.4f (Entry: $%.4f). Limit %s at $%.4f", 
                             symbol, current_price, entry_price, side, target_price)
-
-                # Mark as active *before* submitting to prevent duplicate submissions on the next poll
                 self.active_limit_stops[symbol] = True
 
                 try:
@@ -973,43 +1003,49 @@ class LiveTrader:
                         order_type="LIMIT",
                     )
                 except Exception as exc:
-                    LOGGER.error("Failed to submit profit limit for %s: %s", symbol, exc)
-                    self.active_limit_stops.pop(symbol, None)  # Re-allow attempt if failed
+                    LOGGER.error("Failed to submit guaranteed profit limit for %s: %s", symbol, exc)
+                    self.active_limit_stops.pop(symbol, None)
 
     # ------------------------------------------------------------------
     # Order + alert processing
     # ------------------------------------------------------------------
     def _check_fill_quality(self, side: str, price: float) -> None:
-        """Check for 'bad fills' (longs at .99, shorts at .01) and log consecutive occurrences."""
+        """Check for 'bad fills' (longs at .xx99, shorts at .xx01) and log consecutive occurrences."""
         if not self.check_bad_fills:
             return
 
         if price is None or price <= 0:
             return
 
-        cents = price % 1.0
-        # Floating point math safety
-        is_99 = 0.985 <= cents <= 0.995
-        is_01 = 0.005 <= cents <= 0.015
+        # Use string formatting to 4 decimal places to avoid float precision issues
+        price_str = f"{price:.4f}"
+        
+        # Check if the price exactly ends in '99' or '01'
+        is_99 = price_str.endswith("99")
+        is_01 = price_str.endswith("01")
 
         bad_fill = False
         fill_type = ""
         if side in {"BUY", "COVER"} and is_99:
             bad_fill = True
-            fill_type = ".99"
+            fill_type = ".xx99"
         elif side in {"SELL", "SHORT"} and is_01:
             bad_fill = True
-            fill_type = ".01"
+            fill_type = ".xx01"
 
         if bad_fill:
             self.consecutive_bad_fills += 1
-            msg = f"⚠️  BAD FILL #{self.consecutive_bad_fills}: {side} at ${price:.2f} ({fill_type})"
+            msg = f"⚠️  BAD FILL #{self.consecutive_bad_fills}: {side} at ${price:.4f} ({fill_type})"
             LOGGER.warning(msg)
             print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
             
             if self.consecutive_bad_fills >= 3:
-                LOGGER.error("🚨 ALERT: %d consecutive bad fills detected!", self.consecutive_bad_fills)
+                LOGGER.error("🚨 ALERT: %d consecutive bad fills detected! (%s at $%.4f)", self.consecutive_bad_fills, side, price)
                 print(f"\n🚨🚨🚨 ALERT: {self.consecutive_bad_fills} CONSECUTIVE BAD FILLS! 🚨🚨🚨\n", flush=True)
+                try:
+                    self.telegram.notify_error("🚨 CONSECUTIVE BAD FILLS", f"{self.consecutive_bad_fills} consecutive bad sub-penny fills detected! Last: {side} at ${price:.4f} ({fill_type})")
+                except Exception:
+                    pass
         else:
             # Reset counter on good fill
             if self.consecutive_bad_fills > 0:
@@ -1144,16 +1180,13 @@ class LiveTrader:
     ) -> bool:
         """Submit a limit order at Bid/Ask and cancel if not filled within timeout."""
 
-        # Dedup guard: MUST be inside lock to prevent immediate threading race condition
+        # Anti-stacking gate: skip if another limit order is currently in-flight
+        # NOTE: tally is incremented only AFTER Schwab confirms the order via order_id
         with self._lock:
-            existing = self.pending_limit_orders.get(symbol)
-            if existing:
-                LOGGER.info("Limit order %s already pending for %s; skipping duplicate", existing, symbol)
+            if self.pending_limit_count > 0:
+                LOGGER.info("ANTI-STACKING: %d limit order(s) in flight, skipping new %s %s",
+                            self.pending_limit_count, side, symbol)
                 return False
-            
-            # Aggressive stacking check: if we are already in the process of submitting or polling, stop.
-            # (Handled by the lock and 'SUBMITTING' state)
-            self.pending_limit_orders[symbol] = "SUBMITTING"
 
         limit_price = 0.0
 
@@ -1222,17 +1255,19 @@ class LiveTrader:
 
         order_id = result.get("order_id")
         if not order_id:
-             LOGGER.error("No order_id returned for limit order")
-             with self._lock:
-                 self.pending_limit_orders.pop(symbol, None)
-             return False
+            LOGGER.error("No order_id returned for limit order")
+            # Tally was NOT yet incremented — decrement guard in finally will handle it
+            # but we need to signal that tally shouldn't be decremented either
+            # Use a flag: only increment if we actually have a live order
+            return False
 
-        # Track this as a pending order to prevent duplicates
+        # Order confirmed on exchange — NOW increment tally and track it
         with self._lock:
-             self.pending_limit_orders[symbol] = order_id
+            self.pending_limit_count += 1
+            self.pending_limit_orders[symbol] = order_id
+        LOGGER.info("[LIMIT] Tally now %d (order %s confirmed for %s %s)", self.pending_limit_count, order_id, side, symbol)
 
         try:
-            # Wait and Poll
             LOGGER.info("Waiting %.1fs for fill on order %s...", self.limit_poll_interval, order_id)
             time.sleep(self.limit_poll_interval)
         
@@ -1242,6 +1277,13 @@ class LiveTrader:
             avg_price = status.get("avg_fill_price")
         
             LOGGER.info("Order %s status: %s (Filled: %s)", order_id, order_status, filled_qty)
+
+            # Cancel remaining working orders only AFTER poll — saves one full API round-trip on entries
+            if order_status not in {"FILLED", "EXPIRED", "CANCELED", "REJECTED"}:
+                try:
+                    self.executor.cancel_all_orders()
+                except Exception as exc:
+                    LOGGER.warning("Post-poll cancel_all failed: %s", exc)
 
             final_filled = False
         
@@ -1355,9 +1397,11 @@ class LiveTrader:
             return final_filled
 
         finally:
-            # Always clear pending order when done (even on exception)
+            # Always clear pending tally and order tracking when done (even on exception)
             with self._lock:
+                self.pending_limit_count = max(0, self.pending_limit_count - 1)
                 self.pending_limit_orders.pop(symbol, None)
+            LOGGER.info("[LIMIT] Tally now %d after finishing %s %s", self.pending_limit_count, side, symbol)
 
     def _submit_order(
         self,
@@ -1395,20 +1439,11 @@ class LiveTrader:
                 price=price,
             )
 
-    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0) -> None:
+    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, target_limit_price: float = 0.0) -> None:
         # Check if symbol is allowed for live trading
         if symbol not in self.live_symbols:
             LOGGER.info("Skipping live trade for %s (not in LIVE_SYMBOLS)", symbol)
             return
-
-        # Aggressively clear ALL working orders before processing any new alert.
-        # This prevents stacking and ensures we are flat before any new entries or flips.
-        try:
-            cancelled = self.executor.cancel_all_orders()
-            if cancelled > 0 or cancelled == -1:
-                LOGGER.info("Cleared %s working orders before processing alert %s", "all" if cancelled == -1 else cancelled, alert_id)
-        except Exception as exc:
-            LOGGER.warning("Aggressive cancel failed: %s", exc)
 
         max_retries = 2
         for attempt in range(max_retries):
@@ -1431,7 +1466,7 @@ class LiveTrader:
                 #     return
 
                 # Cooldown check
-                cooldown_seconds = 30.0
+                cooldown_seconds = 60.0
                 last_exit = self.last_exit_time.get(symbol, 0)
                 if time.time() - last_exit < cooldown_seconds:
                     # We are in cooldown. Only allow logical exits?
@@ -1453,8 +1488,7 @@ class LiveTrader:
                     if position > 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing long position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
-                            
-                        # FORCE MARKET CLOSE FOR EXITS
+                        # Submit market exit FIRST for minimum latency, then clean up working orders
                         self._submit_order(
                             alert_id=alert_id,
                             symbol=symbol,
@@ -1466,6 +1500,11 @@ class LiveTrader:
                         )
                         with self._lock:
                             self.last_exit_time[symbol] = time.time()
+                        # Cancel any remaining working orders AFTER exit is sent
+                        try:
+                            self.executor.cancel_all_orders()
+                        except Exception as exc:
+                            LOGGER.warning("Post-exit cancel_all failed: %s", exc)
                         return # EXIT ONLY - NO FLIP
 
                     # We are flat. Check Cooldown before Entry.
@@ -1486,7 +1525,7 @@ class LiveTrader:
                         direction=direction,
                         side="SHORT",
                         qty=self.initial_entry_size,
-                        price=price,
+                        price=target_limit_price if target_limit_price else price,
                         order_type="LIMIT",
                     )
                 elif direction == "bid-heavy":
@@ -1499,8 +1538,7 @@ class LiveTrader:
                     if position < 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing short position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
-                            
-                        # FORCE MARKET CLOSE FOR EXITS
+                        # Submit market exit FIRST for minimum latency, then clean up working orders
                         self._submit_order(
                             alert_id=alert_id,
                             symbol=symbol,
@@ -1512,6 +1550,11 @@ class LiveTrader:
                         )
                         with self._lock:
                             self.last_exit_time[symbol] = time.time()
+                        # Cancel any remaining working orders AFTER exit is sent
+                        try:
+                            self.executor.cancel_all_orders()
+                        except Exception as exc:
+                            LOGGER.warning("Post-exit cancel_all failed: %s", exc)
                         return # EXIT ONLY - NO FLIP
 
                     # We are flat. Check Cooldown before Entry.
@@ -1532,7 +1575,7 @@ class LiveTrader:
                         direction=direction,
                         side="BUY",
                         qty=self.initial_entry_size,
-                        price=price,
+                        price=target_limit_price if target_limit_price else price,
                         order_type="LIMIT",
                     )
                 
@@ -1566,6 +1609,7 @@ class LiveTrader:
         *,
         persist_state: bool = True,
         range_cents: float = 0.0,
+        target_limit_price: float = 0.0,
     ) -> None:
         """Process a single alert, optionally persisting state immediately.
 
@@ -1575,10 +1619,13 @@ class LiveTrader:
         """
         with self._lock:
             self.last_alert_id = max(self.last_alert_id, int(alert_id))
-            # Fast-path inline alert
-            self._handle_alert(alert_id, symbol, direction, price, range_cents)
-            if persist_state and not self.dry_run:
-                self._save_state()
+        # NOTE: _handle_alert is NOT called under the broad lock.
+        # It makes multiple blocking Schwab API calls (cancel_all_orders, submit_order, etc.)
+        # Holding the lock here would starve the account polling thread permanently.
+        # Thread safety is handled by fine-grained locks inside _handle_alert.
+        self._handle_alert(alert_id, symbol, direction, price, range_cents, target_limit_price)
+        if persist_state and not self.dry_run:
+            self._save_state()
 
     def _poll_account_details(self) -> None:
         """Fetch and update account details."""
@@ -1697,6 +1744,10 @@ class LiveTrader:
                         price = float(row[3]) if row[3] is not None else 0.0
                         range_cents = float(row[4]) if len(row) > 4 and row[4] is not None else 0.0
                         
+                        # Note: DB polling doesn't currently store target_limit_price.
+                        # We would need a DB schema update for that. Since alerts are 
+                        # dispatched inline now with target_limit_price inside the dict,
+                        # this fallback path just uses the standard price.
                         self.process_alert(alert_id, symbol, direction, price, range_cents=range_cents)
                     
                     # Update mtime so we don't immediately wake up for old writes

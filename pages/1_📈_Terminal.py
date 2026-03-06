@@ -48,7 +48,7 @@ st.markdown("""
             font-family: 'Inter', sans-serif;
         }
         
-        #MainMenu, header, footer { visibility: hidden; }
+        #MainMenu, footer { visibility: hidden; }
         .block-container { padding-top: 1rem; max-width: 98%; }
         
         /* Metrics / KPIs */
@@ -404,19 +404,10 @@ with chart_col:
     # We will use an advanced area chart for the account trajectory
     fig = go.Figure()
     
-    # For multi-day view, an index-based x-axis prevents massive empty gaps over weekends/nights
+    # Use actual datetimes, we will hide weekends and overnights natively with Plotly layout
     if time_range == "All Time" and not df_chart.empty:
         df_chart = df_chart.reset_index(drop=True)
-        x_values = df_chart.index
-        df_chart['date_str'] = df_chart['datetime'].dt.strftime('%b %d')
-        tick_vals, tick_text = [], []
-        last_date = None
-        for i, row in df_chart.iterrows():
-            curr_date = row['date_str']
-            if curr_date != last_date:
-                tick_vals.append(i)
-                tick_text.append(curr_date)
-                last_date = curr_date
+        x_values = df_chart['datetime']
     else:
         x_values = df_chart['datetime'] if not df_chart.empty else []
 
@@ -456,10 +447,11 @@ with chart_col:
             showgrid=True,
             gridcolor='#1F2937',
             gridwidth=1,
-            tickformat='%H:%M' if time_range == "Today" else None,
-            tickmode='array' if time_range == "All Time" else 'auto',
-            tickvals=tick_vals if time_range == "All Time" and not df_chart.empty else None,
-            ticktext=tick_text if time_range == "All Time" and not df_chart.empty else None,
+            tickformat='%H:%M' if time_range == "Today" else '%b %d',
+            rangebreaks=[
+                dict(bounds=["sat", "mon"]),  # hide weekends
+                dict(bounds=[16.5, 9.5], pattern="hour"),  # hide 4:30 PM to 9:30 AM
+            ] if time_range == "All Time" else None,
             color='#94A3B8'
         ),
         yaxis=dict(
