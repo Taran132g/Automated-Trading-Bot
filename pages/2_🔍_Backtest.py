@@ -204,8 +204,8 @@ def load_paper_data():
         except: pass
         
         try:
-            wins = pd.read_sql_query(f"SELECT COUNT(*) as count FROM paper_trades WHERE pnl > 0 AND timestamp >= {today_start}", conn).iloc[0]['count']
-            total = pd.read_sql_query(f"SELECT COUNT(*) as count FROM paper_trades WHERE timestamp >= {today_start}", conn).iloc[0]['count']
+            wins = pd.read_sql_query(f"SELECT COUNT(*) as count FROM paper_trades WHERE pnl > 0 AND side IN ('SELL', 'COVER') AND timestamp >= {today_start}", conn).iloc[0]['count']
+            total = pd.read_sql_query(f"SELECT COUNT(*) as count FROM paper_trades WHERE side IN ('SELL', 'COVER') AND timestamp >= {today_start}", conn).iloc[0]['count']
             data['win_rate'] = (wins / total * 100) if total > 0 else 0.0
         except: pass
         
@@ -386,8 +386,9 @@ with left_col:
             symbol_stats = []
             for symbol, group in trades_to_show.groupby('symbol'):
                 total_pnl = group['pnl'].sum()
-                wins = len(group[group['pnl'] > 0])
-                total_trades = len(group)
+                exits = group[group['side'].isin(['SELL', 'COVER'])]
+                wins = len(exits[exits['pnl'] > 0])
+                total_trades = len(exits)
                 win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
                 
                 symbol_stats.append({
