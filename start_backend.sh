@@ -6,6 +6,7 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${BLUE}[BACKEND] Starting via restart loop (auto-restart on crash)...${NC}"
+rm -f kill_switch.flag
 chmod +x restart_loop.sh
 nohup ./restart_loop.sh > /dev/null 2>&1 &
 LOOP_PID=$!
