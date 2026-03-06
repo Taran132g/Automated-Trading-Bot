@@ -32,7 +32,14 @@ while true; do
     fi
 
     # 2. Start Paper Trader
-    if [ "$RUN_PAPER_TRADER" = "1" ] && [ "$ENABLE_INLINE_DISPATCH" != "1" ]; then
+    GROK_PAPER_INLINE=0
+    if [ "$ENABLE_INLINE_DISPATCH" = "1" ]; then
+        if [ "$INLINE_DRY_RUN" = "1" ] || [ "$LIVE_DRY_RUN" = "1" ] || [ "$INLINE_LIVE_DRY_RUN" = "1" ]; then
+            GROK_PAPER_INLINE=1
+        fi
+    fi
+
+    if [ "$RUN_PAPER_TRADER" = "1" ] && [ "$GROK_PAPER_INLINE" = "0" ]; then
         if ! pgrep -f "paper_trader.py" > /dev/null; then
             echo "Starting Paper Trader at $(date)..." >> "$LOOP_LOG"
             .venv/bin/python3 paper_trader.py >> paper_trader.log 2>&1 &
