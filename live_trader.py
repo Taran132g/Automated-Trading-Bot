@@ -1483,10 +1483,30 @@ class LiveTrader:
                 price=price,
             )
 
-    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, target_limit_price: float = 0.0) -> None:
+    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, target_limit_price: float = 0.0, pattern_info: dict = None) -> None:
+        """Handle a single alert: flip position or enter new one."""
         # Check if symbol is allowed for live trading
         if symbol not in self.live_symbols:
             LOGGER.info("Skipping live trade for %s (not in LIVE_SYMBOLS)", symbol)
+            return
+
+        # 1. Pattern Lab Filter (The Skip Logic)
+        size_factor = 1.0
+        if pattern_info:
+            decision = pattern_info.get("decision", "enter_or_manage")
+            size_factor = float(pattern_info.get("size_factor", 1.0))
+            
+            if decision == "skip":
+                LOGGER.info("[%s] [FILTER] Skipping %s %s alert due to pattern mismatch (bias=%s)", 
+                            self.name, direction, symbol, pattern_info.get('chart_bias'))
+                return
+
+        # 2. Dynamic Sizing
+        current_initial_size = int(self.initial_entry_size * size_factor)
+        
+        if current_initial_size <= 0:
+            LOGGER.info("[%s] [FILTER] Skipping %s %s due to size_factor yielding 0 shares", 
+                        self.name, direction, symbol)
             return
 
         max_retries = 2
@@ -1496,31 +1516,14 @@ class LiveTrader:
                     position = self.positions.get(symbol, 0)
 
                 # Penalty Box Check: Block NEW ENTRIES if in cooldown
-                # Exits/Flips from existing positions are allowed.
                 if position == 0 and time.time() < self.loss_cooldown_until:
                      remaining = self.loss_cooldown_until - time.time()
                      LOGGER.warning("In 2-min Penalty Box (%.1fs left); skipping entry alert %s", remaining, alert_id)
                      return
 
-                # Volatility Filter (ENTRY ONLY)
-                # If we are FLAT (position == 0) and range is too low, skip entry.
-                # Exits are ALWAYS allowed (so if position != 0, we ignore this check).
-                # if position == 0 and range_cents > 0 and range_cents <= self.min_range_cents:
-                #     LOGGER.info("Skipping entry for %s: Volatility range %.2fc <= %.2fc", symbol, range_cents, self.min_range_cents)
-                #     return
-
                 # Cooldown check
                 cooldown_seconds = 30.0
                 last_exit = self.last_exit_time.get(symbol, 0)
-                if time.time() - last_exit < cooldown_seconds:
-                    # We are in cooldown. Only allow logical exits?
-                    # Actually, if we are in cooldown, it means we just exited.
-                    # So we shouldn't be entering.
-                    # But what if we are closing a position during cooldown? 
-                    # (e.g. manual intervention or some other logic).
-                    # The request is "wait 30s before trading the next alert".
-                    # This usually implies ENTRY. Exits should always be allowed.
-                    pass
 
                 if direction == "ask-heavy":
                     # Check if already short - skip to avoid stacking
@@ -1528,11 +1531,10 @@ class LiveTrader:
                         LOGGER.info("Already short %s; skip stacking", symbol)
                         return
                     
-                    # If currently long, close the long position first (use actual position size)
+                    # If currently long, close the long position first
                     if position > 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing long position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
-                        # Submit market exit FIRST for minimum latency, then clean up working orders
                         self._submit_order(
                             alert_id=alert_id,
                             symbol=symbol,
@@ -1544,31 +1546,29 @@ class LiveTrader:
                         )
                         with self._lock:
                             self.last_exit_time[symbol] = time.time()
-                        # Cancel any remaining working orders AFTER exit is sent
                         try:
                             self.executor.cancel_all_orders()
                         except Exception as exc:
                             LOGGER.warning("Post-exit cancel_all failed: %s", exc)
-                        return # EXIT ONLY - NO FLIP
+                        return 
 
                     # We are flat. Check Cooldown before Entry.
-                    if time.time() - self.last_exit_time.get(symbol, 0) < cooldown_seconds:
+                    if time.time() - last_exit < cooldown_seconds:
                          LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Short entry", 
-                                     symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
+                                     symbol, cooldown_seconds - (time.time() - last_exit))
                          return
 
-
-                    # Check PI cooldown (avg PI too low = poor fills, take a break)
                     if time.time() < self.pi_cooldown_until:
                         remaining = self.pi_cooldown_until - time.time()
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
                         return
+
                     filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
                         direction=direction,
                         side="SHORT",
-                        qty=self.initial_entry_size,
+                        qty=current_initial_size,
                         price=target_limit_price if target_limit_price else price,
                         order_type="LIMIT",
                     )
@@ -1578,11 +1578,10 @@ class LiveTrader:
                         LOGGER.info("Already long %s; skip stacking", symbol)
                         return
                     
-                    # If currently short, close the short position first (use actual position size)
+                    # If currently short, close the short position first
                     if position < 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing short position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
-                        # Submit market exit FIRST for minimum latency, then clean up working orders
                         self._submit_order(
                             alert_id=alert_id,
                             symbol=symbol,
@@ -1594,42 +1593,39 @@ class LiveTrader:
                         )
                         with self._lock:
                             self.last_exit_time[symbol] = time.time()
-                        # Cancel any remaining working orders AFTER exit is sent
                         try:
                             self.executor.cancel_all_orders()
                         except Exception as exc:
                             LOGGER.warning("Post-exit cancel_all failed: %s", exc)
-                        return # EXIT ONLY - NO FLIP
+                        return 
 
                     # We are flat. Check Cooldown before Entry.
-                    if time.time() - self.last_exit_time.get(symbol, 0) < cooldown_seconds:
+                    if time.time() - last_exit < cooldown_seconds:
                          LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Long entry", 
-                                     symbol, cooldown_seconds - (time.time() - self.last_exit_time.get(symbol, 0)))
+                                     symbol, cooldown_seconds - (time.time() - last_exit))
                          return
 
-
-                    # Check PI cooldown (avg PI too low = poor fills, take a break)
                     if time.time() < self.pi_cooldown_until:
                         remaining = self.pi_cooldown_until - time.time()
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
                         return
+
                     filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
                         direction=direction,
                         side="BUY",
-                        qty=self.initial_entry_size,
+                        qty=current_initial_size,
                         price=target_limit_price if target_limit_price else price,
                         order_type="LIMIT",
                     )
                 
-                # If successful, break out of retry loop
                 break 
             
             except BoxedPositionError as e:
                 LOGGER.warning("Boxed Position Error caught: %s. Attempt %d/%d. Reconciling and retrying...", e, attempt + 1, max_retries)
                 self._reconcile_positions_on_startup()
-                time.sleep(1.0) # Give broker a moment to update
+                time.sleep(1.0) 
                 if attempt == max_retries - 1:
                     LOGGER.error("Max retries reached for Boxed Position Error. Skipping alert %s.", alert_id)
                     try:
@@ -1642,7 +1638,7 @@ class LiveTrader:
                     self.telegram.notify_error("Schwab API / Trade Execution", f"Alert {alert_id}: {e}")
                 except Exception:
                     pass
-                break # Don't retry for other unexpected errors
+                break 
 
     def process_alert(
         self,
@@ -1654,20 +1650,14 @@ class LiveTrader:
         persist_state: bool = True,
         range_cents: float = 0.0,
         target_limit_price: float = 0.0,
+        pattern_info: dict = None,
     ) -> None:
-        """Process a single alert, optionally persisting state immediately.
-
-        This entry point lets ``grok.py`` dispatch alerts inline without
-        waiting for the polling loop, while keeping the standalone ``run``
-        method available for tailing the DB.
-        """
+        """Process a single alert: update state and handle order execution."""
         with self._lock:
             self.last_alert_id = max(self.last_alert_id, int(alert_id))
-        # NOTE: _handle_alert is NOT called under the broad lock.
-        # It makes multiple blocking Schwab API calls (cancel_all_orders, submit_order, etc.)
-        # Holding the lock here would starve the account polling thread permanently.
-        # Thread safety is handled by fine-grained locks inside _handle_alert.
-        self._handle_alert(alert_id, symbol, direction, price, range_cents, target_limit_price)
+        
+        self._handle_alert(alert_id, symbol, direction, price, range_cents, target_limit_price, pattern_info)
+        
         if persist_state and not self.dry_run:
             self._save_state()
 

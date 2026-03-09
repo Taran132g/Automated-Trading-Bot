@@ -372,6 +372,14 @@ MIN_BID_HEAVY: int = 4
 MAX_RANGE_CENTS: int = 1
 MIN_RANGE_CENTS: int = 2
 MIN_VOLUME: int = 100000
+STOCK_VOLUME_OVERRIDES = {
+    "BATL": 15000,
+    "PDYN": 8000,
+    "UMAC": 3000,
+    "CAPR": 5000,
+    "OMDA": 5000,
+    "WOLF": 5000
+}
 MIN_IMBALANCE_DURATION_SEC: float = 10.0
 DB_PATH: str = "penny_basing.db"
 DISABLE_BID_HEAVY: bool = False
@@ -814,9 +822,10 @@ def on_book(msg: dict):
             else:
                 curr_min_venues = max(MIN_ASK_HEAVY, MIN_BID_HEAVY)
 
+            curr_min_volume = STOCK_VOLUME_OVERRIDES.get(sym, MIN_VOLUME)
             if (imbalance_duration >= curr_min_duration and
                 metrics.valid_exchanges >= curr_min_venues and
-                vol_per_min >= MIN_VOLUME):
+                vol_per_min >= curr_min_volume):
                 ratio = metrics.ask_to_bid_ratio if direction == "ask-heavy" else metrics.bid_to_ask_ratio
                 heavy_venues = metrics.ask_heavy_venues if direction == "ask-heavy" else metrics.bid_heavy_venues
                 target_limit_price = bid_price if direction == "bid-heavy" else ask_price
@@ -1143,35 +1152,25 @@ async def main():
                         log_structured("INLINE_DISPATCH", {"alert_id": alert_id, "message": "No in-process traders to notify"})
                         continue
                         
+                    # 1. Pattern Enrichment (Now before dispatch)
+                    enriched = None
+                    if 'PIPELINE' in globals() and PIPELINE:
+                        enriched = PIPELINE.on_l2_alert(alert, base_qty=_paper_size)
+
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor(max_workers=len(traders)) as executor:
                         futures = []
                         for name, trader in traders:
-                            if name == "shadow": continue # Skip shadow for primary dispatch
+                            # Primary and Shadow both get enriched data now
                             futures.append(executor.submit(
                                 trader.process_alert,
                                 int(alert_id),
                                 alert["symbol"],
                                 alert["direction"],
                                 float(alert["price"]),
-                                range_cents=float(alert.get("range_cents", 0.0))
+                                range_cents=float(alert.get("range_cents", 0.0)),
+                                pattern_info=enriched
                             ))
-                        
-                        # 2. Pattern Enrichment & Shadow Dispatch
-                        if 'PIPELINE' in globals() and PIPELINE:
-                            enriched = PIPELINE.on_l2_alert(alert, base_qty=_paper_size)
-                            if enriched and enriched.get("decision") != "skip":
-                                for name, trader in traders:
-                                    if name == "shadow":
-                                        futures.append(executor.submit(
-                                            trader.process_alert,
-                                            int(alert_id),
-                                            alert["symbol"],
-                                            alert["direction"],
-                                            float(alert["price"]),
-                                            range_cents=float(alert.get("range_cents", 0.0)),
-                                            pattern_info=enriched
-                                        ))
                         # Wait for all to complete
                         for future in concurrent.futures.as_completed(futures):
                             try:
