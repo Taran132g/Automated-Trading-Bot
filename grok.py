@@ -1089,7 +1089,7 @@ async def main():
         # Pattern Engine Integration
         try:
             from data import PatternIntegrationConfig, IntegratedSignalPipeline
-            pattern_cfg = PatternIntegrationConfig(min_confidence=0.60)
+            pattern_cfg = PatternIntegrationConfig(min_confidence=0.40)
             global PIPELINE
             PIPELINE = IntegratedSignalPipeline(pattern_cfg)
             
@@ -1156,7 +1156,7 @@ async def main():
                         
                         # 2. Pattern Enrichment & Shadow Dispatch
                         if 'PIPELINE' in globals() and PIPELINE:
-                            enriched = PIPELINE.on_l2_alert(alert)
+                            enriched = PIPELINE.on_l2_alert(alert, base_qty=_paper_size)
                             if enriched and enriched.get("decision") != "skip":
                                 for name, trader in traders:
                                     if name == "shadow":
