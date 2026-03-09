@@ -1082,6 +1082,9 @@ async def main():
         # This runs in parallel whether you are Live or Paper trading.
         # It uses its own DB and State so it doesn't interfere.
         from paper_trader import PaperTrader
+        import config_manager
+        _paper_size = int(config_manager.get_value("paper_position_size", 1000))
+        
         shadow_db = "penny_basing_patterns.db"
         shadow_state = "paper_trader_state_patterns.json"
         traders.append(("shadow", PaperTrader(db_path=shadow_db, state_file=shadow_state)))
@@ -1089,7 +1092,7 @@ async def main():
         # Pattern Engine Integration
         try:
             from data import PatternIntegrationConfig, IntegratedSignalPipeline
-            pattern_cfg = PatternIntegrationConfig(min_confidence=0.40)
+            pattern_cfg = PatternIntegrationConfig(min_confidence=0.60)
             global PIPELINE
             PIPELINE = IntegratedSignalPipeline(pattern_cfg)
             
