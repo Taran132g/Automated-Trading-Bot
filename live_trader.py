@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Dict, Optional
 from urllib.parse import urlparse
 
+import pandas as pd
 from dotenv import load_dotenv
 from schwab.auth import easy_client
 from schwab.orders import equities as equity_orders
@@ -91,13 +92,11 @@ class SchwabOrderExecutor:
 
         LOGGER.info("[%s] Initializing Schwab client (account=%s, dry_run=%s)", self.name, self.account_id[-4:], self.dry_run)
         try:
-            self.client = easy_client(
-                api_key=api_key,
-                app_secret=app_secret,
-                callback_url=redirect_uri,
-                token_path=token_file,
-            )
-        except Exception as exc:  # pragma: no cover - network interaction
+            # Use non-interactive token refresh (headless-safe)
+            from schwab.auth import client_from_token_file
+            self.client = client_from_token_file(str(token_file), api_key, app_secret)
+            LOGGER.info("[%s] Client created via token file (non-interactive)", self.name)
+        except Exception as exc:
             raise RuntimeError(f"Failed to create Schwab client: {exc}") from exc
 
     def _send(self, builder, *, symbol: str, side: str, qty: int) -> Dict[str, Optional[str]]:
@@ -341,6 +340,51 @@ class SchwabOrderExecutor:
                 result[symbol] = int(qty)
                 
         return result
+    def get_price_history(self, symbol: str, days: int = 5) -> Optional[pd.DataFrame]:
+        """Fetch historical 1-minute bars for a symbol."""
+        if self.dry_run:
+            return None
+
+        get_history = getattr(self.client, "get_price_history", None)
+        if get_history is None:
+            LOGGER.warning("Schwab client does not expose get_price_history")
+            return None
+
+        try:
+            from datetime import datetime, timedelta
+            # Fetch last 'days' of 1-minute data
+            # Using start/end datetime to avoid Enum issues with 'period'
+            end_date = datetime.utcnow()
+            start_date = end_date - timedelta(days=days)
+            
+            response = get_history(
+                symbol,
+                frequency_type=self.client.PriceHistory.FrequencyType.MINUTE,
+                frequency=self.client.PriceHistory.Frequency.EVERY_MINUTE,
+                start_datetime=start_date,
+                end_datetime=end_date
+            )
+        except Exception as exc:
+            LOGGER.error("Failed to fetch price history for %s: %s", symbol, exc)
+            return None
+
+        try:
+            data = response.json() if hasattr(response, "json") else response
+            candles = data.get("candles", [])
+            if not candles:
+                return None
+            
+            df = pd.DataFrame(candles)
+            # Standardize column names for OHLCVStore
+            # Schwab returns: open, high, low, close, volume, datetime
+            if not df.empty:
+                df = df.rename(columns={"datetime": "timestamp"})
+                return df
+        except Exception as exc:
+            LOGGER.error("Failed to parse price history for %s: %s", symbol, exc)
+            return None
+        
+        return None
 
     def submit_limit(self, *, symbol: str, qty: int, side: str, price: float) -> Dict[str, Optional[str]]:
         builders = {
@@ -449,10 +493,10 @@ class LiveTrader:
     and a kill-switch file.
     """
 
-    def __init__(self, *, dry_run: bool = False, executor: Optional[SchwabOrderExecutor] = None, name: str = "default", inline: bool = False) -> None:
+    def __init__(self, *, dry_run: bool = False, executor: Optional[SchwabOrderExecutor] = None, name: str = "default", inline: bool = False, db_path: Optional[str] = None) -> None:
         self.name = name  # Identifier for multi-account logging
         self.inline = inline
-        self.db_path = Path(os.getenv("DB_PATH", "penny_basing.db"))
+        self.db_path = Path(db_path or os.getenv("DB_PATH", "penny_basing.db"))
         
         # Load dynamic config
         self.config = config_manager.load_config()

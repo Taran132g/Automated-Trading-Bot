@@ -46,8 +46,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+import ui_components
+
 # Sidebar Filters
 st.sidebar.title("🔍 Monitor Filters")
+
 LOG_PATH = "grok.log"
 NUM_LINES = st.sidebar.slider("Lines to tail", 100, 5000, 1000)
 REFRESH_RATE = st.sidebar.slider("Refresh rate (sec)", 1, 10, 2)

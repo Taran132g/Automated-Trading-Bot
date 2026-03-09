@@ -34,9 +34,11 @@ class PaperTrader:
     Only flips when signal direction changes. No stacking positions.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: str = "penny_basing.db", state_file: str = "paper_trader_state.json") -> None:
         self._lock = threading.Lock()
         self.dry_run = True
+        self.db_path = db_path
+        self.state_file = state_file
         self.load_state()
         self._init_db_schema()
         self.last_alert_id = self._get_last_alert_id()
@@ -51,9 +53,9 @@ class PaperTrader:
     # State Persistence
     # ============================================================
     def load_state(self):
-        if Path(STATE_FILE).exists():
+        if Path(self.state_file).exists():
             try:
-                with open(STATE_FILE, "r") as f:
+                with open(self.state_file, "r") as f:
                     data = json.load(f)
                     self.cash = float(data.get("cash", 100_000.0))
                     # self.positions = data.get("positions", {})  <-- REMOVED
@@ -70,7 +72,7 @@ class PaperTrader:
         # Only save cash, not positions
         state = {"cash": self.cash} #, "positions": self.positions} 
         try:
-            with open(STATE_FILE, "w") as f:
+            with open(self.state_file, "w") as f:
                 json.dump(state, f, indent=2)
             print(f"[PAPER] State saved.", flush=True)
         except Exception as e:
@@ -80,7 +82,7 @@ class PaperTrader:
     # DB
     # ============================================================
     def _open_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -99,6 +101,7 @@ class PaperTrader:
                     slippage REAL,
                     commission REAL,
                     pnl REAL,
+                    size_factor REAL DEFAULT 1.0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -115,7 +118,12 @@ class PaperTrader:
                 )
             """)
             
-            # Explicitly clear positions on startup
+            # Add size_factor column if it doesn't exist (migration)
+            try:
+                cur.execute("ALTER TABLE paper_trades ADD COLUMN size_factor REAL DEFAULT 1.0")
+            except sqlite3.OperationalError:
+                pass
+
             cur.execute("DELETE FROM paper_positions")
             conn.commit()
 
@@ -164,7 +172,7 @@ class PaperTrader:
     # ============================================================
     # Order Execution
     # ============================================================
-    def _execute_order(self, symbol, qty, price, side):
+    def _execute_order(self, symbol, qty, price, side, size_factor=1.0):
         notional = abs(qty) * price
 
         # Cash movements
@@ -198,7 +206,7 @@ class PaperTrader:
             )
 
         # Log trade + PnL
-        self._log_trade(symbol, side, abs(qty), price, old_entry, old_qty)
+        self._log_trade(symbol, side, abs(qty), price, old_entry, old_qty, size_factor=size_factor)
 
         # If back to flat remove position
         if pos["qty"] == 0:
@@ -219,7 +227,7 @@ class PaperTrader:
     # ============================================================
     # Trade Logging + PNL Calculation
     # ============================================================
-    def _log_trade(self, symbol, side, qty, price, entry_price, old_qty):
+    def _log_trade(self, symbol, side, qty, price, entry_price, old_qty, size_factor=1.0):
 
         # Correct realized PnL
         pnl = 0.0
@@ -239,7 +247,10 @@ class PaperTrader:
             self.daily_pnl += pnl
 
         # Save daily pnl so UI can read it
-        with open("daily_pnl.txt", "w") as f:
+        pnl_file = "daily_pnl.txt"
+        if "patterns" in self.db_path:
+            pnl_file = "daily_pnl_patterns.txt"
+        with open(pnl_file, "w") as f:
             f.write(str(self.daily_pnl))
 
         # Log to DB
@@ -247,10 +258,10 @@ class PaperTrader:
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO paper_trades
-                (timestamp, symbol, side, qty, price, slippage, commission, pnl)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (timestamp, symbol, side, qty, price, slippage, commission, pnl, size_factor)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (time.time(), symbol, side, qty, price,
-                qty * price * SLIPPAGE, COMMISSION, pnl))
+                qty * price * SLIPPAGE, COMMISSION, pnl, size_factor))
             conn.commit()
 
         # === Enhanced log with daily PnL ===
@@ -297,8 +308,19 @@ class PaperTrader:
     # ============================================================
     # FLIP-ONLY ALERT LOGIC
     # ============================================================
-    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0) -> None:
+    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, pattern_info: dict = None) -> None:
         """Core flip-only logic shared by inline + DB polling paths."""
+        
+        # Determine dynamic size
+        size_factor = 1.0
+        if pattern_info and "size_factor" in pattern_info:
+            size_factor = float(pattern_info["size_factor"])
+        elif pattern_info and "execution" in pattern_info:
+            # Fallback for manual overrides
+            size_factor = float(pattern_info["execution"].get("qty", POSITION_SIZE)) / POSITION_SIZE
+            
+        current_position_size = int(POSITION_SIZE * size_factor)
+        current_short_size = int(SHORT_SIZE * size_factor)
 
         self._record_seen_price(alert_id=alert_id, symbol=symbol, direction=direction, price=price)
 
@@ -308,18 +330,18 @@ class PaperTrader:
         # ASK-HEAVY → SHORT
         if direction == "ask-heavy":
             if current_qty > 0:  # flip long → short
-                self._sell(symbol, current_qty, price)
-                self._short(symbol, SHORT_SIZE, price)
+                self._execute_order(symbol, -current_qty, price, "SELL", size_factor=size_factor)
+                self._execute_order(symbol, -current_short_size, price, "SHORT", size_factor=size_factor)
             elif current_qty == 0:  # open new short
-                self._short(symbol, SHORT_SIZE, price)
+                self._execute_order(symbol, -current_short_size, price, "SHORT", size_factor=size_factor)
 
         # BID-HEAVY → LONG
         elif direction == "bid-heavy":
             if current_qty < 0:  # flip short → long
-                self._cover(symbol, abs(current_qty), price)
-                self._buy(symbol, POSITION_SIZE, price)
+                self._execute_order(symbol, abs(current_qty), price, "COVER", size_factor=size_factor)
+                self._execute_order(symbol, current_position_size, price, "BUY", size_factor=size_factor)
             elif current_qty == 0:  # open new long
-                self._buy(symbol, POSITION_SIZE, price)
+                self._execute_order(symbol, current_position_size, price, "BUY", size_factor=size_factor)
 
         # Update current price and PnL even when no trade is executed
         self._update_position_db(symbol, cur_price=price)
@@ -346,9 +368,10 @@ class PaperTrader:
     def process_alert(self, alert_id: int, symbol: str, direction: str, price: float, **kwargs) -> None:
         """Expose inline hook so grok can dispatch alerts directly."""
         range_cents = kwargs.get("range_cents", 0.0)
+        pattern_info = kwargs.get("pattern_info")
         with self._lock:
             self.last_alert_id = max(self.last_alert_id, int(alert_id))
-            self._handle_alert(alert_id, symbol, direction, price, range_cents)
+            self._handle_alert(alert_id, symbol, direction, price, range_cents, pattern_info)
             self.save_state()
 
     def monitor_alerts(self):
@@ -372,7 +395,7 @@ class PaperTrader:
 
         max_sleep = 2.0    # back off to 2s when idle
         idle_sleep = min_sleep
-        db_path = Path(DB_PATH)
+        db_path = Path(self.db_path)
         last_db_mtime = db_path.stat().st_mtime if db_path.exists() else 0.0
 
         # Open one long-lived connection for monitoring

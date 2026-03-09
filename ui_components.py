@@ -10,6 +10,9 @@ PAPER_STATE_PATH = Path("paper_trader_state.json").resolve()
 # Live state path
 LIVE_STATE_PATH = Path("live_trader_state.json").resolve()
 
+# Pattern Lab state path
+SHADOW_STATE_PATH = Path("paper_trader_state_patterns.json").resolve()
+
 def is_backend_running():
     loop_result = subprocess.run(["pgrep", "-f", "restart_loop.sh"], capture_output=True)
     grok_result = subprocess.run(["pgrep", "-f", "grok.py"], capture_output=True)
@@ -41,10 +44,9 @@ def has_live_position():
 
 def render_system_status():
     # Hide Admin Controls from auto-generated sidebar nav (we have a button for it)
-    # The sidebar is allowed to be collapsed.
     st.markdown("""
         <style>
-            [data-testid="stSidebarNav"] li:last-child { display: none; }
+            [data-testid="stSidebarNav"] li:nth-child(6) { display: none; }
         </style>
     """, unsafe_allow_html=True)
     
@@ -88,13 +90,16 @@ def render_system_status():
             <span class="status-dot {bot_status}"></span>
             <span>Trading Bot Backend</span>
         </div>
-        <div class="sys-status-item" title="Current state of live trading positions">
-            <span class="status-dot {live_pos_status}"></span>
-            <span>{live_pos_text}</span>
-        </div>
     """, unsafe_allow_html=True)
 
     st.markdown("<br><br>", unsafe_allow_html=True)
+    
+    # Navigation Buttons
+    if st.button("⚙️ Admin Controls", use_container_width=True):
+        st.switch_page("pages/5_⚙️_Admin_Controls.py")
+        
+    st.divider()
+    
     if st.button("🔌 Disconnect Session", use_container_width=True):
         import auth_manager
         auth_manager.logout()
