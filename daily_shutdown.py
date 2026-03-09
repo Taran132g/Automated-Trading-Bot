@@ -23,13 +23,13 @@ from live_trader import SchwabOrderExecutor
 def main():
     logger.info("Starting scheduled daily shutdown sequence...")
     
-    # 1. Trigger manager.sh stop (Engages Kill Switch)
-    manager_script = project_root / "manager.sh"
+    # 1. Trigger manage_backend.sh stop (Engages Kill Switch)
+    manager_script = project_root / "manage_backend.sh"
     if not manager_script.exists():
         logger.error(f"Manager script not found at {manager_script}")
         sys.exit(1)
         
-    logger.info("Running manager.sh stop...")
+    logger.info("Running manage_backend.sh stop...")
     result = subprocess.run(
         ["bash", str(manager_script), "stop"],
         cwd=str(project_root),
