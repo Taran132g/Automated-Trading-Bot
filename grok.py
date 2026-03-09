@@ -398,6 +398,9 @@ _l1_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _chart_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _timesale_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _last_chart_or_timesale_ts: Dict[str, float] = defaultdict(float)
+PIPELINE = None
+last_bar_minute: Dict[str, int] = {}
+current_bar: Dict[str, dict] = {}
 _last_volume_fallback_ts: Dict[str, float] = defaultdict(float)
 # Inline live trader hook
 # -----------------------
@@ -575,6 +578,28 @@ def on_chart_equity(msg: dict):
                 })
             if msg_count[sym] % PRINT_EVERY == 0:
                 _summarize(sym, now)
+                
+        # --- BAR AGGREGATOR (For Chart Patterns) ---
+        if 'PIPELINE' in globals() and PIPELINE:
+            dt = datetime.fromtimestamp(ts)
+            curr_min = dt.minute
+            
+            # If minute changed, finalize the previous bar
+            if sym in last_bar_minute and curr_min != last_bar_minute[sym]:
+                PIPELINE.on_new_bar(sym, current_bar[sym])
+                # Reset for new minute
+                current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta}
+            else:
+                # Accumulate into current minute bar
+                if sym not in last_bar_minute:
+                    current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta}
+                else:
+                    cb = current_bar[sym]
+                    cb["high"] = max(cb["high"], px)
+                    cb["low"] = min(cb["low"], px)
+                    cb["close"] = px
+                    cb["volume"] += delta
+            last_bar_minute[sym] = curr_min
 
 def on_timesale(msg: dict):
     now = time()
@@ -1048,27 +1073,55 @@ async def main():
                 trader_kind = "paper"
             else:
                 from live_trader import LiveTrader, SchwabOrderExecutor
-                
                 # Primary account (original settings)
                 traders.append(("primary", LiveTrader(dry_run=False, name="primary")))
-                
-                # ----------------------------------------------------------------
-                # MULTI-ACCOUNT TRADING (commented out for later use)
-                # To enable, set FRIEND_ACCOUNT_ID and FRIEND_TOKEN_PATH in .env
-                # ----------------------------------------------------------------
-                # friend_account = os.getenv("FRIEND_ACCOUNT_ID")
-                # friend_token = os.getenv("FRIEND_TOKEN_PATH")
-                # if friend_account and friend_token:
-                #     friend_executor = SchwabOrderExecutor(
-                #         dry_run=False,
-                #         account_id=friend_account,
-                #         token_path=friend_token,
-                #         name="friend"
-                #     )
-                #     traders.append(("friend", LiveTrader(dry_run=False, executor=friend_executor, name="friend")))
-                #     log_structured("MULTI_ACCOUNT", {"accounts": ["primary", "friend"]})
         else:
             log_structured("STARTUP", {"message": "In-process (inline) traders disabled via ENABLE_INLINE_DISPATCH=0"})
+        
+        # --- SHADOW PATTERN TRADER (Always Paper) ---
+        # This runs in parallel whether you are Live or Paper trading.
+        # It uses its own DB and State so it doesn't interfere.
+        from paper_trader import PaperTrader
+        shadow_db = "penny_basing_patterns.db"
+        shadow_state = "paper_trader_state_patterns.json"
+        traders.append(("shadow", PaperTrader(db_path=shadow_db, state_file=shadow_state)))
+        
+        # Pattern Engine Integration
+        try:
+            from data import PatternIntegrationConfig, IntegratedSignalPipeline
+            pattern_cfg = PatternIntegrationConfig(min_confidence=0.60)
+            global PIPELINE
+            PIPELINE = IntegratedSignalPipeline(pattern_cfg)
+            
+            # --- HISTORICAL BACKFILL ---
+            live_symbols = _get_symbols()  # reads from trading_config.json
+            
+            # Find an executor to use for historical fetching
+            executor_for_backfill = None
+            for name, trader in traders:
+                if name == "primary" and hasattr(trader, "executor"):
+                    executor_for_backfill = trader.executor
+                    break
+            
+            if executor_for_backfill:
+                log_structured("PATTERN_BACKFILL_START", {"symbols": live_symbols})
+                for sym in live_symbols:
+                    try:
+                        hist_df = executor_for_backfill.get_price_history(sym, minutes=400)
+                        if hist_df is not None and not hist_df.empty:
+                            PIPELINE.seed_historical_data(sym, hist_df)
+                            log_structured("PATTERN_BACKFILL_SUCCESS", {"symbol": sym, "bars": len(hist_df)})
+                        else:
+                            log_structured("PATTERN_BACKFILL_EMPTY", {"symbol": sym})
+                    except Exception as e:
+                        log_structured("PATTERN_BACKFILL_SYMBOL_ERROR", {"symbol": sym, "error": str(e)})
+            else:
+                log_structured("PATTERN_BACKFILL_SKIP", {"reason": "No primary executor found"})
+                
+            log_structured("PATTERN_ENGINE", {"status": "initialized", "db": shadow_db})
+        except Exception as e:
+            log_structured("PATTERN_ENGINE_ERROR", {"error": str(e)})
+            PIPELINE = None
         
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue(maxsize=_get_int_env("INLINE_TRADER_QUEUE", 100, 10))
@@ -1091,6 +1144,7 @@ async def main():
                     with concurrent.futures.ThreadPoolExecutor(max_workers=len(traders)) as executor:
                         futures = []
                         for name, trader in traders:
+                            if name == "shadow": continue # Skip shadow for primary dispatch
                             futures.append(executor.submit(
                                 trader.process_alert,
                                 int(alert_id),
@@ -1099,6 +1153,22 @@ async def main():
                                 float(alert["price"]),
                                 range_cents=float(alert.get("range_cents", 0.0))
                             ))
+                        
+                        # 2. Pattern Enrichment & Shadow Dispatch
+                        if 'PIPELINE' in globals() and PIPELINE:
+                            enriched = PIPELINE.on_l2_alert(alert)
+                            if enriched and enriched.get("decision") != "skip":
+                                for name, trader in traders:
+                                    if name == "shadow":
+                                        futures.append(executor.submit(
+                                            trader.process_alert,
+                                            int(alert_id),
+                                            alert["symbol"],
+                                            alert["direction"],
+                                            float(alert["price"]),
+                                            range_cents=float(alert.get("range_cents", 0.0)),
+                                            pattern_info=enriched
+                                        ))
                         # Wait for all to complete
                         for future in concurrent.futures.as_completed(futures):
                             try:

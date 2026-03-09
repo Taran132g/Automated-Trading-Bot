@@ -290,10 +290,6 @@ with st.sidebar:
         st.markdown("<br>", unsafe_allow_html=True)
         
     ui_components.render_system_status()
-    
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    if st.button("⚙️ Admin Controls", use_container_width=True):
-        st.switch_page("pages/5_⚙️_Admin_Controls.py")
 
 # --- MAIN DASHBOARD AREA ---
 top_col1, top_col2 = st.columns([3, 1])
