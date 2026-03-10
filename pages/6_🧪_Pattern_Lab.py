@@ -308,26 +308,50 @@ with left_col:
             st.info("No pattern-filtered trades recorded yet.")
     
     st.markdown('<div class="section-header">PATTERN SYSTEM PERFORMANCE</div>', unsafe_allow_html=True)
+    time_range = st.radio("Time Range", ["Today", "All Time"], horizontal=True, label_visibility="collapsed", key="pattern_time_range")
+    
     if not data['trades'].empty:
-        symbol_stats = []
-        for symbol, group in data['trades'].groupby('symbol'):
-            total_pnl = group['pnl'].sum()
-            exits = group[group['side'].isin(['SELL', 'COVER'])]
-            wins = len(exits[exits['pnl'] > 0])
-            total_trades = len(exits)
-            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
-            symbol_stats.append({
-                'Symbol': symbol,
-                'Total PnL': total_pnl,
-                'Win Rate': win_rate,
-                'Trades': total_trades
-            })
-        
-        if symbol_stats:
-            df_stats = pd.DataFrame(symbol_stats).sort_values('Total PnL', ascending=False)
-            df_stats['Total PnL'] = df_stats['Total PnL'].apply(lambda x: f"${x:,.2f}")
-            df_stats['Win Rate'] = df_stats['Win Rate'].apply(lambda x: f"{x:.1f}%")
-            st.dataframe(df_stats, use_container_width=True, hide_index=True)
+        trades_to_show = data['trades']
+        if time_range == "Today":
+            today_start = datetime.now().replace(hour=0, minute=0, second=0).timestamp()
+            trades_to_show = trades_to_show[trades_to_show['timestamp'] >= today_start]
+            
+        if not trades_to_show.empty:
+            symbol_stats = []
+            for symbol, group in trades_to_show.groupby('symbol'):
+                total_pnl = group['pnl'].sum()
+                exits = group[group['side'].isin(['SELL', 'COVER'])]
+                wins = len(exits[exits['pnl'] > 0])
+                total_trades = len(exits)
+                win_rate = (wins / total_trades * 100) if total_trades > 0 else 0.0
+                
+                symbol_stats.append({
+                    'Symbol': symbol,
+                    'Total PnL': total_pnl,
+                    'Win Rate': win_rate,
+                    'Trades': total_trades
+                })
+            
+            if symbol_stats:
+                df_stats = pd.DataFrame(symbol_stats).sort_values('Total PnL', ascending=False)
+                df_stats['Total PnL_fmt'] = df_stats['Total PnL'].apply(lambda x: f"${x:,.2f}")
+                df_stats['Win Rate_fmt'] = df_stats['Win Rate'].apply(lambda x: f"{x:.1f}%")
+                
+                st.dataframe(
+                    df_stats,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
+                        "Total PnL": st.column_config.NumberColumn("PnL ($)", format="$%.2f"),
+                        "Win Rate": st.column_config.ProgressColumn("Win Rate", format="%.1f%%", min_value=0, max_value=100),
+                        "Trades": st.column_config.NumberColumn("Trades", width="small"),
+                        "Total PnL_fmt": None, # Hide helper columns
+                        "Win Rate_fmt": None
+                    }
+                )
+        else:
+            st.info(f"No trades recorded for {time_range.lower()}.")
 
 with right_col:
     st.markdown('<div class="section-header">SHADOW POSITIONS</div>', unsafe_allow_html=True)
