@@ -17,11 +17,29 @@ start_backend() {
 
 stop_backend() {
     echo "Stopping Backend..."
+    # 1. Engage kill switch so live_trader can detect it and self-flatten positions
     touch kill_switch.flag
+    # 2. Stop the restart loop so nothing gets restarted
     pkill -f "$LOOP_SCRIPT" 2>/dev/null
-    pkill -f "python3 grok.py" 2>/dev/null
-    pkill -f "python3 live_trader.py" 2>/dev/null
+    # 3. Stop paper trader (no real positions to close)
     pkill -f "python3 paper_trader.py" 2>/dev/null
+    # 4. Let live_trader detect the kill switch and flatten positions on its own.
+    #    Wait up to 30s for it to exit gracefully before force-killing.
+    echo "Waiting for live_trader to flatten positions..."
+    for i in $(seq 1 30); do
+        if ! pgrep -f "python3 live_trader.py" > /dev/null; then
+            echo "live_trader exited cleanly."
+            break
+        fi
+        sleep 1
+    done
+    # Force-kill if still running after timeout
+    if pgrep -f "python3 live_trader.py" > /dev/null; then
+        echo "WARNING: live_trader did not exit in time — force killing."
+        pkill -f "python3 live_trader.py" 2>/dev/null
+    fi
+    # 5. Now kill grok (no longer needed for pricing)
+    pkill -f "python3 grok.py" 2>/dev/null
     echo "Backend Stopped."
 }
 

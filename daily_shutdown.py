@@ -41,9 +41,9 @@ def main():
     else:
         logger.info(f"Manager shutdown output: {result.stdout.strip()}")
         
-    # 2. Wait 10 seconds for positions to flatten via kill switch
-    logger.info("Waiting 10 seconds for positions to flatten via kill switch...")
-    time.sleep(10.0)
+    # 2. Wait for positions to flatten — manage_backend.sh waits up to 30s for live_trader
+    logger.info("Waiting 35 seconds for live_trader to flatten positions and exit...")
+    time.sleep(35.0)
     
     # 3. Fetch final account data from Schwab
     logger.info("Fetching final account status...")
