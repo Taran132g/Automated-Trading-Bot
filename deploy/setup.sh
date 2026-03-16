@@ -43,10 +43,19 @@ pip install -r requirements.txt
 
 # Set permissions
 echo -e "${YELLOW}[5/5] Setting permissions...${NC}"
-chmod +x start_ui.sh
+chmod +x start_ui.sh start_backend.sh stop_backend.sh restart_loop.sh manage_backend.sh
+
+# Set up crontab for daily startup/shutdown (times in UTC, targeting EST)
+echo -e "${YELLOW}[6/5] Setting up crontab...${NC}"
+REPO_DIR=$(pwd)
+(crontab -l 2>/dev/null | grep -v "daily_startup\|daily_shutdown"; \
+  echo "30 15 * * 1-5 cd $REPO_DIR && ./.venv/bin/python3 daily_startup.py >> $REPO_DIR/daily_startup.log 2>&1"; \
+  echo "58 20 * * 1-5 cd $REPO_DIR && ./.venv/bin/python3 daily_shutdown.py >> $REPO_DIR/daily_shutdown.log 2>&1" \
+) | crontab -
+echo -e "${GREEN}✓ Crontab set: startup 10:30 AM EST, shutdown 3:58 PM EST${NC}"
 
 # Update service file with current directory
-echo -e "${YELLOW}[6/5] Configuring service file...${NC}"
+echo -e "${YELLOW}[7/5] Configuring service file...${NC}"
 CURRENT_DIR=$(pwd)
 sed -i "s|WorkingDirectory=/root/taranveer-singh.github.io|WorkingDirectory=$CURRENT_DIR|g" deploy/trading-ui.service
 sed -i "s|ExecStart=/usr/bin/python3.11|ExecStart=$CURRENT_DIR/.venv/bin/python|g" deploy/trading-ui.service
