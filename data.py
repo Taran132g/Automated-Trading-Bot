@@ -43,9 +43,10 @@ class PatternIntegrationConfig:
     require_breakout: bool = False
 
     # Execution shaping
-    aligned_size_factor: float = 1.25
+    breakout_size_factor: float = 1.50   # aligned + breakout confirmed
+    aligned_size_factor: float = 1.25    # aligned, no breakout yet
     neutral_size_factor: float = 1.00
-    countertrend_size_factor: float = 0.75
+    countertrend_size_factor: float = 1.00
 
     aligned_hold_seconds: int = 600
     neutral_hold_seconds: int = 420
@@ -249,7 +250,12 @@ class PatternContextManager:
         block_entry = False
 
         if combined["alignment"]:
-            size_factor = self.cfg.aligned_size_factor
+            # Breakout confirmed → 1.5x. Pattern aligned but no breakout yet → 1.25x.
+            broken_out = [p for p in state.top_patterns if p.get("breakout_idx") is not None]
+            if broken_out:
+                size_factor = self.cfg.breakout_size_factor  # 1.5x — reversal confirmed + L2 agrees
+            else:
+                size_factor = self.cfg.aligned_size_factor   # 1.25x — aligned but no breakout yet
             hold_seconds = self.cfg.aligned_hold_seconds
         elif state.chart_bias == "neutral":
             size_factor = self.cfg.neutral_size_factor

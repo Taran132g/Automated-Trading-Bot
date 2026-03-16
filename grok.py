@@ -596,11 +596,11 @@ def on_chart_equity(msg: dict):
             if sym in last_bar_minute and curr_min != last_bar_minute[sym]:
                 PIPELINE.on_new_bar(sym, current_bar[sym])
                 # Reset for new minute
-                current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta}
+                current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta, "timestamp": ts}
             else:
                 # Accumulate into current minute bar
                 if sym not in last_bar_minute:
-                    current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta}
+                    current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta, "timestamp": ts}
                 else:
                     cb = current_bar[sym]
                     cb["high"] = max(cb["high"], px)
@@ -1119,7 +1119,7 @@ async def main():
                 log_structured("PATTERN_BACKFILL_START", {"symbols": live_symbols})
                 for sym in live_symbols:
                     try:
-                        hist_df = executor_for_backfill.get_price_history(sym, minutes=400)
+                        hist_df = executor_for_backfill.get_price_history(sym, days=3)
                         if hist_df is not None and not hist_df.empty:
                             PIPELINE.seed_historical_data(sym, hist_df)
                             log_structured("PATTERN_BACKFILL_SUCCESS", {"symbol": sym, "bars": len(hist_df)})

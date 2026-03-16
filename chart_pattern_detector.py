@@ -79,7 +79,7 @@ class ChartPatternDetector:
         if not all_signals:
             return []
         last_idx = len(df) - 1
-        return [s for s in all_signals if s.end_idx >= last_idx - 5]
+        return [s for s in all_signals if s.end_idx >= last_idx - 20]
 
     def detect_as_dicts(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         return [s.to_dict() for s in self.detect(df)]

@@ -506,6 +506,8 @@ class LiveTrader:
         self.poll_interval = float(os.getenv("LIVE_POLL_INTERVAL", "1"))
         self.limit_poll_interval = float(os.getenv("LIVE_LIMIT_POLL_INTERVAL", "0.5"))  # Poll interval for limit orders
         self.use_limit_orders = _bool_env("LIVE_USE_LIMIT_ORDERS", True)
+        self.order_chunk_size = int(os.getenv("LIVE_ORDER_CHUNK_SIZE", str(self.initial_entry_size)))
+        self.inter_chunk_delay = float(os.getenv("LIVE_INTER_CHUNK_DELAY_MS", "50")) / 1000
         
         # Unique state file per account
         state_base = os.getenv("LIVE_STATE_FILE", "live_trader_state.json")
@@ -1483,6 +1485,60 @@ class LiveTrader:
                 price=price,
             )
 
+    def _submit_sliced(
+        self,
+        *,
+        alert_id: int,
+        symbol: str,
+        direction: str,
+        side: str,
+        qty: int,
+        price: float,
+        order_type: str = "AUTO",
+    ) -> bool:
+        """Submit an order sliced into chunks to reduce market impact.
+
+        If qty <= effective chunk size, falls through to _submit_order with no change.
+        Otherwise sends sequential child orders of chunk_size shares each, with a
+        short inter_chunk_delay between them so each child fills at or near the
+        inside quote — preserving the price improvement seen at smaller sizes.
+
+        Chunk size is halved when rolling_pi is below 2x the PI-cooldown threshold,
+        signalling that execution quality is already degrading.
+        """
+        # PI-adaptive chunk size: shrink if execution quality is degrading
+        effective_chunk = self.order_chunk_size
+        if self.rolling_pi < 0.001:
+            effective_chunk = max(50, self.order_chunk_size // 2)
+
+        if qty <= effective_chunk:
+            return self._submit_order(
+                alert_id=alert_id, symbol=symbol, direction=direction,
+                side=side, qty=qty, price=price, order_type=order_type,
+            )
+
+        remaining = qty
+        any_filled = False
+        while remaining > 0:
+            chunk = min(remaining, effective_chunk)
+            filled = self._submit_order(
+                alert_id=alert_id, symbol=symbol, direction=direction,
+                side=side, qty=chunk, price=price, order_type=order_type,
+            )
+            if filled:
+                any_filled = True
+            else:
+                LOGGER.warning(
+                    "[SLICE] Chunk fill failed for %s %s %d/%d shares; aborting sliced order",
+                    side, symbol, chunk, qty,
+                )
+                break
+            remaining -= chunk
+            if remaining > 0:
+                time.sleep(self.inter_chunk_delay)
+
+        return any_filled
+
     def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, target_limit_price: float = 0.0, pattern_info: dict = None) -> None:
         """Handle a single alert: flip position or enter new one."""
         # Check if symbol is allowed for live trading
@@ -1492,13 +1548,26 @@ class LiveTrader:
 
         # 1. Pattern Lab Filter (The Skip Logic)
         size_factor = 1.0
+        chart_bias = "neutral"
+        aligned = False
+        pattern_bucket = "neutral"
+        bull_score = 0.0
+        bear_score = 0.0
         if pattern_info:
             decision = pattern_info.get("decision", "enter_or_manage")
             size_factor = float(pattern_info.get("size_factor", 1.0))
-            
+            chart_bias = pattern_info.get("chart_bias", "neutral")
+            aligned = pattern_info.get("pattern_alignment", False)
+            bull_score = pattern_info.get("bullish_score", 0.0)
+            bear_score = pattern_info.get("bearish_score", 0.0)
+            if aligned:
+                pattern_bucket = "aligned"
+            elif chart_bias != "neutral":
+                pattern_bucket = "countertrend"
+
             if decision == "skip":
-                LOGGER.info("[%s] [FILTER] Skipping %s %s alert due to pattern mismatch (bias=%s)", 
-                            self.name, direction, symbol, pattern_info.get('chart_bias'))
+                LOGGER.info("[%s] [FILTER] Skipping %s %s alert due to pattern mismatch (bias=%s)",
+                            self.name, direction, symbol, chart_bias)
                 return
 
         # 2. Dynamic Sizing
@@ -1535,7 +1604,7 @@ class LiveTrader:
                     if position > 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing long position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
-                        self._submit_order(
+                        self._submit_sliced(
                             alert_id=alert_id,
                             symbol=symbol,
                             direction=direction,
@@ -1563,7 +1632,7 @@ class LiveTrader:
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
                         return
 
-                    filled = self._submit_order(
+                    filled = self._submit_sliced(
                         alert_id=alert_id,
                         symbol=symbol,
                         direction=direction,
@@ -1571,6 +1640,10 @@ class LiveTrader:
                         qty=current_initial_size,
                         price=target_limit_price if target_limit_price else price,
                         order_type="LIMIT",
+                    )
+                    LOGGER.info(
+                        "[%s] [PATTERN] %s %s | bias=%s aligned=%s bucket=%s size_factor=%.2f bull=%.2f bear=%.2f",
+                        self.name, symbol, direction, chart_bias, aligned, pattern_bucket, size_factor, bull_score, bear_score,
                     )
                 elif direction == "bid-heavy":
                     # Check if already long - skip to avoid stacking
@@ -1582,7 +1655,7 @@ class LiveTrader:
                     if position < 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing short position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
-                        self._submit_order(
+                        self._submit_sliced(
                             alert_id=alert_id,
                             symbol=symbol,
                             direction=direction,
@@ -1610,7 +1683,7 @@ class LiveTrader:
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
                         return
 
-                    filled = self._submit_order(
+                    filled = self._submit_sliced(
                         alert_id=alert_id,
                         symbol=symbol,
                         direction=direction,
@@ -1619,7 +1692,11 @@ class LiveTrader:
                         price=target_limit_price if target_limit_price else price,
                         order_type="LIMIT",
                     )
-                
+                    LOGGER.info(
+                        "[%s] [PATTERN] %s %s | bias=%s aligned=%s bucket=%s size_factor=%.2f bull=%.2f bear=%.2f",
+                        self.name, symbol, direction, chart_bias, aligned, pattern_bucket, size_factor, bull_score, bear_score,
+                    )
+
                 break 
             
             except BoxedPositionError as e:
