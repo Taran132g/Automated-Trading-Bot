@@ -690,10 +690,10 @@ def on_book(msg: dict):
             })
         q = trades.get(sym, deque())
         vol_per_min = 0
-        if (now - _last_chart_or_timesale_ts[sym]) > 30.0:
+        if (now - _last_chart_or_timesale_ts[sym]) > 90.0:
             log_structured("NO_DATA_WARNING", {
                 "symbol": sym,
-                "message": "No CHART_EQUITY or TIMESALE_EQUITY data for 30s"
+                "message": "No CHART_EQUITY or TIMESALE_EQUITY data for 90s"
             })
             if (now - _last_volume_fallback_ts[sym]) >= 10.0:
                 est_volume = (metrics.total_bids + metrics.total_asks) // 2
@@ -920,7 +920,8 @@ async def _book_monitor_task():
         await asyncio.sleep(BOOK_INTERVAL_SEC)
 
 async def _heartbeat_task():
-    start = time()
+    import threading
+    kill_switch_path = Path(os.getenv("LIVE_KILL_SWITCH_FILE", "kill_switch.flag"))
     while True:
         now = time()
         age = (now - _last_msg_ts) if _last_msg_ts else float("inf")
@@ -928,6 +929,16 @@ async def _heartbeat_task():
             log_structured("HEARTBEAT", {"status": "alive", "message": "No market data yet"})
         else:
             log_structured("HEARTBEAT", {"status": "alive", "last_data_age": round(age, 2)})
+
+        if kill_switch_path.exists():
+            log_structured("KILL_SWITCH_DETECTED", {"source": "heartbeat", "message": "Kill switch flag detected — signalling traders and stopping"})
+            for _name, trader in list(traders):
+                if hasattr(trader, "_check_kill_switch"):
+                    threading.Thread(target=trader._check_kill_switch, daemon=True).start()
+            await asyncio.sleep(3.0)  # Give traders time to flatten positions
+            asyncio.get_event_loop().stop()
+            return
+
         await asyncio.sleep(HEARTBEAT_SEC)
 
 # Main function
@@ -1119,7 +1130,7 @@ async def main():
                 log_structured("PATTERN_BACKFILL_START", {"symbols": live_symbols})
                 for sym in live_symbols:
                     try:
-                        hist_df = executor_for_backfill.get_price_history(sym, days=3)
+                        hist_df = executor_for_backfill.get_price_history(sym, days=1)
                         if hist_df is not None and not hist_df.empty:
                             PIPELINE.seed_historical_data(sym, hist_df)
                             log_structured("PATTERN_BACKFILL_SUCCESS", {"symbol": sym, "bars": len(hist_df)})
@@ -1360,6 +1371,17 @@ async def main():
                     log_structured("STREAM_DEBUG", {"message": msg})
             except asyncio.TimeoutError:
                 log_structured("STREAM_ERROR", {"error": "No messages for 30s"})
+                # Stream went silent — reconcile positions on all live traders before
+                # reconnecting so any in-flight order is caught during the gap.
+                for _name, _trader in traders:
+                    if hasattr(_trader, "_reconcile_positions_on_startup"):
+                        try:
+                            import concurrent.futures as _cf
+                            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
+                                _ex.submit(_trader._reconcile_positions_on_startup).result(timeout=8)
+                            log_structured("STREAM_RECONCILE", {"trader": _name, "reason": "stream_timeout"})
+                        except Exception as _e:
+                            log_structured("STREAM_RECONCILE_ERROR", {"trader": _name, "error": str(_e)})
                 if not await connect_with_retries():
                     log_structured("STREAM_ERROR", {"error": "Reconnection failed"})
                     break

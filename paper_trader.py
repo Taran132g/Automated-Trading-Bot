@@ -13,8 +13,10 @@ from pathlib import Path
 from contextlib import closing
 
 import os
+import sys
 
 DB_PATH = "penny_basing.db"
+KILL_SWITCH_PATH = Path(os.getenv("LIVE_KILL_SWITCH_FILE", "kill_switch.flag"))
 
 import config_manager
 
@@ -34,9 +36,10 @@ class PaperTrader:
     Only flips when signal direction changes. No stacking positions.
     """
 
-    def __init__(self, db_path: str = "penny_basing.db", state_file: str = "paper_trader_state.json") -> None:
+    def __init__(self, db_path: str = "penny_basing.db", state_file: str = "paper_trader_state.json", name: str = "paper") -> None:
         self._lock = threading.Lock()
         self.dry_run = True
+        self.name = name
         self.db_path = db_path
         self.state_file = state_file
         self.load_state()
@@ -57,15 +60,15 @@ class PaperTrader:
             try:
                 with open(self.state_file, "r") as f:
                     data = json.load(f)
-                    self.cash = float(data.get("cash", 100_000.0))
+                    self.cash = float(data.get("cash", 1_000_000.0))
                     # self.positions = data.get("positions", {})  <-- REMOVED
                     self.positions = {} # Always start empty
-                print(f"[PAPER] Loaded state: Cash ${self.cash:,.2f}, {len(self.positions)} positions", flush=True)
+                print(f"[{self.name.upper()}] Loaded state: Cash ${self.cash:,.2f}, {len(self.positions)} positions", flush=True)
             except:
-                self.cash = 100_000.0
+                self.cash = 1_000_000.0
                 self.positions = {}
         else:
-            self.cash = 100_000.0
+            self.cash = 1_000_000.0
             self.positions = {}
 
     def save_state(self):
@@ -365,8 +368,29 @@ class PaperTrader:
             )
             conn.commit()
 
+    def _check_kill_switch(self) -> None:
+        """Flatten all positions and exit gracefully if kill switch file is present."""
+        if not KILL_SWITCH_PATH.exists():
+            return
+        print(f"[{self.name.upper()}] Kill switch detected. Flattening all positions and exiting...", flush=True)
+        with self._lock:
+            snapshot = dict(self.positions)
+        for sym, pos in snapshot.items():
+            qty = pos.get("qty", 0)
+            if qty == 0:
+                continue
+            price = self._get_current_price(sym)
+            if qty > 0:
+                self._execute_order(sym, -qty, price, "SELL")
+            else:
+                self._execute_order(sym, abs(qty), price, "COVER")
+        self.save_state()
+        print(f"[{self.name.upper()}] Positions flattened. Exiting.", flush=True)
+        sys.exit(0)
+
     def process_alert(self, alert_id: int, symbol: str, direction: str, price: float, **kwargs) -> None:
         """Expose inline hook so grok can dispatch alerts directly."""
+        self._check_kill_switch()
         range_cents = kwargs.get("range_cents", 0.0)
         pattern_info = kwargs.get("pattern_info")
         with self._lock:

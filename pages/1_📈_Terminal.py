@@ -316,12 +316,21 @@ with top_col1:
     # --- Active Cooldown Banners ---
     now = time.time()
     state = load_live_state()
-    loss_cooldown = state.get("loss_cooldown_until", 0.0)
+    loss_cooldown_raw = state.get("loss_cooldown_until", 0.0)
     pi_cooldown = state.get("pi_cooldown_until", 0.0)
-    
+    # loss_cooldown_until is a per-symbol dict; find the longest active cooldown
+    if isinstance(loss_cooldown_raw, dict):
+        active = {sym: until for sym, until in loss_cooldown_raw.items() if now < until}
+        loss_cooldown = max(active.values()) if active else 0.0
+        loss_cooldown_syms = ", ".join(active.keys()) if active else ""
+    else:
+        loss_cooldown = float(loss_cooldown_raw)
+        loss_cooldown_syms = ""
+
     if now < loss_cooldown:
         remaining = int(loss_cooldown - now)
-        st.error(f"⚠️ **LOSS COOLDOWN ACTIVE**: Trading paused for {remaining}s due to consecutive losses.", icon="🚨")
+        sym_label = f" [{loss_cooldown_syms}]" if loss_cooldown_syms else ""
+        st.error(f"⚠️ **LOSS COOLDOWN ACTIVE{sym_label}**: Trading paused for {remaining}s due to consecutive losses.", icon="🚨")
     elif now < pi_cooldown:
         remaining = int(pi_cooldown - now)
         st.warning(f"🕒 **PI COOLDOWN ACTIVE**: Skipping entries for {remaining}s due to low fill quality.", icon="⏳")

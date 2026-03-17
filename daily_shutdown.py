@@ -41,9 +41,9 @@ def main():
     else:
         logger.info(f"Manager shutdown output: {result.stdout.strip()}")
         
-    # 2. Wait for positions to flatten — manage_backend.sh waits up to 30s for live_trader
-    logger.info("Waiting 35 seconds for live_trader to flatten positions and exit...")
-    time.sleep(35.0)
+    # 2. Wait for positions to flatten — manage_backend.sh handles graceful shutdown
+    logger.info("Waiting 10 seconds for live_trader to flatten positions and exit...")
+    time.sleep(10.0)
     
     # 3. Fetch final account data from Schwab
     logger.info("Fetching final account status...")
@@ -87,7 +87,7 @@ def main():
     )
     
     logger.info(f"Sending Telegram notification:\n{message}")
-    TelegramNotifier().notify_trade(message)
+    TelegramNotifier().send_message(message)
     logger.info("Daily shutdown sequence finished successfully.")
 
 if __name__ == "__main__":
