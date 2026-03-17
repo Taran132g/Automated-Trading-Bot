@@ -121,6 +121,9 @@ AGENT_LABELS = {
 st.markdown("## 🤖 Agent Reports")
 
 # --- Post-Market Upload ---
+if "last_report" not in st.session_state:
+    st.session_state.last_report = None
+
 with st.expander("📤 Upload Post-Market Trade Activity", expanded=True):
     st.markdown(
         "<span style='color:#94A3B8;font-size:0.85rem'>"
@@ -148,63 +151,72 @@ with st.expander("📤 Upload Post-Market Trade Activity", expanded=True):
                         report_md, report_data = run_from_upload(
                             uploaded.getvalue(), uploaded.name
                         )
-                        st.success("Report saved and sent to Telegram.")
-                        st.markdown("---")
-                        st.markdown(report_md)
-
-                        trips = report_data.get("trip_stats", {})
-
-                        def _fmt_row(r):
-                            aps = r.get("avg_pnl_per_share")
-                            return {
-                                "Trips":      r["count"],
-                                "Wins":       r.get("wins", ""),
-                                "Win Rate":   f"{r['win_rate']}%" if r.get("win_rate") is not None else "N/A",
-                                "Total PnL":  f"${r['total_pnl']:+.4f}",
-                                "PnL/Share":  f"${aps:+.4f}" if aps is not None else "N/A",
-                            }
-
-                        by_sym = trips.get("by_symbol", [])
-                        if by_sym:
-                            st.markdown("**By Symbol**")
-                            st.dataframe(
-                                pd.DataFrame([{"Symbol": s["symbol"], **_fmt_row(s)} for s in by_sym]),
-                                use_container_width=True, hide_index=True,
-                            )
-
-                        by_bucket = trips.get("by_bucket", [])
-                        if by_bucket:
-                            st.markdown("**By Pattern Bucket**")
-                            BEMOJI = {"aligned": "✅", "countertrend": "❌", "neutral": "⚪"}
-                            st.dataframe(
-                                pd.DataFrame([{
-                                    "Bucket": f"{BEMOJI.get(b['bucket'], '⚪')} {b['bucket']}",
-                                    **_fmt_row(b),
-                                } for b in by_bucket]),
-                                use_container_width=True, hide_index=True,
-                            )
-
-                        by_sb = trips.get("by_symbol_bucket", [])
-                        if by_sb:
-                            st.markdown("**By Symbol × Pattern Bucket**")
-                            BEMOJI = {"aligned": "✅", "countertrend": "❌", "neutral": "⚪"}
-                            BORDER = ["aligned", "countertrend", "neutral"]
-                            rows_sb = sorted(
-                                by_sb,
-                                key=lambda x: (x["symbol"], BORDER.index(x["bucket"]) if x["bucket"] in BORDER else 99)
-                            )
-                            st.dataframe(
-                                pd.DataFrame([{
-                                    "Symbol": r["symbol"],
-                                    "Bucket": f"{BEMOJI.get(r['bucket'], '⚪')} {r['bucket']}",
-                                    **_fmt_row(r),
-                                } for r in rows_sb]),
-                                use_container_width=True, hide_index=True,
-                            )
-
+                        st.session_state.last_report = (report_md, report_data)
                         st.rerun()
                     except Exception as exc:
                         st.error(f"Error: {exc}")
+                        st.session_state.last_report = None
+
+# Show last generated report (persists across rerun via session_state)
+if st.session_state.last_report is not None:
+    _report_md, _report_data = st.session_state.last_report
+    _tg_ok = _report_data.get("telegram_sent", False)
+    if _tg_ok:
+        st.success("Report saved and sent to Telegram.")
+    else:
+        st.warning("Report saved. Telegram notification failed — check bot token/chat ID in logs.")
+    st.markdown("---")
+    st.markdown(_report_md)
+
+    _trips = _report_data.get("trip_stats", {})
+
+    def _fmt_row(r):
+        aps = r.get("avg_pnl_per_share")
+        return {
+            "Trips":      r["count"],
+            "Wins":       r.get("wins", ""),
+            "Win Rate":   f"{r['win_rate']}%" if r.get("win_rate") is not None else "N/A",
+            "Total PnL":  f"${r['total_pnl']:+.4f}",
+            "PnL/Share":  f"${aps:+.4f}" if aps is not None else "N/A",
+        }
+
+    _by_sym = _trips.get("by_symbol", [])
+    if _by_sym:
+        st.markdown("**By Symbol**")
+        st.dataframe(
+            pd.DataFrame([{"Symbol": s["symbol"], **_fmt_row(s)} for s in _by_sym]),
+            use_container_width=True, hide_index=True,
+        )
+
+    _by_bucket = _trips.get("by_bucket", [])
+    if _by_bucket:
+        st.markdown("**By Pattern Bucket**")
+        _BEMOJI = {"aligned": "✅", "countertrend": "❌", "neutral": "⚪"}
+        st.dataframe(
+            pd.DataFrame([{
+                "Bucket": f"{_BEMOJI.get(b['bucket'], '⚪')} {b['bucket']}",
+                **_fmt_row(b),
+            } for b in _by_bucket]),
+            use_container_width=True, hide_index=True,
+        )
+
+    _by_sb = _trips.get("by_symbol_bucket", [])
+    if _by_sb:
+        st.markdown("**By Symbol × Pattern Bucket**")
+        _BEMOJI = {"aligned": "✅", "countertrend": "❌", "neutral": "⚪"}
+        _BORDER = ["aligned", "countertrend", "neutral"]
+        _rows_sb = sorted(
+            _by_sb,
+            key=lambda x: (x["symbol"], _BORDER.index(x["bucket"]) if x["bucket"] in _BORDER else 99)
+        )
+        st.dataframe(
+            pd.DataFrame([{
+                "Symbol": r["symbol"],
+                "Bucket": f"{_BEMOJI.get(r['bucket'], '⚪')} {r['bucket']}",
+                **_fmt_row(r),
+            } for r in _rows_sb]),
+            use_container_width=True, hide_index=True,
+        )
 
 st.markdown("---")
 st.markdown("**Report History**")
