@@ -17,22 +17,24 @@ class TelegramNotifier:
         else:
             LOGGER.warning("Telegram Notifier disabled: Missing TOKEN or CHAT_ID in .env")
 
-    def send_message(self, text: str):
+    def send_message(self, text: str) -> bool:
         if not self.enabled:
-            return
-        
+            return False
+
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
         payload = {
             "chat_id": self.chat_id,
             "text": text,
             "parse_mode": "Markdown"
         }
-        
+
         try:
             response = requests.post(url, json=payload, timeout=5)
             response.raise_for_status()
+            return True
         except Exception as e:
             LOGGER.error("Failed to send telegram message: %s", e)
+            return False
 
     def notify_cooldown(self, cooldown_type: str, account_value: float):
         if not self.enabled:

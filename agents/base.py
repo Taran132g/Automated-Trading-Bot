@@ -41,8 +41,8 @@ def save_report(agent_name: str, report_markdown: str, report_data: dict):
         conn.commit()
 
 
-def send_telegram(text: str):
+def send_telegram(text: str) -> bool:
     import sys
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from telegram_notifier import TelegramNotifier
-    TelegramNotifier().send_message(text)
+    return TelegramNotifier().send_message(text)
