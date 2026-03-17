@@ -506,9 +506,6 @@ class LiveTrader:
         self.poll_interval = float(os.getenv("LIVE_POLL_INTERVAL", "1"))
         self.limit_poll_interval = float(os.getenv("LIVE_LIMIT_POLL_INTERVAL", "0.5"))  # Poll interval for limit orders
         self.use_limit_orders = _bool_env("LIVE_USE_LIMIT_ORDERS", True)
-        self.order_chunk_size = int(os.getenv("LIVE_ORDER_CHUNK_SIZE", str(self.initial_entry_size)))
-        self.inter_chunk_delay = float(os.getenv("LIVE_INTER_CHUNK_DELAY_MS", "50")) / 1000
-        
         # Unique state file per account
         state_base = os.getenv("LIVE_STATE_FILE", "live_trader_state.json")
         if name != "default":
@@ -537,6 +534,7 @@ class LiveTrader:
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
+        self.pattern_buckets: Dict[str, str] = {}  # symbol -> aligned/countertrend/neutral
         self.daily_pnl: float = 0.0
         self.daily_date: str = time.strftime("%Y-%m-%d")
         self.start_day_liquidation: float = 0.0
@@ -546,13 +544,14 @@ class LiveTrader:
         self.account_details: Dict[str, float] = {}
         self.min_range_cents = int(os.getenv("MIN_RANGE_CENTS", "2"))
         
-        # Penalty Box State
-        self.consecutive_loss_cents: float = 0.0
-        self.loss_cooldown_until: float = 0.0
+        # Penalty Box State (per-symbol dicts)
+        self.consecutive_loss_cents: Dict[str, float] = {}
+        self.loss_cooldown_until: Dict[str, float] = {}
         self.pi_cooldown_until: float = 0.0
         self.telegram = TelegramNotifier()
         
         self._lock = threading.RLock()
+        self._shutdown_event = threading.Event()
 
         LOGGER.info("[%s] LiveTrader initialized (pos_size=%d, state=%s)", self.name, self.position_size, self.state_path)
         self._load_state()
@@ -592,48 +591,93 @@ class LiveTrader:
                 mismatches.append(f"{symbol}: Local={local_qty}, Schwab={schwab_qty}")
 
         if mismatches:
-            LOGGER.warning("⚠️ Position mismatch detected! Auto-reconciling to trust Schwab...")
+            LOGGER.warning("⚠️ Position mismatch detected! Reconciling per-symbol...")
             for m in mismatches:
                 LOGGER.warning("   - %s", m)
-            
-            # Trust Schwab
+
+            # Reconcile per-symbol instead of bulk-replacing so we can protect
+            # positions entered within the last 30 s.  Schwab's account endpoint
+            # lags 1-2 s behind fills; bulk-trusting it during that window wipes
+            # valid local state.
+            _now = time.time()
+            _lag_window = 30.0  # seconds
             with self._lock:
-                self.positions = schwab_positions.copy()
-                
-                # Clean up entry times for positions that no longer exist
-                for symbol in list(self.position_entry_times.keys()):
-                    if symbol not in self.positions:
-                        del self.position_entry_times[symbol]
-                
-                # Initialize entry time/price for newly discovered positions (start tracking from now)
-                for symbol in self.positions:
-                    if symbol not in self.position_entry_times:
-                        self.position_entry_times[symbol] = time.time()
-                    
-                    # Try to recover entry price from database if missing (Crucial for Profit Lock-in)
+                for symbol in all_symbols:
+                    local_qty = self.positions.get(symbol, 0)
+                    schwab_qty = schwab_positions.get(symbol, 0)
+                    if local_qty == schwab_qty:
+                        continue
+
+                    entry_ts = self.position_entry_times.get(symbol, 0.0)
+                    age = _now - entry_ts
+                    if local_qty != 0 and 0 < age < _lag_window:
+                        # Position was entered < 30 s ago.  Schwab may not have
+                        # propagated the fill yet — keep local state.
+                        LOGGER.warning(
+                            "   - %s: skipping overwrite (local=%d, schwab=%d, age=%.1fs < %.0fs lag window)",
+                            symbol, local_qty, schwab_qty, age, _lag_window,
+                        )
+                        continue
+
+                    # Trust Schwab for this symbol
+                    LOGGER.warning(
+                        "   - %s: overwriting local=%d → schwab=%d", symbol, local_qty, schwab_qty
+                    )
+                    if schwab_qty == 0:
+                        self.positions.pop(symbol, None)
+                        self.position_entry_times.pop(symbol, None)
+                        self.position_entry_prices.pop(symbol, None)
+                    else:
+                        self.positions[symbol] = schwab_qty
+                        if symbol not in self.position_entry_times:
+                            self.position_entry_times[symbol] = _now
+
+                # Remove local symbols that Schwab no longer holds and are past the lag window
+                for symbol in list(self.positions.keys()):
+                    if symbol not in schwab_positions:
+                        entry_ts = self.position_entry_times.get(symbol, 0.0)
+                        age = _now - entry_ts
+                        if age >= _lag_window:
+                            LOGGER.warning("   - %s: removing (not in Schwab, age=%.1fs)", symbol, age)
+                            self.positions.pop(symbol, None)
+                            self.position_entry_times.pop(symbol, None)
+                            self.position_entry_prices.pop(symbol, None)
+
+                # --- Fix #11: entry price recovery ---
+                # For every position we're now tracking, ensure we have a valid entry price
+                # so _check_profit_limits works correctly after reconciliation.
+                # Query the last OPENING trade (BUY/SHORT) — not the last trade of any kind,
+                # because a SELL/COVER price is not a useful entry anchor.
+                for symbol in list(self.positions.keys()):
                     if self.position_entry_prices.get(symbol, 0.0) <= 0:
                         try:
                             with self._open_conn() as conn:
                                 cur = conn.cursor()
                                 cur.execute(
-                                    "SELECT price FROM live_trades WHERE symbol=? ORDER BY rowid DESC LIMIT 1",
+                                    "SELECT price FROM live_trades "
+                                    "WHERE symbol=? AND side IN ('BUY','SHORT') "
+                                    "ORDER BY rowid DESC LIMIT 1",
                                     (symbol,)
                                 )
                                 row = cur.fetchone()
-                                if row:
+                                if row and float(row[0]) > 0:
                                     self.position_entry_prices[symbol] = float(row[0])
                                     LOGGER.info("   - Recovered entry price for %s: $%.4f", symbol, row[0])
                                 else:
-                                    # Fallback: use current price as proxy entry price
-                                    current = self._latest_price(symbol)
-                                    if current:
-                                        self.position_entry_prices[symbol] = current
-                                        LOGGER.info("   - Unknown entry price for %s; using $%.4f as anchor", symbol, current)
-                        except Exception as e:
-                            LOGGER.warning("   - Failed to recover entry price for %s: %s", symbol, e)
-                
+                                    # No opening trade in DB — leave at 0 so profit limits
+                                    # are explicitly skipped with a warning rather than using
+                                    # a misleading current-price anchor.
+                                    LOGGER.error(
+                                        "   - Cannot recover entry price for %s "
+                                        "(no BUY/SHORT in live_trades). "
+                                        "Profit limits will be skipped until a new entry is recorded.",
+                                        symbol,
+                                    )
+                        except Exception as _e:
+                            LOGGER.error("   - Failed to recover entry price for %s: %s", symbol, _e)
+
                 self._save_state()
-            LOGGER.info("✅ State auto-corrected to match Schwab.")
+            LOGGER.info("✅ Per-symbol reconcile complete.")
         else:
             LOGGER.info("✅ Positions reconciled successfully (Local: %d, Schwab: %d)", len(self.positions), len(schwab_positions))
 
@@ -661,8 +705,23 @@ class LiveTrader:
                 self.start_day_liquidation = float(data.get("start_day_liquidation", 0.0))
                 self.daily_pnl = float(data.get("daily_pnl", 0.0))
                 self.daily_date = data.get("daily_date", time.strftime("%Y-%m-%d"))
-                self.consecutive_loss_cents = float(data.get("consecutive_loss_cents", 0.0))
-                self.loss_cooldown_until = float(data.get("loss_cooldown_until", 0.0))
+                self.consecutive_loss_cents = dict(data.get("consecutive_loss_cents", {}))
+                # Validate cooldown timestamps: discard any value that is more than
+                # 1 hour in the future (corrupt/edited JSON) or already expired.
+                # The real cooldown is 120 s, so 1 h headroom is generous.
+                _now = time.time()
+                _max_allowed = _now + 3600
+                raw_cooldowns = data.get("loss_cooldown_until", {})
+                self.loss_cooldown_until = {}
+                for _sym, _until in raw_cooldowns.items():
+                    _until = float(_until)
+                    if _until <= _now:
+                        pass  # already expired — drop it silently
+                    elif _until > _max_allowed:
+                        LOGGER.warning("Discarding corrupt cooldown for %s (ts=%.0f, >1h in future); resetting",
+                                       _sym, _until)
+                    else:
+                        self.loss_cooldown_until[_sym] = _until
                 self.pi_cooldown_until = float(data.get("pi_cooldown_until", 0.0))
             LOGGER.info("Loaded state: %s positions", len(self.positions))
         except Exception as exc:
@@ -674,13 +733,14 @@ class LiveTrader:
         now = time.time()
         # Build active cooldowns list for UI display
         active_cooldowns = []
-        if now < self.loss_cooldown_until:
-            active_cooldowns.append({
-                "reason": "Loss Cooldown",
-                "detail": f"Consecutive losses exceeded threshold",
-                "remaining_seconds": round(self.loss_cooldown_until - now),
-                "until": self.loss_cooldown_until,
-            })
+        for _sym, _until in self.loss_cooldown_until.items():
+            if now < _until:
+                active_cooldowns.append({
+                    "reason": f"Loss Cooldown ({_sym})",
+                    "detail": "Consecutive losses exceeded threshold",
+                    "remaining_seconds": round(_until - now),
+                    "until": _until,
+                })
         if hasattr(self, '_emergency_shutdown') and self._emergency_shutdown:
             active_cooldowns.append({
                 "reason": "Account Stop Loss",
@@ -699,8 +759,8 @@ class LiveTrader:
                 "daily_pnl": self.daily_pnl,
                 "daily_date": self.daily_date,
                 "start_day_liquidation": self.start_day_liquidation,
-                "consecutive_loss_cents": self.consecutive_loss_cents,
-                "loss_cooldown_until": self.loss_cooldown_until,
+                "consecutive_loss_cents": dict(self.consecutive_loss_cents),
+                "loss_cooldown_until": dict(self.loss_cooldown_until),
                 "rolling_pi": getattr(self, "rolling_pi", 0.0),
                 "active_cooldowns": active_cooldowns,
             }
@@ -771,10 +831,15 @@ class LiveTrader:
                     price REAL,
                     entry_price REAL,
                     pnl REAL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    pattern_bucket TEXT DEFAULT 'neutral'
                 )
                 """
             )
+            # Migrate: add pattern_bucket if missing from existing DB
+            cols = [r[1] for r in cur.execute("PRAGMA table_info(live_trades)").fetchall()]
+            if "pattern_bucket" not in cols:
+                cur.execute("ALTER TABLE live_trades ADD COLUMN pattern_bucket TEXT DEFAULT 'neutral'")
             # Account history table for PnL graphing
             cur.execute(
                 """
@@ -891,21 +956,21 @@ class LiveTrader:
             # Threshold: Cumulative loss of >= $0.02 per share in consecutive trades
             if pnl != 0: # Only check closing trades
                 if per_share_pnl < 0:
-                    self.consecutive_loss_cents += abs(per_share_pnl)
-                    LOGGER.info("Loss detected ($%.4f/share). Cumulative Bucket: $%.4f", per_share_pnl, self.consecutive_loss_cents)
-                    
-                    if self.consecutive_loss_cents >= 0.02:
-                        self.loss_cooldown_until = time.time() + 120
-                        self.consecutive_loss_cents = 0.0 # Reset after penalty applied
-                        msg = f"🚨 PENALTY BOX TRIGGERED: Cumulative Loss >= $0.02/share. Cooldown for 2 minutes."
+                    self.consecutive_loss_cents[symbol] = self.consecutive_loss_cents.get(symbol, 0.0) + abs(per_share_pnl)
+                    LOGGER.info("Loss detected on %s ($%.4f/share). Cumulative Bucket: $%.4f", symbol, per_share_pnl, self.consecutive_loss_cents[symbol])
+
+                    if self.consecutive_loss_cents[symbol] >= 0.02:
+                        self.loss_cooldown_until[symbol] = time.time() + 120
+                        self.consecutive_loss_cents[symbol] = 0.0  # Reset after penalty applied
+                        msg = f"🚨 PENALTY BOX TRIGGERED [{symbol}]: Cumulative Loss >= $0.02/share. Cooldown for 2 minutes."
                         LOGGER.warning(msg)
                         print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
                         self.telegram.notify_cooldown("Loss Cooldown", self.account_details.get("liquidation_value", 0.0))
                 else:
-                    # Empathetic Reset: Any profitable trade resets the anxiety bucket
-                    if self.consecutive_loss_cents > 0:
-                        LOGGER.info("Win/Flat trade ($%.4f/share) resets cumulative loss bucket (was $%.4f)", per_share_pnl, self.consecutive_loss_cents)
-                    self.consecutive_loss_cents = 0.0
+                    # Empathetic Reset: Any profitable trade resets the anxiety bucket for this symbol
+                    if self.consecutive_loss_cents.get(symbol, 0.0) > 0:
+                        LOGGER.info("Win/Flat trade on %s ($%.4f/share) resets cumulative loss bucket (was $%.4f)", symbol, per_share_pnl, self.consecutive_loss_cents[symbol])
+                    self.consecutive_loss_cents[symbol] = 0.0
             
             # Update daily PnL
             today = time.strftime("%Y-%m-%d")
@@ -950,6 +1015,8 @@ class LiveTrader:
             print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
 
     def _engage_emergency_shutdown(self, reason: str) -> None:
+        # Set the event FIRST so all other threads stop accepting new alerts immediately.
+        self._shutdown_event.set()
         LOGGER.error("EMERGENCY STOP: %s", reason)
         try:
             self.executor.cancel_all_orders()
@@ -966,7 +1033,9 @@ class LiveTrader:
             LOGGER.error("Failed to reconcile positions during shutdown: %s", exc)
             # Fallback to cached positions if reconcile fails (risky but necessary)
 
-        for symbol, qty in list(self.positions.items()):
+        with self._lock:
+            snapshot = self.positions.copy()
+        for symbol, qty in snapshot.items():
             if qty == 0:
                 continue
             side = "SELL" if qty > 0 else "COVER"
@@ -985,7 +1054,10 @@ class LiveTrader:
             )
 
         self._save_state()
-        raise SystemExit(1)
+        # _shutdown_event is already set at the top of this method; all loops
+        # will exit on their next iteration. Do NOT raise SystemExit here —
+        # that would only kill the calling thread (typically a daemon), not
+        # the main alert-processing thread.
 
     def _check_kill_switch(self) -> None:
         if self.kill_switch_path.exists():
@@ -1159,13 +1231,14 @@ class LiveTrader:
         actual_price = price
 
         if submitted:
-            self._record_fill(symbol=symbol, side=side, qty=qty, price=price)
             filled = True
             filled_qty = qty
             fill_status = "FILLED"
             result["filled_via"] = "MARKET"
 
-            # Fetch actual fill price for bad fill detection and PI tracking
+            # Fetch actual fill price for bad fill detection and PI tracking.
+            # Record the fill AFTER Schwab confirms it to avoid updating
+            # self.positions before the order is actually on the books.
             order_id = result.get("order_id")
             if order_id and not result.get("dry_run"):
                 # Fetch quote for PI calculation before waiting
@@ -1192,6 +1265,11 @@ class LiveTrader:
                         self._record_pi(max(pi, 0.0))
                 else:
                     LOGGER.warning("[PI-DEBUG] No avg_fill_price for order %s. Raw status: %s", order_id, status)
+                # Record fill with confirmed actual price (or submitted price if status unavailable)
+                self._record_fill(symbol=symbol, side=side, qty=qty, price=actual_price)
+            else:
+                # dry_run or no order_id: record immediately (no real order on Schwab)
+                self._record_fill(symbol=symbol, side=side, qty=qty, price=price)
         else:
             fill_status = "FAILED"
             # CHECK FOR BOXED POSITION ERROR
@@ -1368,15 +1446,36 @@ class LiveTrader:
                      result["filled_qty"] = 0
              
             else:
-                # Still Open (WORKING, QUEUED, etc) -> CANCEL AGGRESSIVELY
-                LOGGER.info("Order %s not filled (Status: %s). Aggressively cancelling...", order_id, order_status)
-                
+                # Still Open (WORKING, QUEUED, etc) -> check fill status one more time
+                # before sending any cancel to avoid the cancel/fill race.
+                LOGGER.info("Order %s not filled (Status: %s). Re-checking before cancel...", order_id, order_status)
+                pre_cancel_status = self.executor.fetch_order_status(order_id)
+                pre_cancel_qty = pre_cancel_status.get("filled_quantity") or 0
+                if pre_cancel_qty >= qty:
+                    LOGGER.info("Order %s already fully filled (%d shares) on re-check; skipping cancel.", order_id, pre_cancel_qty)
+                    realized_price = float(pre_cancel_status.get("avg_fill_price") or limit_price)
+                    self._record_fill(symbol=symbol, side=side, qty=int(pre_cancel_qty), price=realized_price)
+                    result["fill_status"] = "FILLED"
+                    result["filled_qty"] = int(pre_cancel_qty)
+                    final_filled = True
+                    # Jump to _record_order; skip the entire cancel block below.
+                    self._record_order(
+                        alert_id=alert_id, symbol=symbol, direction=direction,
+                        side=side, qty=qty, price=limit_price, result=result,
+                    )
+                    return True
+
+                LOGGER.info("Order %s confirmed still open (%d filled); proceeding with cancel.", order_id, pre_cancel_qty)
+
                 # 1. Direct Cancel first
+                _direct_cancel_ok = False
                 try:
-                     self.executor.client.cancel_order(order_id, self.executor.account_id)
-                except Exception:
-                     pass
-                     
+                    self.executor.client.cancel_order(order_id, self.executor.account_id)
+                    _direct_cancel_ok = True
+                    LOGGER.info("Direct cancel sent for order %s", order_id)
+                except Exception as _ce:
+                    LOGGER.error("Direct cancel FAILED for order %s: %s", order_id, _ce)
+
                 # 2. Aggressive Sweep Loop for ghost orders
                 cancel_count = self.executor.cancel_all_orders()
                 retry = 0
@@ -1425,11 +1524,25 @@ class LiveTrader:
                              result["fill_status"] = "PARTIAL_CANCELED"
                          result["filled_qty"] = int(final_filled_qty)
                     else:
-                         LOGGER.info("Order %s confirmed cancelled (Status: %s)", order_id, final_state)
-                         result["fill_status"] = "CANCELED_TIMEOUT"
-                         result["filled_qty"] = 0
-                         result["fill_status"] = "CANCELED_TIMEOUT"
-                         result["filled_qty"] = 0
+                        if final_state in {"CANCELED", "REJECTED", "EXPIRED"}:
+                            LOGGER.info("Order %s confirmed cancelled (Status: %s)", order_id, final_state)
+                        else:
+                            # Cancel did NOT propagate — order is still live on Schwab.
+                            # This is a critical state: an open order we think we cancelled.
+                            LOGGER.critical(
+                                "CANCEL FAILURE: Order %s still %s after all cancel attempts! "
+                                "Manual intervention may be required.",
+                                order_id, final_state,
+                            )
+                            try:
+                                self.telegram.notify_error(
+                                    "Cancel Failure",
+                                    f"Order {order_id} ({side} {qty} {symbol}) still {final_state} after cancel. Check account.",
+                                )
+                            except Exception:
+                                pass
+                        result["fill_status"] = "CANCELED_TIMEOUT"
+                        result["filled_qty"] = 0
         
             self._record_order(
                 alert_id=alert_id,
@@ -1485,62 +1598,13 @@ class LiveTrader:
                 price=price,
             )
 
-    def _submit_sliced(
-        self,
-        *,
-        alert_id: int,
-        symbol: str,
-        direction: str,
-        side: str,
-        qty: int,
-        price: float,
-        order_type: str = "AUTO",
-    ) -> bool:
-        """Submit an order sliced into chunks to reduce market impact.
-
-        If qty <= effective chunk size, falls through to _submit_order with no change.
-        Otherwise sends sequential child orders of chunk_size shares each, with a
-        short inter_chunk_delay between them so each child fills at or near the
-        inside quote — preserving the price improvement seen at smaller sizes.
-
-        Chunk size is halved when rolling_pi is below 2x the PI-cooldown threshold,
-        signalling that execution quality is already degrading.
-        """
-        # PI-adaptive chunk size: shrink if execution quality is degrading
-        effective_chunk = self.order_chunk_size
-        if self.rolling_pi < 0.001:
-            effective_chunk = max(50, self.order_chunk_size // 2)
-
-        if qty <= effective_chunk:
-            return self._submit_order(
-                alert_id=alert_id, symbol=symbol, direction=direction,
-                side=side, qty=qty, price=price, order_type=order_type,
-            )
-
-        remaining = qty
-        any_filled = False
-        while remaining > 0:
-            chunk = min(remaining, effective_chunk)
-            filled = self._submit_order(
-                alert_id=alert_id, symbol=symbol, direction=direction,
-                side=side, qty=chunk, price=price, order_type=order_type,
-            )
-            if filled:
-                any_filled = True
-            else:
-                LOGGER.warning(
-                    "[SLICE] Chunk fill failed for %s %s %d/%d shares; aborting sliced order",
-                    side, symbol, chunk, qty,
-                )
-                break
-            remaining -= chunk
-            if remaining > 0:
-                time.sleep(self.inter_chunk_delay)
-
-        return any_filled
-
     def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, target_limit_price: float = 0.0, pattern_info: dict = None) -> None:
         """Handle a single alert: flip position or enter new one."""
+        # Reject immediately if shutdown is in progress (kill switch or stop-loss triggered).
+        if self._shutdown_event.is_set():
+            LOGGER.warning("[%s] Shutdown in progress; rejecting alert %s for %s", self.name, alert_id, symbol)
+            return
+
         # Check if symbol is allowed for live trading
         if symbol not in self.live_symbols:
             LOGGER.info("Skipping live trade for %s (not in LIVE_SYMBOLS)", symbol)
@@ -1565,6 +1629,8 @@ class LiveTrader:
             elif chart_bias != "neutral":
                 pattern_bucket = "countertrend"
 
+            self.pattern_buckets[symbol] = pattern_bucket
+
             if decision == "skip":
                 LOGGER.info("[%s] [FILTER] Skipping %s %s alert due to pattern mismatch (bias=%s)",
                             self.name, direction, symbol, chart_bias)
@@ -1584,11 +1650,11 @@ class LiveTrader:
                 with self._lock:
                     position = self.positions.get(symbol, 0)
 
-                # Penalty Box Check: Block NEW ENTRIES if in cooldown
-                if position == 0 and time.time() < self.loss_cooldown_until:
-                     remaining = self.loss_cooldown_until - time.time()
-                     LOGGER.warning("In 2-min Penalty Box (%.1fs left); skipping entry alert %s", remaining, alert_id)
-                     return
+                # Penalty Box Check: Block NEW ENTRIES if in cooldown (per-symbol)
+                if position == 0 and time.time() < self.loss_cooldown_until.get(symbol, 0.0):
+                    remaining = self.loss_cooldown_until[symbol] - time.time()
+                    LOGGER.warning("[%s] In 2-min Penalty Box (%.1fs left); skipping entry alert %s", symbol, remaining, alert_id)
+                    return
 
                 # Cooldown check
                 cooldown_seconds = 30.0
@@ -1604,7 +1670,7 @@ class LiveTrader:
                     if position > 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing long position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
-                        self._submit_sliced(
+                        self._submit_order(
                             alert_id=alert_id,
                             symbol=symbol,
                             direction=direction,
@@ -1632,7 +1698,7 @@ class LiveTrader:
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
                         return
 
-                    filled = self._submit_sliced(
+                    filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
                         direction=direction,
@@ -1655,7 +1721,7 @@ class LiveTrader:
                     if position < 0:
                         close_qty = abs(position)
                         LOGGER.info("Closing short position on %s (%d shares) (Exit Only - No Flip)", symbol, close_qty)
-                        self._submit_sliced(
+                        self._submit_order(
                             alert_id=alert_id,
                             symbol=symbol,
                             direction=direction,
@@ -1683,7 +1749,7 @@ class LiveTrader:
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
                         return
 
-                    filled = self._submit_sliced(
+                    filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
                         direction=direction,
@@ -1731,8 +1797,15 @@ class LiveTrader:
     ) -> None:
         """Process a single alert: update state and handle order execution."""
         with self._lock:
-            self.last_alert_id = max(self.last_alert_id, int(alert_id))
-        
+            # Deduplicate: the same alert can arrive from both the inline callback
+            # (grok dispatch) and the DB polling loop.  Rejecting any id we have
+            # already seen prevents double-submission.
+            if int(alert_id) <= self.last_alert_id:
+                LOGGER.info("[%s] Alert %d already processed (last_id=%d); skipping duplicate",
+                            self.name, alert_id, self.last_alert_id)
+                return
+            self.last_alert_id = int(alert_id)
+
         self._handle_alert(alert_id, symbol, direction, price, range_cents, target_limit_price, pattern_info)
         
         if persist_state and not self.dry_run:
@@ -1795,7 +1868,7 @@ class LiveTrader:
     def _account_polling_loop(self) -> None:
         """Background thread to poll account details and reconcile positions."""
         LOGGER.info("Starting account polling thread...")
-        while True:
+        while not self._shutdown_event.is_set():
             try:
                 self._poll_account_details()
             except Exception as exc:
@@ -1804,7 +1877,9 @@ class LiveTrader:
                 self._reconcile_positions_on_startup()
             except Exception as exc:
                 LOGGER.error("Position reconciliation error: %s", exc)
-            time.sleep(10)
+            # Use event wait so shutdown wakes this thread immediately
+            self._shutdown_event.wait(timeout=10)
+        LOGGER.info("[%s] Account polling thread exiting (shutdown event set).", self.name)
 
     def _start_account_polling_thread(self) -> None:
         LOGGER.info("Calling _start_account_polling_thread...")
@@ -1824,10 +1899,12 @@ class LiveTrader:
         if self.inline:
             LOGGER.info("LiveTrader is running INLINE. Skipping DB polling loop.")
             # Keep the background account polling thread alive
-            while True:
+            while not self._shutdown_event.is_set():
                 self._check_kill_switch()
                 self._check_time_stops()
                 time.sleep(1.0)
+            LOGGER.error("[%s] Shutdown event set; inline loop exiting.", self.name)
+            return
         
         # High-frequency polling back-off
         min_sleep = 0.05
@@ -1839,7 +1916,7 @@ class LiveTrader:
         monitor_conn.isolation_level = None
         monitor_cur = monitor_conn.cursor()
 
-        while True:
+        while not self._shutdown_event.is_set():
             try:
                 # Poll for new alerts
                 new_alerts = []

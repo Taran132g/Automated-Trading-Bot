@@ -156,16 +156,16 @@ class TestRecentChanges(unittest.TestCase):
         trader.positions["TEST"] = 100
         trader.position_entry_prices["TEST"] = 100.00 
         trader._record_fill(symbol="TEST", side="SELL", qty=100, price=99.99) # Loss $0.01
-        self.assertLess(trader.loss_cooldown_until, time.time(), "Should NOT be locked out yet (Loss $0.01)")
-        self.assertAlmostEqual(trader.consecutive_loss_cents, 0.01)
+        self.assertLess(trader.loss_cooldown_until.get("TEST", 0.0), time.time(), "Should NOT be locked out yet (Loss $0.01)")
+        self.assertAlmostEqual(trader.consecutive_loss_cents.get("TEST", 0.0), 0.01)
 
         # Trade 2: Lose another $0.01 (Total $0.02)
         trader.positions["TEST"] = 100
-        trader.position_entry_prices["TEST"] = 100.00 
+        trader.position_entry_prices["TEST"] = 100.00
         trader._record_fill(symbol="TEST", side="SELL", qty=100, price=99.99) # Loss $0.01
-        
-        self.assertGreater(trader.loss_cooldown_until, time.time(), "Penalty box should be active (Total Loss $0.02)")
-        self.assertEqual(trader.consecutive_loss_cents, 0.0, "Bucket should reset after trigger")
+
+        self.assertGreater(trader.loss_cooldown_until.get("TEST", 0.0), time.time(), "Penalty box should be active (Total Loss $0.02)")
+        self.assertEqual(trader.consecutive_loss_cents.get("TEST", 0.0), 0.0, "Bucket should reset after trigger")
         
         # 2. Verify Lockout for NEW ENTRY (Position=0)
         trader.positions["TEST"] = 0
