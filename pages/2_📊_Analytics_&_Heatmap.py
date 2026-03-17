@@ -336,31 +336,24 @@ else:
         st.markdown('<div class="section-header">DAILY PNL HEATMAP</div>', unsafe_allow_html=True)
         if not daily.empty:
             colors = ['#00FF99' if x >= 0 else '#EF4444' for x in daily['daily_pnl']]
-            plot_df = daily
+            fig_bars = go.Figure(data=[go.Bar(
+                x=daily['date'],
+                y=daily['daily_pnl'],
+                marker_color=colors,
+                hovertemplate='Date: %{x}<br>PnL: $%{y:.2f}<extra></extra>'
+            )])
+            fig_bars.update_layout(
+                template='plotly_dark',
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                height=300,
+                margin=dict(l=0, r=0, t=10, b=0),
+                xaxis=dict(showgrid=False, title=""),
+                yaxis=dict(showgrid=True, gridcolor='#1F2937', tickprefix='$')
+            )
+            st.plotly_chart(fig_bars, use_container_width=True, config={'displayModeBar': False})
         else:
-            import numpy as np
-            dates = pd.date_range(end=datetime.now().date(), periods=30, freq='D')
-            pnls = np.random.normal(50, 200, 30)
-            plot_df = pd.DataFrame({'date': dates, 'daily_pnl': pnls})
-            colors = ['#00FF99' if x >= 0 else '#EF4444' for x in plot_df['daily_pnl']]
-            
-        fig_bars = go.Figure(data=[go.Bar(
-            x=plot_df['date'],
-            y=plot_df['daily_pnl'],
-            marker_color=colors,
-            hovertemplate='Date: %{x}<br>PnL: $%{y:.2f}<extra></extra>'
-        )])
-        
-        fig_bars.update_layout(
-            template='plotly_dark',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            height=300,
-            margin=dict(l=0, r=0, t=10, b=0),
-            xaxis=dict(showgrid=False, title=""),
-            yaxis=dict(showgrid=True, gridcolor='#1F2937', tickprefix='$')
-        )
-        st.plotly_chart(fig_bars, use_container_width=True, config={'displayModeBar': False})
+            st.info("No daily PnL data available yet.")
 
     with chart_col2:
         st.markdown('<div class="section-header">WIN / LOSS DISTRIBUTION</div>', unsafe_allow_html=True)
