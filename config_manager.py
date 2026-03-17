@@ -16,6 +16,13 @@ DEFAULT_CONFIG = {
     "paper_position_size": int(os.getenv("POSITION_SIZE", "1000")),
     "live_max_trades_per_hour": int(os.getenv("LIVE_MAX_TRADES_PER_HOUR", "60")),
     "account_stop_loss": float(os.getenv("ACCOUNT_STOP_LOSS", "0.0")),
+    # Kelly Criterion position sizing
+    "kelly_enabled": True,
+    "kelly_fraction": 0.5,        # Fractional Kelly (0.5 = half-Kelly reduces variance)
+    "kelly_min_trades": 20,       # Min closed trades required to use symbol-level Kelly
+    "kelly_max_multiplier": 2.0,  # Max size multiplier (cap upside)
+    "kelly_min_multiplier": 0.25, # Min size multiplier (floor downside)
+    "kelly_lookback_days": 30,    # Days of trade history to consider
 }
 
 def load_config() -> Dict[str, Any]:
