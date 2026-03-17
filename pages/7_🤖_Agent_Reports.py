@@ -11,9 +11,10 @@ import pytz
 
 sys.path.append(str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
-import auth_manager
 
 load_dotenv()
+
+from agents.post_market_csv import run_from_upload, extract_date_from_filename
 
 DB_PATH = Path("penny_basing.db").resolve()
 ET = pytz.timezone("America/New_York")
@@ -79,12 +80,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Auth ---
-if not auth_manager.is_authenticated():
-    auth_manager.show_login()
-    st.stop()
-
-
 def get_db():
     return sqlite3.connect(str(DB_PATH))
 
@@ -124,7 +119,95 @@ AGENT_LABELS = {
 
 # --- Header ---
 st.markdown("## 🤖 Agent Reports")
-st.markdown("Browse Claude-generated analysis reports from all trading agents.")
+
+# --- Post-Market Upload ---
+with st.expander("📤 Upload Post-Market Trade Activity", expanded=True):
+    st.markdown(
+        "<span style='color:#94A3B8;font-size:0.85rem'>"
+        "Upload a Schwab trade activity export (HTML). "
+        "Filename must contain the date, e.g. <code>2026-03-16-TradeActivity.html</code>."
+        "</span>",
+        unsafe_allow_html=True,
+    )
+    uploaded = st.file_uploader(
+        "Drop file here", type=["html", "htm", "csv", "txt"],
+        label_visibility="collapsed",
+    )
+    if uploaded is not None:
+        date_str = extract_date_from_filename(uploaded.name)
+        if not date_str:
+            st.error(f"Could not find a YYYY-MM-DD date in filename: `{uploaded.name}`")
+        else:
+            st.markdown(
+                f"<span style='color:#64748B;font-size:0.85rem'>Detected date: <b>{date_str}</b></span>",
+                unsafe_allow_html=True,
+            )
+            if st.button("Generate Report", type="primary"):
+                with st.spinner("Parsing trades and generating report…"):
+                    try:
+                        report_md, report_data = run_from_upload(
+                            uploaded.getvalue(), uploaded.name
+                        )
+                        st.success("Report saved and sent to Telegram.")
+                        st.markdown("---")
+                        st.markdown(report_md)
+
+                        trips = report_data.get("trip_stats", {})
+
+                        def _fmt_row(r):
+                            aps = r.get("avg_pnl_per_share")
+                            return {
+                                "Trips":      r["count"],
+                                "Wins":       r.get("wins", ""),
+                                "Win Rate":   f"{r['win_rate']}%" if r.get("win_rate") is not None else "N/A",
+                                "Total PnL":  f"${r['total_pnl']:+.4f}",
+                                "PnL/Share":  f"${aps:+.4f}" if aps is not None else "N/A",
+                            }
+
+                        by_sym = trips.get("by_symbol", [])
+                        if by_sym:
+                            st.markdown("**By Symbol**")
+                            st.dataframe(
+                                pd.DataFrame([{"Symbol": s["symbol"], **_fmt_row(s)} for s in by_sym]),
+                                use_container_width=True, hide_index=True,
+                            )
+
+                        by_bucket = trips.get("by_bucket", [])
+                        if by_bucket:
+                            st.markdown("**By Pattern Bucket**")
+                            BEMOJI = {"aligned": "✅", "countertrend": "❌", "neutral": "⚪"}
+                            st.dataframe(
+                                pd.DataFrame([{
+                                    "Bucket": f"{BEMOJI.get(b['bucket'], '⚪')} {b['bucket']}",
+                                    **_fmt_row(b),
+                                } for b in by_bucket]),
+                                use_container_width=True, hide_index=True,
+                            )
+
+                        by_sb = trips.get("by_symbol_bucket", [])
+                        if by_sb:
+                            st.markdown("**By Symbol × Pattern Bucket**")
+                            BEMOJI = {"aligned": "✅", "countertrend": "❌", "neutral": "⚪"}
+                            BORDER = ["aligned", "countertrend", "neutral"]
+                            rows_sb = sorted(
+                                by_sb,
+                                key=lambda x: (x["symbol"], BORDER.index(x["bucket"]) if x["bucket"] in BORDER else 99)
+                            )
+                            st.dataframe(
+                                pd.DataFrame([{
+                                    "Symbol": r["symbol"],
+                                    "Bucket": f"{BEMOJI.get(r['bucket'], '⚪')} {r['bucket']}",
+                                    **_fmt_row(r),
+                                } for r in rows_sb]),
+                                use_container_width=True, hide_index=True,
+                            )
+
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Error: {exc}")
+
+st.markdown("---")
+st.markdown("**Report History**")
 
 col_filter, col_count = st.columns([2, 4])
 with col_filter:
@@ -170,6 +253,58 @@ for _, row in df.iterrows():
             if raw:
                 try:
                     data = json.loads(raw)
+
+                    # --- Round-trip tables for post_market reports ---
+                    trip_stats = data.get("trip_stats", {})
+                    if trip_stats and agent == "post_market":
+                        BEMOJI = {"aligned": "✅", "countertrend": "❌", "neutral": "⚪"}
+                        BORDER = ["aligned", "countertrend", "neutral"]
+
+                        def _row(r):
+                            aps = r.get("avg_pnl_per_share")
+                            return {
+                                "Trips":     r["count"],
+                                "Wins":      r.get("wins", ""),
+                                "Win Rate":  f"{r['win_rate']}%" if r.get("win_rate") is not None else "N/A",
+                                "Total PnL": f"${r['total_pnl']:+.4f}",
+                                "PnL/Share": f"${aps:+.4f}" if aps is not None else "N/A",
+                            }
+
+                        by_sym = trip_stats.get("by_symbol", [])
+                        if by_sym:
+                            st.markdown("**By Symbol**")
+                            st.dataframe(
+                                pd.DataFrame([{"Symbol": s["symbol"], **_row(s)} for s in by_sym]),
+                                use_container_width=True, hide_index=True,
+                            )
+
+                        by_bucket = trip_stats.get("by_bucket", [])
+                        if by_bucket:
+                            st.markdown("**By Pattern Bucket**")
+                            st.dataframe(
+                                pd.DataFrame([{
+                                    "Bucket": f"{BEMOJI.get(b['bucket'], '⚪')} {b['bucket']}",
+                                    **_row(b),
+                                } for b in by_bucket]),
+                                use_container_width=True, hide_index=True,
+                            )
+
+                        by_sym_bucket = trip_stats.get("by_symbol_bucket", [])
+                        if by_sym_bucket:
+                            st.markdown("**By Symbol × Pattern Bucket**")
+                            sorted_sb = sorted(
+                                by_sym_bucket,
+                                key=lambda x: (x["symbol"], BORDER.index(x["bucket"]) if x["bucket"] in BORDER else 99)
+                            )
+                            st.dataframe(
+                                pd.DataFrame([{
+                                    "Symbol": r["symbol"],
+                                    "Bucket": f"{BEMOJI.get(r['bucket'], '⚪')} {r['bucket']}",
+                                    **_row(r),
+                                } for r in sorted_sb]),
+                                use_container_width=True, hide_index=True,
+                            )
+
                     with st.expander("Raw stats (JSON)", expanded=False):
                         st.json(data)
                 except Exception:
