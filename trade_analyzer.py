@@ -62,6 +62,7 @@ def analyze_trades(raw_text: str) -> dict:
 
     pnl_by_symbol: dict[str, float] = {}
     shares_by_symbol: dict[str, int] = {}
+    exit_shares_by_symbol: dict[str, int] = {}
     pi_by_symbol: dict[str, float] = {}
     fills_by_symbol: dict[str, int] = {}
     trades: list[dict] = []
@@ -118,6 +119,7 @@ def analyze_trades(raw_text: str) -> dict:
             pnl_by_symbol[symbol] -= cash
         else:
             pnl_by_symbol[symbol] += cash
+            exit_shares_by_symbol[symbol] = exit_shares_by_symbol.get(symbol, 0) + qty
         shares_by_symbol[symbol] += qty
 
         trades.append({
@@ -136,21 +138,22 @@ def analyze_trades(raw_text: str) -> dict:
     for sym in sorted(pnl_by_symbol):
         pnl = pnl_by_symbol[sym]
         shares = shares_by_symbol[sym]
+        exit_shares = exit_shares_by_symbol.get(sym, 0)
         symbol_summaries[sym] = {
             'pnl': pnl,
             'shares_traded': shares,
-            'pnl_per_share': pnl / (shares / 2) if shares else 0,
+            'pnl_per_share': pnl / exit_shares if exit_shares else 0,
             'fills': fills_by_symbol.get(sym, 0),
             'pi': pi_by_symbol.get(sym, 0.0),
         }
 
     total_pnl = sum(pnl_by_symbol.values())
     total_shares = sum(shares_by_symbol.values())
+    total_exit_shares = sum(exit_shares_by_symbol.values())
 
-    # Win rate: per-symbol, excluding breakeven and sub-$0.50 abs PnL
-    decisive_symbols = {sym: info for sym, info in symbol_summaries.items() if abs(info['pnl']) > 0.50}
-    wins = sum(1 for info in decisive_symbols.values() if info['pnl'] > 0.50)
-    losses = sum(1 for info in decisive_symbols.values() if info['pnl'] < -0.50)
+    # Win rate: per-symbol, any non-zero PnL counts
+    wins = sum(1 for info in symbol_summaries.values() if info['pnl'] > 0)
+    losses = sum(1 for info in symbol_summaries.values() if info['pnl'] < 0)
     total_decisive = wins + losses
     win_rate = (wins / total_decisive * 100) if total_decisive > 0 else 0.0
 
@@ -164,7 +167,7 @@ def analyze_trades(raw_text: str) -> dict:
         'symbol_summaries': symbol_summaries,
         'total_pnl': total_pnl,
         'total_shares': total_shares,
-        'total_pnl_per_share': total_pnl / (total_shares / 2) if total_shares else 0,
+        'total_pnl_per_share': total_pnl / total_exit_shares if total_exit_shares else 0,
         'trades': trades,
         'win_rate': win_rate,
         'wins': wins,

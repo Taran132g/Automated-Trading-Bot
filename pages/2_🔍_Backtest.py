@@ -231,7 +231,7 @@ def load_paper_data():
         try:
             # Sort by timestamp to build the equity curve
             df_curve = data['trades'].sort_values('timestamp').copy()
-            df_curve['equity'] = df_curve['pnl'].cumsum() + 100000.0  # Assumed initial cash
+            df_curve['equity'] = df_curve['pnl'].cumsum() + 1000000.0  # Assumed initial cash ($1M)
             df_curve['peak'] = df_curve['equity'].cummax()
             df_curve['drawdown'] = (df_curve['peak'] - df_curve['equity']) / df_curve['peak'] * 100
             data['max_drawdown'] = round(df_curve['drawdown'].max(), 2)
@@ -390,7 +390,7 @@ with left_col:
                 symbol_stats.append({
                     'Symbol': symbol,
                     'Total PnL': total_pnl,
-                    'Win Rate': win_rate,
+                    'Win %': win_rate,
                     'Trades': total_trades
                 })
         else:
@@ -400,8 +400,8 @@ with left_col:
             df_stats = pd.DataFrame(symbol_stats)
             df_stats = df_stats.sort_values('Total PnL', ascending=False)
             df_stats['Total PnL'] = df_stats['Total PnL'].apply(lambda x: f"${x:,.2f}")
-            df_stats['Win Rate'] = df_stats['Win Rate'].apply(lambda x: f"{x:.1f}%")
-            
+            df_stats['Win %'] = df_stats['Win %'].apply(lambda x: f"{x:.1f}%")
+
             st.dataframe(
                 df_stats,
                 use_container_width=True,
@@ -409,7 +409,7 @@ with left_col:
                 column_config={
                     "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
                     "Total PnL": st.column_config.TextColumn("Total PnL", width="medium"),
-                    "Win Rate": st.column_config.ProgressColumn("Win Rate", format="%s", min_value=0, max_value=100),
+                    "Win %": st.column_config.ProgressColumn("Win %", format="%s", min_value=0, max_value=100),
                     "Trades": st.column_config.NumberColumn("Trades", width="small"),
                 }
             )
