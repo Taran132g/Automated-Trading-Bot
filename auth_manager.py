@@ -85,5 +85,19 @@ def require_auth():
         st.switch_page("app.py")
         st.stop()
 
+def is_authenticated() -> bool:
+    """Alias for check_auth() for compatibility."""
+    return check_auth()
+
+def show_login():
+    """Render an inline TOTP login form."""
+    st.markdown("### 🔐 Authentication Required")
+    code = st.text_input("Enter TOTP code", type="password", key="_inline_login_code")
+    if st.button("Login", key="_inline_login_btn"):
+        if login(code):
+            st.rerun()
+        else:
+            st.error("Invalid code.")
+
 # Need datetime for cookie expiry
 from datetime import datetime, timedelta
