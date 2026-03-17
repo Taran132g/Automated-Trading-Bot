@@ -116,12 +116,26 @@ class SchwabOrderExecutor:
             LOGGER.info("[DRY-RUN] %s %s %s", side, qty, symbol)
             return result
 
-        try:
-            response = self.client.place_order(self.account_id, payload)
-        except Exception as exc:  # pragma: no cover - network interaction
-            LOGGER.error("Order failed: %s", exc)
-            result["error"] = str(exc)
-            return result
+        max_429_retries = 3
+        response = None
+        for attempt in range(max_429_retries):
+            try:
+                response = self.client.place_order(self.account_id, payload)
+            except Exception as exc:  # pragma: no cover - network interaction
+                LOGGER.error("Order failed: %s", exc)
+                result["error"] = str(exc)
+                return result
+
+            if response.status_code == 429 and attempt < max_429_retries - 1:
+                wait = 2 ** attempt  # 1s, 2s on retries 1 and 2
+                LOGGER.warning(
+                    "429 Too Many Requests for %s %s %s (attempt %d/%d); retrying in %ds",
+                    side, qty, symbol, attempt + 1, max_429_retries, wait,
+                )
+                time.sleep(wait)
+                continue
+
+            break
 
         result["status_code"] = str(response.status_code)
         location = response.headers.get("Location") if response else None
@@ -551,6 +565,7 @@ class LiveTrader:
         self.telegram = TelegramNotifier()
         
         self._lock = threading.RLock()
+        self._order_in_flight: set = set()  # symbols with an order currently being processed
         self._shutdown_event = threading.Event()
 
         LOGGER.info("[%s] LiveTrader initialized (pos_size=%d, state=%s)", self.name, self.position_size, self.state_path)
@@ -840,6 +855,24 @@ class LiveTrader:
             cols = [r[1] for r in cur.execute("PRAGMA table_info(live_trades)").fetchall()]
             if "pattern_bucket" not in cols:
                 cur.execute("ALTER TABLE live_trades ADD COLUMN pattern_bucket TEXT DEFAULT 'neutral'")
+            # Filtered alerts table: logs neutral/countertrend signals that were skipped
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS filtered_alerts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL,
+                    symbol TEXT,
+                    direction TEXT,
+                    price REAL,
+                    pattern_bucket TEXT,
+                    chart_bias TEXT,
+                    size_factor REAL,
+                    bull_score REAL,
+                    bear_score REAL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             # Account history table for PnL graphing
             cur.execute(
                 """
@@ -916,6 +949,129 @@ class LiveTrader:
                 (time.time(), symbol, side, qty, price, entry_price, pnl)
             )
             conn.commit()
+
+    def _log_filtered_alert(self, *, symbol: str, direction: str, price: float,
+                            pattern_bucket: str, chart_bias: str,
+                            size_factor: float, bull_score: float, bear_score: float) -> None:
+        """Log a filtered (neutral/countertrend) alert to DB for post-market analysis."""
+        with self._open_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO filtered_alerts
+                    (timestamp, symbol, direction, price, pattern_bucket, chart_bias, size_factor, bull_score, bear_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (time.time(), symbol, direction, price, pattern_bucket, chart_bias, size_factor, bull_score, bear_score),
+            )
+            conn.commit()
+
+    # ------------------------------------------------------------------
+    # Kelly Criterion position sizing
+    # ------------------------------------------------------------------
+    def _kelly_size_multiplier(self, symbol: str) -> float:
+        """Return a position-size multiplier derived from fractional Kelly Criterion.
+
+        Queries ``live_trades`` for closed trades (SELL/COVER) to estimate the
+        historical edge for *symbol*.  If the symbol has fewer closed trades than
+        ``kelly_min_trades`` the calculation falls back to global stats across all
+        symbols.  Returns 1.0 when there is not enough data.
+
+        Full Kelly formula:
+            f* = (W * R - (1 - W)) / R   where W = win-rate, R = avg_win / avg_loss
+
+        Applied as:
+            multiplier = clamp(1.0 + f* * kelly_fraction, min_mult, max_mult)
+
+        At the default half-Kelly (kelly_fraction=0.5):
+          - Breakeven edge (f*=0)  → 1.00x (no change)
+          - Strong edge   (f*=1.0) → 1.50x
+          - Max edge      (f*=2.0) → 2.00x (capped)
+          - Negative edge (f*<0)   → < 1.0x, floored at min_multiplier
+        """
+        try:
+            cfg = config_manager.load_config()
+            if not cfg.get("kelly_enabled", True):
+                return 1.0
+
+            kelly_fraction  = float(cfg.get("kelly_fraction",       0.5))
+            min_trades      = int(  cfg.get("kelly_min_trades",      20))
+            max_mult        = float(cfg.get("kelly_max_multiplier",  2.0))
+            min_mult        = float(cfg.get("kelly_min_multiplier",  0.25))
+            lookback_days   = int(  cfg.get("kelly_lookback_days",   30))
+            cutoff          = time.time() - lookback_days * 86_400
+
+            def _extract_pnls(rows) -> list:
+                """Return non-zero PnL values, recomputing from price columns when pnl=0."""
+                result = []
+                for row in rows:
+                    pnl, ep, ex, qty, side = row
+                    if pnl not in (None, 0.0):
+                        result.append(pnl)
+                    elif ep and ep > 0 and ex and ex > 0 and qty:
+                        computed = (ex - ep) * qty if side == "SELL" else (ep - ex) * qty
+                        if computed != 0.0:
+                            result.append(computed)
+                return result
+
+            _cols = "pnl, entry_price, price, qty, side"
+
+            with self._open_conn() as conn:
+                cur = conn.cursor()
+
+                # --- per-symbol query ---
+                cur.execute(
+                    f"SELECT {_cols} FROM live_trades "
+                    "WHERE symbol=? AND side IN ('SELL','COVER') AND timestamp>=? "
+                    "ORDER BY timestamp",
+                    (symbol, cutoff),
+                )
+                pnls = _extract_pnls(cur.fetchall())
+                scope = symbol
+
+                # --- global fallback when symbol data is thin ---
+                if len(pnls) < min_trades:
+                    cur.execute(
+                        f"SELECT {_cols} FROM live_trades "
+                        "WHERE side IN ('SELL','COVER') AND timestamp>=? "
+                        "ORDER BY timestamp",
+                        (cutoff,),
+                    )
+                    pnls  = _extract_pnls(cur.fetchall())
+                    scope = "global"
+
+            if len(pnls) < min_trades:
+                LOGGER.debug("[KELLY] %s: only %d trades (need %d); returning 1.0x", symbol, len(pnls), min_trades)
+                return 1.0
+
+            wins   = [p        for p in pnls if p  > 0]
+            losses = [abs(p)   for p in pnls if p <= 0]
+
+            if not wins or not losses:
+                # All wins or all losses → Kelly undefined / extreme; stay neutral
+                LOGGER.debug("[KELLY] %s (scope=%s): no wins or no losses in sample; returning 1.0x", symbol, scope)
+                return 1.0
+
+            W       = len(wins) / len(pnls)
+            avg_win  = sum(wins)   / len(wins)
+            avg_loss = sum(losses) / len(losses)
+            R        = avg_win / avg_loss                     # reward-to-risk ratio
+
+            full_kelly = (W * R - (1.0 - W)) / R             # Kelly fraction
+            f_used     = full_kelly * kelly_fraction          # fractional Kelly
+            multiplier = max(min_mult, min(1.0 + f_used, max_mult))
+
+            LOGGER.info(
+                "[KELLY] %s (scope=%s, n=%d): W=%.1f%% R=%.2f full_k=%.3f "
+                "f_used(%.1f)=%.3f → multiplier=%.3f",
+                symbol, scope, len(pnls), W * 100, R, full_kelly,
+                kelly_fraction, f_used, multiplier,
+            )
+            return multiplier
+
+        except Exception as exc:
+            LOGGER.warning("[KELLY] Error computing Kelly for %s: %s — using 1.0x", symbol, exc)
+            return 1.0
 
     # ------------------------------------------------------------------
     # Position bookkeeping
@@ -1631,18 +1787,59 @@ class LiveTrader:
 
             self.pattern_buckets[symbol] = pattern_bucket
 
-            if decision == "skip":
-                LOGGER.info("[%s] [FILTER] Skipping %s %s alert due to pattern mismatch (bias=%s)",
-                            self.name, direction, symbol, chart_bias)
-                return
+            # Check if this alert would close an existing opposing position.
+            # Exits are always allowed regardless of alignment; only entries require alignment.
+            with self._lock:
+                current_position = self.positions.get(symbol, 0)
+            is_exit = (direction == "ask-heavy" and current_position > 0) or \
+                      (direction == "bid-heavy" and current_position < 0)
+
+            if not is_exit:
+                # Execution filter: only enter on aligned signals; log the rest
+                if pattern_bucket in ("neutral", "countertrend"):
+                    self._log_filtered_alert(
+                        symbol=symbol, direction=direction, price=price,
+                        pattern_bucket=pattern_bucket, chart_bias=chart_bias,
+                        size_factor=size_factor, bull_score=bull_score, bear_score=bear_score,
+                    )
+                    LOGGER.info(
+                        "[%s] [FILTER] Skipping %s %s alert - bucket=%s (bias=%s, bull=%.2f, bear=%.2f)",
+                        self.name, direction, symbol, pattern_bucket, chart_bias, bull_score, bear_score,
+                    )
+                    return
+
+                if decision == "skip":
+                    LOGGER.info("[%s] [FILTER] Skipping %s %s alert due to pattern mismatch (bias=%s)",
+                                self.name, direction, symbol, chart_bias)
+                    return
+            else:
+                LOGGER.info(
+                    "[%s] [EXIT] Allowing unaligned %s %s exit - bucket=%s (bias=%s, bull=%.2f, bear=%.2f)",
+                    self.name, direction, symbol, pattern_bucket, chart_bias, bull_score, bear_score,
+                )
 
         # 2. Dynamic Sizing
+        # Start with the pattern-aligned size factor (1.0x – 1.5x from chart engine).
         current_initial_size = int(self.initial_entry_size * size_factor)
-        
+
+        # 2a. Kelly Criterion overlay — scale further based on historical edge.
+        # Queries live_trades for this symbol (falls back to global stats when thin).
+        # Returns a multiplier in [kelly_min_multiplier, kelly_max_multiplier].
+        kelly_mult = self._kelly_size_multiplier(symbol)
+        current_initial_size = int(current_initial_size * kelly_mult)
+
         if current_initial_size <= 0:
-            LOGGER.info("[%s] [FILTER] Skipping %s %s due to size_factor yielding 0 shares", 
+            LOGGER.info("[%s] [FILTER] Skipping %s %s due to size_factor/kelly yielding 0 shares",
                         self.name, direction, symbol)
             return
+
+        # Guard against concurrent alerts stacking orders for the same symbol.
+        # If another thread is already handling an order for this symbol, skip.
+        with self._lock:
+            if symbol in self._order_in_flight:
+                LOGGER.info("[%s] Order already in flight for %s; skipping concurrent alert %s", self.name, symbol, alert_id)
+                return
+            self._order_in_flight.add(symbol)
 
         max_retries = 2
         for attempt in range(max_retries):
@@ -1654,6 +1851,7 @@ class LiveTrader:
                 if position == 0 and time.time() < self.loss_cooldown_until.get(symbol, 0.0):
                     remaining = self.loss_cooldown_until[symbol] - time.time()
                     LOGGER.warning("[%s] In 2-min Penalty Box (%.1fs left); skipping entry alert %s", symbol, remaining, alert_id)
+                    self._order_in_flight.discard(symbol)
                     return
 
                 # Cooldown check
@@ -1664,6 +1862,7 @@ class LiveTrader:
                     # Check if already short - skip to avoid stacking
                     if position < 0:
                         LOGGER.info("Already short %s; skip stacking", symbol)
+                        self._order_in_flight.discard(symbol)
                         return
                     
                     # If currently long, close the long position first
@@ -1685,17 +1884,20 @@ class LiveTrader:
                             self.executor.cancel_all_orders()
                         except Exception as exc:
                             LOGGER.warning("Post-exit cancel_all failed: %s", exc)
-                        return 
+                        self._order_in_flight.discard(symbol)
+                        return
 
                     # We are flat. Check Cooldown before Entry.
                     if time.time() - last_exit < cooldown_seconds:
-                         LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Short entry", 
+                         LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Short entry",
                                      symbol, cooldown_seconds - (time.time() - last_exit))
+                         self._order_in_flight.discard(symbol)
                          return
 
                     if time.time() < self.pi_cooldown_until:
                         remaining = self.pi_cooldown_until - time.time()
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
+                        self._order_in_flight.discard(symbol)
                         return
 
                     filled = self._submit_order(
@@ -1715,6 +1917,7 @@ class LiveTrader:
                     # Check if already long - skip to avoid stacking
                     if position > 0:
                         LOGGER.info("Already long %s; skip stacking", symbol)
+                        self._order_in_flight.discard(symbol)
                         return
                     
                     # If currently short, close the short position first
@@ -1736,17 +1939,20 @@ class LiveTrader:
                             self.executor.cancel_all_orders()
                         except Exception as exc:
                             LOGGER.warning("Post-exit cancel_all failed: %s", exc)
-                        return 
+                        self._order_in_flight.discard(symbol)
+                        return
 
                     # We are flat. Check Cooldown before Entry.
                     if time.time() - last_exit < cooldown_seconds:
-                         LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Long entry", 
+                         LOGGER.info("Cooldown active for %s (%.1fs remaining); skipping Long entry",
                                      symbol, cooldown_seconds - (time.time() - last_exit))
+                         self._order_in_flight.discard(symbol)
                          return
 
                     if time.time() < self.pi_cooldown_until:
                         remaining = self.pi_cooldown_until - time.time()
                         LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
+                        self._order_in_flight.discard(symbol)
                         return
 
                     filled = self._submit_order(
@@ -1763,20 +1969,23 @@ class LiveTrader:
                         self.name, symbol, direction, chart_bias, aligned, pattern_bucket, size_factor, bull_score, bear_score,
                     )
 
-                break 
-            
+                self._order_in_flight.discard(symbol)
+                break
+
             except BoxedPositionError as e:
                 LOGGER.warning("Boxed Position Error caught: %s. Attempt %d/%d. Reconciling and retrying...", e, attempt + 1, max_retries)
                 self._reconcile_positions_on_startup()
-                time.sleep(1.0) 
+                time.sleep(1.0)
                 if attempt == max_retries - 1:
                     LOGGER.error("Max retries reached for Boxed Position Error. Skipping alert %s.", alert_id)
+                    self._order_in_flight.discard(symbol)
                     try:
                         self.telegram.notify_error("Boxed Position Reached", f"Skipping alert {alert_id}")
                     except Exception:
                         pass
             except Exception as e:
                 LOGGER.error("An unexpected error occurred in _handle_alert for alert %s: %s", alert_id, e)
+                self._order_in_flight.discard(symbol)
                 try:
                     self.telegram.notify_error("Schwab API / Trade Execution", f"Alert {alert_id}: {e}")
                 except Exception:
