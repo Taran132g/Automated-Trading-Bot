@@ -551,6 +551,7 @@ class LiveTrader:
         self.pattern_buckets: Dict[str, str] = {}  # symbol -> aligned/countertrend/neutral
         self.daily_pnl: float = 0.0
         self.daily_date: str = time.strftime("%Y-%m-%d")
+        self._intraday_pnls: Dict[str, List[float]] = {}  # symbol -> today's closed-trade PnLs for Kelly
         self.start_day_liquidation: float = 0.0
         self.check_bad_fills = _bool_env("LIVE_CHECK_BAD_FILLS", True)
         self.consecutive_bad_fills: int = 0  # Track consecutive bad fills
@@ -969,103 +970,110 @@ class LiveTrader:
     # ------------------------------------------------------------------
     # Kelly Criterion position sizing
     # ------------------------------------------------------------------
-    def _kelly_size_multiplier(self, symbol: str) -> float:
-        """Return a position-size multiplier derived from fractional Kelly Criterion.
+    def _db_kelly_params(self, symbol: str, lookback_days: int) -> tuple:
+        """Return (W, R) from DB historical closed trades for *symbol*.
 
-        Queries ``live_trades`` for closed trades (SELL/COVER) to estimate the
-        historical edge for *symbol*.  If the symbol has fewer closed trades than
-        ``kelly_min_trades`` the calculation falls back to global stats across all
-        symbols.  Returns 1.0 when there is not enough data.
+        Falls back to global stats if per-symbol data is thin.
+        Returns (None, None) if there is no data at all.
+        """
+        cutoff = time.time() - lookback_days * 86_400
+        _cols  = "pnl, entry_price, price, qty, side"
+
+        def _extract(rows):
+            result = []
+            for pnl, ep, ex, qty, side in rows:
+                if pnl not in (None, 0.0):
+                    result.append(pnl)
+                elif ep and ep > 0 and ex and ex > 0 and qty:
+                    computed = (ex - ep) * qty if side == "SELL" else (ep - ex) * qty
+                    if computed != 0.0:
+                        result.append(computed)
+            return result
+
+        with self._open_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT {_cols} FROM live_trades "
+                "WHERE symbol=? AND side IN ('SELL','COVER') AND timestamp>=?",
+                (symbol, cutoff),
+            )
+            pnls = _extract(cur.fetchall())
+            if not pnls:
+                cur.execute(
+                    f"SELECT {_cols} FROM live_trades "
+                    "WHERE side IN ('SELL','COVER') AND timestamp>=?",
+                    (cutoff,),
+                )
+                pnls = _extract(cur.fetchall())
+
+        wins   = [p      for p in pnls if p > 0]
+        losses = [abs(p) for p in pnls if p < 0]
+        if not wins or not losses:
+            return (None, None)
+
+        W = len(wins) / len(pnls)
+        R = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
+        return (W, R)
+
+    def _kelly_size_multiplier(self, symbol: str) -> float:
+        """Return an intraday-adaptive position-size multiplier using Kelly Criterion.
+
+        Starts at 1.0 at the beginning of each trading day and updates after every
+        closed trade (SELL/COVER) for *symbol*.  More wins → larger multiplier;
+        more losses → smaller.  Resets to 1.0 at midnight.
+
+        W and R always come from real trade data — never hardcoded:
+          - Intraday has both wins & losses  → use intraday W and R
+          - Intraday is one-sided so far     → use DB historical W and R
+          - No data at all                   → return 1.0 (neutral)
 
         Full Kelly formula:
             f* = (W * R - (1 - W)) / R   where W = win-rate, R = avg_win / avg_loss
 
         Applied as:
             multiplier = clamp(1.0 + f* * kelly_fraction, min_mult, max_mult)
-
-        At the default half-Kelly (kelly_fraction=0.5):
-          - Breakeven edge (f*=0)  → 1.00x (no change)
-          - Strong edge   (f*=1.0) → 1.50x
-          - Max edge      (f*=2.0) → 2.00x (capped)
-          - Negative edge (f*<0)   → < 1.0x, floored at min_multiplier
         """
         try:
             cfg = config_manager.load_config()
             if not cfg.get("kelly_enabled", True):
                 return 1.0
 
-            kelly_fraction  = float(cfg.get("kelly_fraction",       0.5))
-            min_trades      = int(  cfg.get("kelly_min_trades",      20))
-            max_mult        = float(cfg.get("kelly_max_multiplier",  2.0))
-            min_mult        = float(cfg.get("kelly_min_multiplier",  0.25))
-            lookback_days   = int(  cfg.get("kelly_lookback_days",   30))
-            cutoff          = time.time() - lookback_days * 86_400
+            kelly_fraction = float(cfg.get("kelly_fraction",      0.5))
+            max_mult       = float(cfg.get("kelly_max_multiplier", 2.0))
+            min_mult       = float(cfg.get("kelly_min_multiplier", 0.25))
+            lookback_days  = int(  cfg.get("kelly_lookback_days",  30))
 
-            def _extract_pnls(rows) -> list:
-                """Return non-zero PnL values, recomputing from price columns when pnl=0."""
-                result = []
-                for row in rows:
-                    pnl, ep, ex, qty, side = row
-                    if pnl not in (None, 0.0):
-                        result.append(pnl)
-                    elif ep and ep > 0 and ex and ex > 0 and qty:
-                        computed = (ex - ep) * qty if side == "SELL" else (ep - ex) * qty
-                        if computed != 0.0:
-                            result.append(computed)
-                return result
+            with self._lock:
+                raw_pnls = list(self._intraday_pnls.get(symbol, []))
 
-            _cols = "pnl, entry_price, price, qty, side"
+            pnls   = [p for p in raw_pnls if p != 0.0]
+            wins   = [p      for p in pnls if p > 0]
+            losses = [abs(p) for p in pnls if p < 0]
 
-            with self._open_conn() as conn:
-                cur = conn.cursor()
+            if not pnls:
+                return 1.0  # No intraday trades yet → neutral
 
-                # --- per-symbol query ---
-                cur.execute(
-                    f"SELECT {_cols} FROM live_trades "
-                    "WHERE symbol=? AND side IN ('SELL','COVER') AND timestamp>=? "
-                    "ORDER BY timestamp",
-                    (symbol, cutoff),
-                )
-                pnls = _extract_pnls(cur.fetchall())
-                scope = symbol
+            if wins and losses:
+                # Full intraday picture — use intraday W and R
+                W = len(wins) / len(pnls)
+                R = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
+                source = "intraday"
+            else:
+                # One-sided so far — use DB historical W and R (no hardcoded assumptions)
+                W, R = self._db_kelly_params(symbol, lookback_days)
+                if W is None:
+                    LOGGER.debug("[KELLY] %s: one-sided intraday, no DB history — returning 1.0x", symbol)
+                    return 1.0
+                source = "db-fallback"
 
-                # --- global fallback when symbol data is thin ---
-                if len(pnls) < min_trades:
-                    cur.execute(
-                        f"SELECT {_cols} FROM live_trades "
-                        "WHERE side IN ('SELL','COVER') AND timestamp>=? "
-                        "ORDER BY timestamp",
-                        (cutoff,),
-                    )
-                    pnls  = _extract_pnls(cur.fetchall())
-                    scope = "global"
-
-            if len(pnls) < min_trades:
-                LOGGER.debug("[KELLY] %s: only %d trades (need %d); returning 1.0x", symbol, len(pnls), min_trades)
-                return 1.0
-
-            wins   = [p        for p in pnls if p  > 0]
-            losses = [abs(p)   for p in pnls if p <= 0]
-
-            if not wins or not losses:
-                # All wins or all losses → Kelly undefined / extreme; stay neutral
-                LOGGER.debug("[KELLY] %s (scope=%s): no wins or no losses in sample; returning 1.0x", symbol, scope)
-                return 1.0
-
-            W       = len(wins) / len(pnls)
-            avg_win  = sum(wins)   / len(wins)
-            avg_loss = sum(losses) / len(losses)
-            R        = avg_win / avg_loss                     # reward-to-risk ratio
-
-            full_kelly = (W * R - (1.0 - W)) / R             # Kelly fraction
-            f_used     = full_kelly * kelly_fraction          # fractional Kelly
+            full_kelly = (W * R - (1.0 - W)) / R
+            f_used     = full_kelly * kelly_fraction
             multiplier = max(min_mult, min(1.0 + f_used, max_mult))
 
             LOGGER.info(
-                "[KELLY] %s (scope=%s, n=%d): W=%.1f%% R=%.2f full_k=%.3f "
+                "[KELLY] %s (%s, intraday n=%d): W=%.1f%% R=%.2f full_k=%.3f "
                 "f_used(%.1f)=%.3f → multiplier=%.3f",
-                symbol, scope, len(pnls), W * 100, R, full_kelly,
-                kelly_fraction, f_used, multiplier,
+                symbol, source, len(pnls), W * 100, R, full_kelly, kelly_fraction, f_used, multiplier,
             )
             return multiplier
 
@@ -1133,8 +1141,13 @@ class LiveTrader:
             if today != self.daily_date:
                 self.daily_date = today
                 self.daily_pnl = 0.0
+                self._intraday_pnls.clear()  # Reset intraday Kelly tracking each day
             if pnl != 0:
                 self.daily_pnl += pnl
+
+            # Track intraday PnL for dynamic Kelly (every close, even $0 fills)
+            if side in ("SELL", "COVER"):
+                self._intraday_pnls.setdefault(symbol, []).append(pnl)
             
             # Log trade to database
             self._log_live_trade(symbol=symbol, side=side, qty=qty, price=price, entry_price=entry_price, pnl=pnl)
