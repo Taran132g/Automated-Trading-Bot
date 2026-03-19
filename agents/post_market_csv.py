@@ -383,12 +383,19 @@ def _build_claude_prompt(date_str: str, stats: dict, account: dict, previous: li
     day_pnl = account.get("day_pnl")
     day_pnl_str = f"${day_pnl:+.2f}" if day_pnl is not None else "N/A"
 
+    sym_parts = ' | '.join(
+        f"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR" for s in by_sym
+    ) or 'none'
+    bucket_parts = ' | '.join(
+        f"{b['bucket']} ${b['total_pnl']:+.4f} {b['win_rate']}%WR" for b in by_bucket
+    ) or 'none'
+
     today = (
         f"Date: {date_str}  PnL: ${overall.get('total_pnl', 0):+.4f}  "
         f"Win rate: {overall.get('win_rate', 'N/A')}%  Trips: {trips}  "
         f"Day PnL (broker): {day_pnl_str}\n"
-        f"By symbol: {' | '.join(f\"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR\" for s in by_sym) or 'none'}\n"
-        f"By pattern bucket: {' | '.join(f\"{b['bucket']} ${b['total_pnl']:+.4f} {b['win_rate']}%WR\" for b in by_bucket) or 'none'}"
+        f"By symbol: {sym_parts}\n"
+        f"By pattern bucket: {bucket_parts}"
     )
 
     hist_lines = []
