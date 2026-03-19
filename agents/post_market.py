@@ -14,7 +14,7 @@ from datetime import datetime
 import pandas as pd
 import pytz
 
-from agents.base import get_db, save_report, send_telegram
+from agents.base import get_db, save_report, send_telegram, get_previous_reports, call_claude
 
 LOGGER = logging.getLogger("agents.post_market")
 ET = pytz.timezone("America/New_York")
@@ -282,10 +282,54 @@ def format_report(stats: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_claude_prompt(stats: dict, previous: list[dict]) -> str:
+    date_str = datetime.now(ET).strftime("%Y-%m-%d")
+    overall = stats.get("trip_stats", {}).get("overall", {})
+    trips = stats.get("trip_stats", {}).get("total_trips", 0)
+    by_sym = stats.get("trip_stats", {}).get("by_symbol", [])[:4]
+    by_bucket = stats.get("trip_stats", {}).get("by_bucket", [])
+
+    today = (
+        f"Date: {date_str}  PnL: ${overall.get('total_pnl', 0):+.4f}  "
+        f"Win rate: {overall.get('win_rate', 'N/A')}%  Trips: {trips}  "
+        f"Alert conversion: {stats.get('alert_to_trip_ratio', 'N/A')}%\n"
+        f"By symbol: {' | '.join(f\"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR\" for s in by_sym) or 'none'}\n"
+        f"By pattern bucket: {' | '.join(f\"{b['bucket']} ${b['total_pnl']:+.4f} {b['win_rate']}%WR\" for b in by_bucket) or 'none'}"
+    )
+
+    hist_lines = []
+    for r in previous:
+        dt = datetime.fromtimestamp(r["timestamp"], tz=ET).strftime("%Y-%m-%d")
+        d = r["report_data"]
+        ov = d.get("trip_stats", {}).get("overall", {})
+        syms = d.get("trip_stats", {}).get("by_symbol", [])[:3]
+        sym_str = " | ".join(f"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR" for s in syms)
+        hist_lines.append(
+            f"{dt}: PnL ${ov.get('total_pnl', 0):+.4f}  WR {ov.get('win_rate', 'N/A')}%  "
+            f"{d.get('trip_stats', {}).get('total_trips', 0)} trips  "
+            f"conv {d.get('alert_to_trip_ratio', 'N/A')}% | {sym_str}"
+        )
+
+    hist = "\n".join(hist_lines) if hist_lines else "No prior history available."
+
+    return (
+        "You are a concise trading performance analyst for a momentum/imbalance strategy.\n\n"
+        f"TODAY:\n{today}\n\n"
+        f"RECENT HISTORY (newest first):\n{hist}\n\n"
+        "In 3-4 sentences: state how today compares to recent days (better/worse/average and by how much), "
+        "call out the most notable symbol or pattern bucket result, and give one specific actionable observation. "
+        "Be direct and data-driven. Plain text only — no bullet points or headers."
+    )
+
+
 def run():
     LOGGER.info("Post-market analyst starting.")
+    previous = get_previous_reports("post_market", limit=5)
     stats = collect_stats()
     report_md = format_report(stats)
+    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=300)
+    if analysis:
+        report_md += f"\n\n🤖 *AI Analysis:*\n{analysis}"
     save_report("post_market", report_md, stats)
     send_telegram(report_md)
     LOGGER.info("Post-market report sent and saved.")

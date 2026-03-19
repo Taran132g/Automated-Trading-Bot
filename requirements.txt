@@ -1,9 +1,7 @@
 pandas
 python-dotenv
 schwab-py
-streamlit
 yfinance
-plotly
 pyotp
-extra-streamlit-components
 pytz
+anthropic
