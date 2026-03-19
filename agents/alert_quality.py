@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 import pytz
 
-from agents.base import get_db, save_report, send_telegram
+from agents.base import get_db, save_report, send_telegram, get_previous_reports, call_claude
 
 LOGGER = logging.getLogger("agents.alert_quality")
 ET = pytz.timezone("America/New_York")
@@ -164,13 +164,70 @@ def format_report(stats: dict) -> str:
     return "\n".join(lines)
 
 
+def _build_claude_prompt(stats: dict, previous: list[dict]) -> str:
+    date_str = datetime.now(ET).strftime("%Y-%m-%d")
+    by_dir = stats.get("by_direction", [])
+    by_imb = stats.get("by_imbalance_bucket", [])
+    by_hour = stats.get("by_hour", [])
+
+    best_dir = max(by_dir, key=lambda x: x["avg_pnl"], default=None)
+    worst_dir = min(by_dir, key=lambda x: x["avg_pnl"], default=None)
+    best_imb = max(by_imb, key=lambda x: x["avg_pnl"], default=None)
+    worst_imb = min(by_imb, key=lambda x: x["avg_pnl"], default=None)
+    best_hour = max(by_hour, key=lambda x: x["avg_pnl"], default=None)
+    worst_hour = min(by_hour, key=lambda x: x["avg_pnl"], default=None)
+
+    current = (
+        f"Period ending {date_str} (last {LOOKBACK_DAYS} days)\n"
+        f"Alerts: {stats['total_alerts']}  Traded: {stats.get('alerts_traded', 'N/A')}  "
+        f"Win rate: {stats.get('overall_win_rate', 'N/A')}%  Avg PnL: ${stats.get('overall_avg_pnl', 0):+.4f}\n"
+        f"Best direction: {best_dir['direction'] if best_dir else 'N/A'} "
+        f"({best_dir['win_rate'] if best_dir else 'N/A'}%WR ${best_dir['avg_pnl'] if best_dir else 0:+.4f})\n"
+        f"Worst direction: {worst_dir['direction'] if worst_dir else 'N/A'} "
+        f"({worst_dir['win_rate'] if worst_dir else 'N/A'}%WR ${worst_dir['avg_pnl'] if worst_dir else 0:+.4f})\n"
+        f"Best imbalance bucket: {best_imb['imbalance_bucket'] if best_imb else 'N/A'} "
+        f"({best_imb['win_rate'] if best_imb else 'N/A'}%WR)\n"
+        f"Worst imbalance bucket: {worst_imb['imbalance_bucket'] if worst_imb else 'N/A'} "
+        f"({worst_imb['win_rate'] if worst_imb else 'N/A'}%WR)\n"
+        f"Best hour: {best_hour['hour_et'] if best_hour else 'N/A'}:00 ET  "
+        f"Worst hour: {worst_hour['hour_et'] if worst_hour else 'N/A'}:00 ET"
+    )
+
+    hist_lines = []
+    for r in previous:
+        dt = datetime.fromtimestamp(r["timestamp"], tz=ET).strftime("%Y-%m-%d")
+        d = r["report_data"]
+        bd = max(d.get("by_direction", []), key=lambda x: x["avg_pnl"], default=None)
+        hist_lines.append(
+            f"{dt}: WR {d.get('overall_win_rate', 'N/A')}%  Avg PnL ${d.get('overall_avg_pnl', 0):+.4f}  "
+            f"Alerts {d.get('total_alerts', 'N/A')} traded {d.get('alerts_traded', 'N/A')}  "
+            f"Best dir: {bd['direction'] if bd else 'N/A'} {bd['win_rate'] if bd else 'N/A'}%WR"
+        )
+
+    hist = "\n".join(hist_lines) if hist_lines else "No prior weekly history available."
+
+    return (
+        "You are a concise signal quality analyst for an imbalance-based momentum trading system.\n\n"
+        f"CURRENT PERIOD:\n{current}\n\n"
+        f"PREVIOUS WEEKLY REPORTS (newest first):\n{hist}\n\n"
+        "In 4-5 sentences: describe whether signal quality is trending better or worse week-over-week, "
+        "identify which direction or imbalance bucket shows the most meaningful shift, "
+        "and give 2 specific tuning recommendations based on the data (e.g. filter out weak buckets, "
+        "adjust hour filters). Be direct and data-driven. Plain text only."
+    )
+
+
 def run():
     LOGGER.info("Alert quality analyst starting.")
+    previous = get_previous_reports("alert_quality", limit=4)
     stats = collect_stats()
     if "error" in stats:
         LOGGER.warning(stats["error"])
         return
     report_md = format_report(stats)
+    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=350)
+    if analysis:
+        report_md += f"\n\n🤖 *AI Analysis:*\n{analysis}"
     save_report("alert_quality", report_md, stats)
     send_telegram(report_md)
     LOGGER.info("Alert quality report sent and saved.")

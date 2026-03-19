@@ -1,16 +1,25 @@
 """Agent reports router."""
+import importlib
 import json
+import os
 import sqlite3
 import sys
 from contextlib import closing
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, Query, UploadFile
+import pyotp
+from dotenv import load_dotenv
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, status
+
+load_dotenv()
 
 router = APIRouter()
 BASE_DIR = Path(__file__).parent.parent.resolve()
 DB_PATH = BASE_DIR / "penny_basing.db"
 sys.path.insert(0, str(BASE_DIR))
+
+# Agents that can be manually triggered (risk_monitor is excluded — live watchdog only)
+_RUNNABLE_AGENTS = {"post_market", "alert_quality", "optimizer"}
 
 
 @router.get("/reports")
@@ -44,6 +53,28 @@ def get_reports(
     except Exception:
         pass
     return {"reports": reports}
+
+
+@router.post("/run-agent")
+def run_agent(
+    background_tasks: BackgroundTasks,
+    agent_name: str = Form(...),
+    totp_code: str = Form(...),
+):
+    """Manually trigger a report agent. Requires a valid TOTP code."""
+    totp_secret = os.getenv("TOTP_SECRET")
+    if not totp_secret:
+        raise HTTPException(status_code=500, detail="TOTP_SECRET not configured on server")
+    if not pyotp.TOTP(totp_secret).verify(totp_code, valid_window=1):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid TOTP code")
+    if agent_name not in _RUNNABLE_AGENTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{agent_name}' is not manually triggerable. Valid: {sorted(_RUNNABLE_AGENTS)}",
+        )
+    module = importlib.import_module(f"agents.{agent_name}")
+    background_tasks.add_task(module.run)
+    return {"success": True, "agent": agent_name, "message": f"{agent_name} started in background"}
 
 
 @router.post("/upload-post-market")
