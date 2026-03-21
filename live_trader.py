@@ -552,6 +552,7 @@ class LiveTrader:
         self.daily_pnl: float = 0.0
         self.daily_date: str = time.strftime("%Y-%m-%d")
         self._intraday_pnls: Dict[str, List[float]] = {}  # symbol -> today's closed-trade PnLs for Kelly
+        self._intraday_qty: Dict[str, int] = {}            # symbol -> today's closed-trade share volume (for PI/share)
         self.start_day_liquidation: float = 0.0
         self.check_bad_fills = _bool_env("LIVE_CHECK_BAD_FILLS", True)
         self.consecutive_bad_fills: int = 0  # Track consecutive bad fills
@@ -1016,64 +1017,85 @@ class LiveTrader:
         return (W, R)
 
     def _kelly_size_multiplier(self, symbol: str) -> float:
-        """Return an intraday-adaptive position-size multiplier using Kelly Criterion.
+        """Return an intraday-adaptive position-size multiplier combining Kelly + PI.
 
-        Starts at 1.0 at the beginning of each trading day and updates after every
-        closed trade (SELL/COVER) for *symbol*.  More wins → larger multiplier;
-        more losses → smaller.  Resets to 1.0 at midnight.
+        Starts at 1.0 each day and updates after every closed trade (SELL/COVER).
 
-        W and R always come from real trade data — never hardcoded:
+        Step 1 — Kelly edge (win/loss data):
           - Intraday has both wins & losses  → use intraday W and R
           - Intraday is one-sided so far     → use DB historical W and R
-          - No data at all                   → return 1.0 (neutral)
+          - No trade data at all             → kelly_mult = 1.0
 
-        Full Kelly formula:
-            f* = (W * R - (1 - W)) / R   where W = win-rate, R = avg_win / avg_loss
+        Step 2 — PI adjustment (PnL/share vs neutral):
+          Uses tanh so the adjustment is always bounded in [−weight, +weight],
+          giving diminishing returns at extremes and 0 at exactly the neutral.
 
-        Applied as:
-            multiplier = clamp(1.0 + f* * kelly_fraction, min_mult, max_mult)
+            pi_per_share = sum(intraday_pnl) / total_shares_closed_today
+            pi_ratio     = pi_per_share / pi_neutral − 1.0   (0 at neutral)
+            pi_adj       = pi_kelly_weight * tanh(pi_ratio)
+              → pi == pi_neutral         → ratio=0, tanh(0)=0  → no change
+              → pi == 2×neutral          → ratio=1, tanh(1)≈0.76 → boost ≈ +0.38
+              → pi == 4×neutral          → ratio=3, tanh(3)≈1.00 → boost ≈ +0.50 (cap)
+              → pi == 0                  → ratio=-1              → reduce ≈ -0.38
+              → pi strongly negative     → ratio≪0, tanh→-1    → reduce ≈ -0.50 (floor)
+
+        Final: multiplier = clamp(kelly_mult + pi_adj, min_mult, max_mult)
         """
+        import math
         try:
             cfg = config_manager.load_config()
             if not cfg.get("kelly_enabled", True):
                 return 1.0
 
-            kelly_fraction = float(cfg.get("kelly_fraction",      0.5))
-            max_mult       = float(cfg.get("kelly_max_multiplier", 2.0))
-            min_mult       = float(cfg.get("kelly_min_multiplier", 0.25))
-            lookback_days  = int(  cfg.get("kelly_lookback_days",  30))
+            kelly_fraction  = float(cfg.get("kelly_fraction",      0.5))
+            max_mult        = float(cfg.get("kelly_max_multiplier", 2.0))
+            min_mult        = float(cfg.get("kelly_min_multiplier", 0.25))
+            lookback_days   = int(  cfg.get("kelly_lookback_days",  30))
+            pi_neutral      = float(cfg.get("pi_neutral",           0.001))
+            pi_kelly_weight = float(cfg.get("pi_kelly_weight",      0.5))
 
             with self._lock:
-                raw_pnls = list(self._intraday_pnls.get(symbol, []))
+                raw_pnls    = list(self._intraday_pnls.get(symbol, []))
+                intraday_qty = self._intraday_qty.get(symbol, 0)
 
+            # ── Step 1: Kelly from win/loss edge ──────────────────────────
             pnls   = [p for p in raw_pnls if p != 0.0]
             wins   = [p      for p in pnls if p > 0]
             losses = [abs(p) for p in pnls if p < 0]
 
             if not pnls:
-                return 1.0  # No intraday trades yet → neutral
-
-            if wins and losses:
-                # Full intraday picture — use intraday W and R
+                kelly_mult = 1.0
+                source     = "no-trades"
+            elif wins and losses:
                 W = len(wins) / len(pnls)
                 R = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
-                source = "intraday"
+                full_kelly = (W * R - (1.0 - W)) / R
+                kelly_mult = 1.0 + full_kelly * kelly_fraction
+                source     = "intraday"
             else:
-                # One-sided so far — use DB historical W and R (no hardcoded assumptions)
                 W, R = self._db_kelly_params(symbol, lookback_days)
                 if W is None:
-                    LOGGER.debug("[KELLY] %s: one-sided intraday, no DB history — returning 1.0x", symbol)
-                    return 1.0
-                source = "db-fallback"
+                    kelly_mult = 1.0
+                    source     = "no-history"
+                else:
+                    full_kelly = (W * R - (1.0 - W)) / R
+                    kelly_mult = 1.0 + full_kelly * kelly_fraction
+                    source     = "db-fallback"
 
-            full_kelly = (W * R - (1.0 - W)) / R
-            f_used     = full_kelly * kelly_fraction
-            multiplier = max(min_mult, min(1.0 + f_used, max_mult))
+            # ── Step 2: PI adjustment (PnL/share vs neutral) ─────────────
+            pi_adj = 0.0
+            pi_per_share = 0.0
+            if intraday_qty > 0:
+                pi_per_share = sum(raw_pnls) / intraday_qty   # include $0 fills in denominator
+                pi_ratio = pi_per_share / pi_neutral - 1.0    # 0 at neutral, ±N elsewhere
+                pi_adj   = pi_kelly_weight * math.tanh(pi_ratio)
+
+            # ── Final: combine and clamp ──────────────────────────────────
+            multiplier = max(min_mult, min(kelly_mult + pi_adj, max_mult))
 
             LOGGER.info(
-                "[KELLY] %s (%s, intraday n=%d): W=%.1f%% R=%.2f full_k=%.3f "
-                "f_used(%.1f)=%.3f → multiplier=%.3f",
-                symbol, source, len(pnls), W * 100, R, full_kelly, kelly_fraction, f_used, multiplier,
+                "[KELLY] %s (%s, n=%d): kelly=%.3f pi/share=$%.5f pi_adj=%.3f → mult=%.3f",
+                symbol, source, len(pnls), kelly_mult, pi_per_share, pi_adj, multiplier,
             )
             return multiplier
 
@@ -1141,13 +1163,15 @@ class LiveTrader:
             if today != self.daily_date:
                 self.daily_date = today
                 self.daily_pnl = 0.0
-                self._intraday_pnls.clear()  # Reset intraday Kelly tracking each day
+                self._intraday_pnls.clear()   # Reset intraday Kelly tracking each day
+                self._intraday_qty.clear()    # Reset intraday PI share volume each day
             if pnl != 0:
                 self.daily_pnl += pnl
 
-            # Track intraday PnL for dynamic Kelly (every close, even $0 fills)
+            # Track intraday PnL and share volume for Kelly + PI calculation
             if side in ("SELL", "COVER"):
                 self._intraday_pnls.setdefault(symbol, []).append(pnl)
+                self._intraday_qty[symbol] = self._intraday_qty.get(symbol, 0) + qty
             
             # Log trade to database
             self._log_live_trade(symbol=symbol, side=side, qty=qty, price=price, entry_price=entry_price, pnl=pnl)
@@ -1907,12 +1931,6 @@ class LiveTrader:
                          self._order_in_flight.discard(symbol)
                          return
 
-                    if time.time() < self.pi_cooldown_until:
-                        remaining = self.pi_cooldown_until - time.time()
-                        LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
-                        self._order_in_flight.discard(symbol)
-                        return
-
                     filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
@@ -1961,12 +1979,6 @@ class LiveTrader:
                                      symbol, cooldown_seconds - (time.time() - last_exit))
                          self._order_in_flight.discard(symbol)
                          return
-
-                    if time.time() < self.pi_cooldown_until:
-                        remaining = self.pi_cooldown_until - time.time()
-                        LOGGER.info("PI cooldown active (%.0fs remaining); skipping entry", remaining)
-                        self._order_in_flight.discard(symbol)
-                        return
 
                     filled = self._submit_order(
                         alert_id=alert_id,

@@ -19,10 +19,13 @@ DEFAULT_CONFIG = {
     # Kelly Criterion position sizing
     "kelly_enabled": True,
     "kelly_fraction": 0.5,        # Fractional Kelly (0.5 = half-Kelly reduces variance)
-    "kelly_min_trades": 20,       # Min closed trades required to use symbol-level Kelly
+    "kelly_min_trades": 20,       # Min closed trades required to use symbol-level Kelly (DB fallback)
     "kelly_max_multiplier": 2.0,  # Max size multiplier (cap upside)
     "kelly_min_multiplier": 0.25, # Min size multiplier (floor downside)
     "kelly_lookback_days": 30,    # Days of trade history to consider
+    # PI-adjusted Kelly: scales multiplier by intraday PnL/share vs neutral
+    "pi_neutral": 0.001,          # Neutral PnL/share ($0.001 = breakeven execution quality)
+    "pi_kelly_weight": 0.5,       # How aggressively PI shifts the Kelly multiplier (log-scale)
 }
 
 def load_config() -> Dict[str, Any]:
