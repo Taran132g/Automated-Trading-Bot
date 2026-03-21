@@ -22,19 +22,26 @@ class TelegramNotifier:
             return False
 
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        payload = {
-            "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "Markdown"
-        }
 
-        try:
-            response = requests.post(url, json=payload, timeout=5)
-            response.raise_for_status()
-            return True
-        except Exception as e:
-            LOGGER.error("Failed to send telegram message: %s", e)
-            return False
+        # Try with Markdown first; fall back to plain text if Telegram rejects the formatting
+        for parse_mode in ("Markdown", None):
+            payload = {"chat_id": self.chat_id, "text": text}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            try:
+                response = requests.post(url, json=payload, timeout=5)
+                response.raise_for_status()
+                return True
+            except requests.HTTPError as e:
+                if parse_mode and response.status_code == 400:
+                    LOGGER.warning("Markdown parse error, retrying as plain text")
+                    continue
+                LOGGER.error("Failed to send telegram message: %s", e)
+                return False
+            except Exception as e:
+                LOGGER.error("Failed to send telegram message: %s", e)
+                return False
+        return False
 
     def notify_cooldown(self, cooldown_type: str, account_value: float):
         if not self.enabled:
