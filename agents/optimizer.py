@@ -174,33 +174,48 @@ def format_report(stats: dict) -> str:
 def _build_claude_prompt(stats: dict, previous: list[dict]) -> str:
     from datetime import datetime
     date_str = datetime.now(ET).strftime("%Y-%m-%d")
-    by_sym = stats.get("by_symbol", [])[:5]
+    by_sym = stats.get("by_symbol", [])
     by_tod = stats.get("by_time_window", [])
     by_dir = stats.get("by_alert_direction", [])
     by_imb = stats.get("by_imbalance_size", [])
 
-    active_windows = [w for w in by_tod if w["trades"] >= 3]
-    best_win = max(active_windows, key=lambda x: x["avg_pnl"], default=None)
-    worst_win = min(active_windows, key=lambda x: x["avg_pnl"], default=None)
-    best_sym = by_sym[0] if by_sym else None
-    worst_sym = by_sym[-1] if by_sym else None
+    sym_lines = "\n".join(
+        f"  {s['symbol']}: {s['trades']} trades, {s['win_rate']}% WR, total ${s['total_pnl']:+.4f}, avg ${s['avg_pnl']:+.4f}"
+        for s in by_sym
+    ) if by_sym else "  N/A"
+
+    active_windows = [w for w in by_tod if w["trades"] >= 2]
+    window_lines = "\n".join(
+        f"  {w['window']}: {w['trades']} trades, {w['win_rate']}% WR, total ${w['total_pnl']:+.4f}, avg ${w['avg_pnl']:+.4f}"
+        for w in active_windows
+    ) if active_windows else "  N/A"
+
+    dir_lines = "\n".join(
+        f"  {d['direction']}: {d['matched_trades']} trades, {d['win_rate']}% WR, avg ${d['avg_pnl']:+.4f}, total ${d['total_pnl']:+.4f}"
+        for d in sorted(by_dir, key=lambda x: x["avg_pnl"], reverse=True)
+    ) if by_dir else "  N/A"
+
+    imb_lines = "\n".join(
+        f"  {b['imbalance_size']}: {b['count']} trades, {b['win_rate']}% WR, avg ${b['avg_pnl']:+.4f}"
+        for b in by_imb if b["count"] >= 2
+    ) if by_imb else "  N/A"
 
     current = (
-        f"Period ending {date_str} (last {LOOKBACK_DAYS} days)  Total trades: {stats['total_trades']}\n"
-        f"Top symbol: {best_sym['symbol'] if best_sym else 'N/A'} ${best_sym['total_pnl'] if best_sym else 0:+.4f} {best_sym['win_rate'] if best_sym else 'N/A'}%WR\n"
-        f"Worst symbol: {worst_sym['symbol'] if worst_sym else 'N/A'} ${worst_sym['total_pnl'] if worst_sym else 0:+.4f} {worst_sym['win_rate'] if worst_sym else 'N/A'}%WR\n"
-        f"Best window: {best_win['window'] if best_win else 'N/A'} {best_win['avg_pnl'] if best_win else 'N/A'} avg  "
-        f"Worst window: {worst_win['window'] if worst_win else 'N/A'} {worst_win['avg_pnl'] if worst_win else 'N/A'} avg\n"
-        f"By direction: {' | '.join(f\"{d['direction']} {d['win_rate']}%WR ${d['avg_pnl']:+.4f}\" for d in sorted(by_dir, key=lambda x: x['avg_pnl'], reverse=True))}\n"
-        f"By imbalance: {' | '.join(f\"{b['imbalance_size']} {b['win_rate']}%WR ${b['avg_pnl']:+.4f}\" for b in by_imb if b['count'] >= 3)}"
+        f"Period ending {date_str} (last {LOOKBACK_DAYS} days)  Total trades: {stats['total_trades']}\n\n"
+        f"BY SYMBOL:\n{sym_lines}\n\n"
+        f"BY TIME WINDOW (30-min buckets, 2+ trades):\n{window_lines}\n\n"
+        f"BY ALERT DIRECTION:\n{dir_lines}\n\n"
+        f"BY IMBALANCE SIZE:\n{imb_lines}"
     )
 
     hist_lines = []
     for r in previous:
         dt = datetime.fromtimestamp(r["timestamp"], tz=ET).strftime("%Y-%m-%d")
         d = r["report_data"]
-        syms = d.get("by_symbol", [])[:2]
-        sym_str = " | ".join(f"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR" for s in syms)
+        syms = d.get("by_symbol", [])[:3]
+        sym_str = " | ".join(
+            f"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR" for s in syms
+        )
         hist_lines.append(
             f"{dt}: {d.get('total_trades', 'N/A')} trades | {sym_str}"
         )
@@ -208,13 +223,14 @@ def _build_claude_prompt(stats: dict, previous: list[dict]) -> str:
     hist = "\n".join(hist_lines) if hist_lines else "No prior weekly history available."
 
     return (
-        "You are a concise strategy parameter advisor for an imbalance-based momentum trading system.\n\n"
+        "You are a strategy parameter advisor for an imbalance-based momentum trading system.\n\n"
         f"CURRENT PERIOD:\n{current}\n\n"
         f"PREVIOUS WEEKLY REPORTS (newest first):\n{hist}\n\n"
-        "In 4-5 sentences: describe what is shifting in the data week-over-week (symbols rising/falling, "
+        "In 5-6 sentences: describe what is shifting in the data week-over-week (symbols rising/falling, "
         "time windows changing), which parameters show the clearest edge right now, "
-        "and give 2 concrete parameter adjustment suggestions (e.g. restrict to specific windows, "
-        "weight imbalance thresholds differently). Be direct and specific. Plain text only."
+        "identify any symbols or time windows that should be avoided based on consistent underperformance, "
+        "and give 2-3 concrete parameter adjustment suggestions (e.g. restrict to specific windows, "
+        "weight imbalance thresholds differently, focus on top symbols). Be direct and specific. Plain text only."
     )
 
 
@@ -226,7 +242,7 @@ def run():
         LOGGER.warning(stats["error"])
         return
     report_md = format_report(stats)
-    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=350)
+    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=600)
     if analysis:
         report_md += f"\n\n🤖 *AI Analysis:*\n{analysis}"
     save_report("optimizer", report_md, stats)
