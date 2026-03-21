@@ -26,7 +26,7 @@ def collect_stats() -> dict:
 
     with closing(get_db()) as conn:
         alerts = pd.read_sql_query(
-            "SELECT id, timestamp, symbol, direction, total_bids, total_asks, heavy_venues "
+            "SELECT timestamp, symbol, direction, total_bids, total_asks, heavy_venues "
             "FROM alerts WHERE timestamp >= ?",
             conn, params=(cutoff,)
         )
@@ -170,27 +170,33 @@ def _build_claude_prompt(stats: dict, previous: list[dict]) -> str:
     by_imb = stats.get("by_imbalance_bucket", [])
     by_hour = stats.get("by_hour", [])
 
-    best_dir = max(by_dir, key=lambda x: x["avg_pnl"], default=None)
-    worst_dir = min(by_dir, key=lambda x: x["avg_pnl"], default=None)
-    best_imb = max(by_imb, key=lambda x: x["avg_pnl"], default=None)
-    worst_imb = min(by_imb, key=lambda x: x["avg_pnl"], default=None)
-    best_hour = max(by_hour, key=lambda x: x["avg_pnl"], default=None)
-    worst_hour = min(by_hour, key=lambda x: x["avg_pnl"], default=None)
+    match_rate = None
+    if stats.get("alerts_traded") and stats.get("total_alerts"):
+        match_rate = round(stats["alerts_traded"] / stats["total_alerts"] * 100, 1)
+
+    dir_lines = "\n".join(
+        f"  {d['direction']}: {d['count']} trades, {d['win_rate']}% WR, avg ${d['avg_pnl']:+.4f}"
+        for d in sorted(by_dir, key=lambda x: x["avg_pnl"], reverse=True)
+    ) if by_dir else "  N/A"
+
+    imb_lines = "\n".join(
+        f"  {b['imbalance_bucket']}: {b['count']} trades, {b['win_rate']}% WR, avg ${b['avg_pnl']:+.4f}"
+        for b in by_imb if b["count"] > 0
+    ) if by_imb else "  N/A"
+
+    hour_lines = "\n".join(
+        f"  {h['hour_et']:02d}:00 ET: {h['count']} trades, {h['win_rate']}% WR, avg ${h['avg_pnl']:+.4f}"
+        for h in sorted(by_hour, key=lambda x: x["hour_et"])
+    ) if by_hour else "  N/A"
 
     current = (
         f"Period ending {date_str} (last {LOOKBACK_DAYS} days)\n"
-        f"Alerts: {stats['total_alerts']}  Traded: {stats.get('alerts_traded', 'N/A')}  "
-        f"Win rate: {stats.get('overall_win_rate', 'N/A')}%  Avg PnL: ${stats.get('overall_avg_pnl', 0):+.4f}\n"
-        f"Best direction: {best_dir['direction'] if best_dir else 'N/A'} "
-        f"({best_dir['win_rate'] if best_dir else 'N/A'}%WR ${best_dir['avg_pnl'] if best_dir else 0:+.4f})\n"
-        f"Worst direction: {worst_dir['direction'] if worst_dir else 'N/A'} "
-        f"({worst_dir['win_rate'] if worst_dir else 'N/A'}%WR ${worst_dir['avg_pnl'] if worst_dir else 0:+.4f})\n"
-        f"Best imbalance bucket: {best_imb['imbalance_bucket'] if best_imb else 'N/A'} "
-        f"({best_imb['win_rate'] if best_imb else 'N/A'}%WR)\n"
-        f"Worst imbalance bucket: {worst_imb['imbalance_bucket'] if worst_imb else 'N/A'} "
-        f"({worst_imb['win_rate'] if worst_imb else 'N/A'}%WR)\n"
-        f"Best hour: {best_hour['hour_et'] if best_hour else 'N/A'}:00 ET  "
-        f"Worst hour: {worst_hour['hour_et'] if worst_hour else 'N/A'}:00 ET"
+        f"Total alerts: {stats['total_alerts']}  Traded: {stats.get('alerts_traded', 'N/A')}  "
+        f"Match rate: {match_rate}%  Overall WR: {stats.get('overall_win_rate', 'N/A')}%  "
+        f"Avg PnL: ${stats.get('overall_avg_pnl', 0):+.4f}\n\n"
+        f"BY DIRECTION:\n{dir_lines}\n\n"
+        f"BY IMBALANCE BUCKET:\n{imb_lines}\n\n"
+        f"BY HOUR (ET):\n{hour_lines}"
     )
 
     hist_lines = []
@@ -207,13 +213,14 @@ def _build_claude_prompt(stats: dict, previous: list[dict]) -> str:
     hist = "\n".join(hist_lines) if hist_lines else "No prior weekly history available."
 
     return (
-        "You are a concise signal quality analyst for an imbalance-based momentum trading system.\n\n"
+        "You are a signal quality analyst for an imbalance-based momentum trading system.\n\n"
         f"CURRENT PERIOD:\n{current}\n\n"
         f"PREVIOUS WEEKLY REPORTS (newest first):\n{hist}\n\n"
-        "In 4-5 sentences: describe whether signal quality is trending better or worse week-over-week, "
+        "In 5-6 sentences: describe whether signal quality is trending better or worse week-over-week, "
         "identify which direction or imbalance bucket shows the most meaningful shift, "
-        "and give 2 specific tuning recommendations based on the data (e.g. filter out weak buckets, "
-        "adjust hour filters). Be direct and data-driven. Plain text only."
+        "identify the best and worst trading hours and whether they are consistent week-over-week, "
+        "and give 2-3 specific tuning recommendations based on the data (e.g. filter out weak buckets, "
+        "restrict to best hours, focus on top-performing directions). Be direct and data-driven. Plain text only."
     )
 
 
@@ -225,7 +232,7 @@ def run():
         LOGGER.warning(stats["error"])
         return
     report_md = format_report(stats)
-    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=350)
+    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=600)
     if analysis:
         report_md += f"\n\n🤖 *AI Analysis:*\n{analysis}"
     save_report("alert_quality", report_md, stats)
