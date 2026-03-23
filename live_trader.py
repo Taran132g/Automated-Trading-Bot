@@ -580,6 +580,11 @@ class LiveTrader:
         self.sl_order_ids: Dict[str, str] = {}          # symbol -> order_id of standing stop-limit SL
         self._sl_last_check: Dict[str, float] = {}      # symbol -> last time we polled the standing SL
         self._sl_reject_count: Dict[str, int] = {}      # symbol -> how many times standing SL was rejected
+        self.tp_order_ids: Dict[str, str] = {}          # symbol -> order_id of standing trailing TP
+        self._tp_last_check: Dict[str, float] = {}      # symbol -> last time we polled the standing TP
+        self._tp_last_stop_price: Dict[str, float] = {} # symbol -> stop price of current TP order
+        self._tp_reject_count: Dict[str, int] = {}      # symbol -> how many times standing TP was rejected
+        self._tp_reactive_mode: Dict[str, bool] = {}    # symbol -> True once TP retries exhausted
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
@@ -1161,6 +1166,11 @@ class LiveTrader:
             self.sl_order_ids.pop(symbol, None)
             self._sl_last_check.pop(symbol, None)
             self._sl_reject_count.pop(symbol, None)
+            self.tp_order_ids.pop(symbol, None)
+            self._tp_last_check.pop(symbol, None)
+            self._tp_last_stop_price.pop(symbol, None)
+            self._tp_reject_count.pop(symbol, None)
+            self._tp_reactive_mode.pop(symbol, None)
         else:
             self.positions[symbol] = new_qty
         LOGGER.info("Position update %s => %s", symbol, new_qty)
@@ -1592,7 +1602,7 @@ class LiveTrader:
                     self.active_limit_stops.pop(symbol, None)
                 continue
 
-            # ── Layer 2: Trailing TP (reactive) ──────────────────────────────────
+            # ── Layer 2: Trailing TP ─────────────────────────────────────────────
             # Trail not armed yet — nothing more to do this iteration.
             if hw_pnl < trail_activate:
                 continue
@@ -1605,24 +1615,37 @@ class LiveTrader:
                     direction, symbol, hw, hw_pnl,
                 )
 
-            # Compute the desired trail level.
+            # Compute desired trail level.
             if direction == "LONG":
-                desired_stop = round(hw - trail_amount, 4)
+                desired_stop  = round(hw - trail_amount,         4)
+                desired_limit = round(hw - trail_amount - 0.001, 4)
                 exit_side = "SELL"
             else:
-                desired_stop = round(hw + trail_amount, 4)
+                desired_stop  = round(hw + trail_amount,         4)
+                desired_limit = round(hw + trail_amount + 0.001, 4)
                 exit_side = "COVER"
 
-            # ── Price at/past trail level → reactive LIMIT exit ───────────────
+            # ── Price already at/past trail level → reactive LIMIT exit ──────
             already_past = (
                 (direction == "LONG"  and current_price <= desired_stop) or
                 (direction == "SHORT" and current_price >= desired_stop)
             )
             if already_past:
                 LOGGER.info(
-                    "[TRAIL-TP] %s %s price $%.4f reached trail $%.4f → reactive LIMIT %s",
+                    "[TRAIL-TP] %s %s price $%.4f at trail $%.4f → reactive LIMIT %s",
                     direction, symbol, current_price, desired_stop, exit_side,
                 )
+                # Cancel standing TP and SL before reactive exit
+                tp_oid_old = self.tp_order_ids.pop(symbol, None)
+                if tp_oid_old:
+                    try:
+                        self.executor.cancel_order(tp_oid_old)
+                    except Exception:
+                        pass
+                try:
+                    self.executor.cancel_all_orders()
+                except Exception:
+                    pass
                 self.active_limit_stops[symbol] = True
                 try:
                     self._submit_order(
@@ -1634,6 +1657,115 @@ class LiveTrader:
                     LOGGER.error("[TRAIL-TP] Reactive exit failed for %s: %s", symbol, exc)
                     self.active_limit_stops.pop(symbol, None)
                 continue
+
+            # ── Standing TP watchdog ──────────────────────────────────────────
+            tp_order_id = self.tp_order_ids.get(symbol)
+            if tp_order_id:
+                now = time.time()
+                if now - self._tp_last_check.get(symbol, 0.0) >= 1.5:
+                    self._tp_last_check[symbol] = now
+                    try:
+                        tp_status = self.executor.fetch_order_status(tp_order_id)
+                        tp_state  = (tp_status.get("status") or "").upper()
+                        tp_filled = tp_status.get("filled_quantity") or 0
+
+                        if tp_state in {"FILLED", "EXPIRED"} or tp_filled >= abs(qty):
+                            avg_p      = tp_status.get("avg_fill_price")
+                            fill_price = float(avg_p) if avg_p else desired_stop
+                            locked_pnl = (fill_price - entry_price if direction == "LONG"
+                                          else entry_price - fill_price)
+                            LOGGER.info(
+                                "[TRAIL-TP] %s %s TP FILLED @ $%.4f (locked=+%.5f/sh)",
+                                direction, symbol, fill_price, locked_pnl,
+                            )
+                            with self._lock:
+                                self.tp_order_ids.pop(symbol, None)
+                                self._tp_last_stop_price.pop(symbol, None)
+                                self._tp_reject_count.pop(symbol, None)
+                                self.active_limit_stops[symbol] = True
+                            try:
+                                self.executor.cancel_all_orders()  # cancel SL
+                            except Exception:
+                                pass
+                            self._record_fill(
+                                symbol=symbol, side=exit_side,
+                                qty=abs(qty), price=fill_price,
+                            )
+                            continue
+
+                        elif tp_state in {"CANCELED", "REJECTED"}:
+                            reject_count = self._tp_reject_count.get(symbol, 0) + 1
+                            with self._lock:
+                                self.tp_order_ids.pop(symbol, None)
+                                self._tp_last_stop_price.pop(symbol, None)
+                                self._tp_reject_count[symbol] = reject_count
+                            if reject_count <= 1:
+                                LOGGER.warning(
+                                    "[TRAIL-TP] TP %s for %s is %s (attempt %d) — re-placing once",
+                                    tp_order_id, symbol, tp_state, reject_count,
+                                )
+                                # Falls through to need_update block below to re-place
+                            else:
+                                LOGGER.warning(
+                                    "[TRAIL-TP] TP %s for %s is %s (attempt %d)"
+                                    " — switching to reactive monitoring",
+                                    tp_order_id, symbol, tp_state, reject_count,
+                                )
+                                self._tp_reactive_mode[symbol] = True
+
+                    except Exception as exc:
+                        LOGGER.error(
+                            "[TRAIL-TP] Error polling TP %s for %s: %s",
+                            tp_order_id, symbol, exc,
+                        )
+
+            # ── Reactive mode: already_past check above handles exit ──────────
+            if self._tp_reactive_mode.get(symbol):
+                continue
+
+            # ── Place or update standing TP stop-limit ────────────────────────
+            # Only replace when stop moves >= $0.005 to avoid excessive API churn.
+            last_stop   = self._tp_last_stop_price.get(symbol, 0.0)
+            need_update = (not self.tp_order_ids.get(symbol)) or (abs(desired_stop - last_stop) >= 0.005)
+
+            if need_update:
+                old_tp_id = self.tp_order_ids.get(symbol)
+                if old_tp_id:
+                    try:
+                        self.executor.cancel_order(old_tp_id)
+                        LOGGER.info(
+                            "[TRAIL-TP] Cancelled old TP %s for %s (trail moved %.4f)",
+                            old_tp_id, symbol, abs(desired_stop - last_stop),
+                        )
+                    except Exception as exc:
+                        LOGGER.warning("[TRAIL-TP] Cancel old TP %s failed: %s", old_tp_id, exc)
+                    with self._lock:
+                        self.tp_order_ids.pop(symbol, None)
+                        self._tp_last_stop_price.pop(symbol, None)
+
+                try:
+                    result = self.executor.submit_stop_limit(
+                        symbol=symbol, qty=abs(qty), side=exit_side,
+                        stop_price=desired_stop, limit_price=desired_limit,
+                    )
+                    new_oid = result.get("order_id")
+                    if new_oid:
+                        with self._lock:
+                            self.tp_order_ids[symbol]         = new_oid
+                            self._tp_last_stop_price[symbol]  = desired_stop
+                            self._tp_last_check[symbol]       = time.time()
+                            self._tp_reject_count[symbol]     = 0
+                        LOGGER.info(
+                            "[TRAIL-TP] %s %s: TP stop-limit @ stop=$%.4f limit=$%.4f (order=%s)",
+                            direction, symbol, desired_stop, desired_limit, new_oid,
+                        )
+                    else:
+                        LOGGER.warning(
+                            "[TRAIL-TP] No order_id for TP (dry_run=%s, err=%s)",
+                            result.get("dry_run"), result.get("error"),
+                        )
+                except Exception as exc:
+                    LOGGER.error("[TRAIL-TP] Failed to place TP for %s: %s", symbol, exc)
 
     # ------------------------------------------------------------------
     # Order + alert processing
