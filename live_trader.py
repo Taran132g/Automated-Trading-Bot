@@ -1354,6 +1354,24 @@ class LiveTrader:
             stop_price  = round(entry_price + sl_threshold,         4)
             limit_price = round(entry_price + sl_threshold + 0.001, 4)
 
+        # Validate stop is on the correct side of the current market.
+        # Schwab accepts the order (HTTP 201) but immediately CANCELS it if the
+        # stop is already past the market — this causes a re-place spam loop.
+        current_price = self.live_prices.get(symbol, 0.0)
+        if current_price > 0:
+            if direction == "LONG" and stop_price >= current_price:
+                LOGGER.warning(
+                    "[SL-PLACE] Stop $%.4f >= current $%.4f for LONG %s — skipping (reactive fallback active)",
+                    stop_price, current_price, symbol,
+                )
+                return
+            elif direction == "SHORT" and stop_price <= current_price:
+                LOGGER.warning(
+                    "[SL-PLACE] Stop $%.4f <= current $%.4f for SHORT %s — skipping (reactive fallback active)",
+                    stop_price, current_price, symbol,
+                )
+                return
+
         LOGGER.info(
             "[SL-PLACE] %s %s — placing stop-limit: stop=$%.4f limit=$%.4f qty=%d",
             direction, symbol, stop_price, limit_price, abs(qty),
@@ -1550,14 +1568,30 @@ class LiveTrader:
                             continue
 
                         elif sl_state in {"CANCELED", "REJECTED"}:
-                            # Standing SL was cancelled externally — re-place it
-                            LOGGER.warning(
-                                "[SL-WATCHDOG] Standing SL %s for %s is %s — re-placing",
-                                sl_order_id, symbol, sl_state,
-                            )
+                            # Standing SL was cancelled — re-place only if stop is still
+                            # on the correct side of the market.  If already past, the
+                            # reactive fallback (elif pnl <= -sl_threshold) will fire.
                             with self._lock:
                                 self.sl_order_ids.pop(symbol, None)
-                            self._place_protective_sl(symbol)
+                            sl_stop = (entry_price - sl_threshold if direction == "LONG"
+                                       else entry_price + sl_threshold)
+                            current_px = self.live_prices.get(symbol, 0.0)
+                            stop_valid = (
+                                current_px <= 0 or
+                                (direction == "LONG"  and sl_stop < current_px) or
+                                (direction == "SHORT" and sl_stop > current_px)
+                            )
+                            if stop_valid:
+                                LOGGER.warning(
+                                    "[SL-WATCHDOG] Standing SL %s for %s is %s — re-placing",
+                                    sl_order_id, symbol, sl_state,
+                                )
+                                self._place_protective_sl(symbol)
+                            else:
+                                LOGGER.warning(
+                                    "[SL-WATCHDOG] Standing SL %s for %s is %s and stop $%.4f already past market $%.4f — reactive fallback",
+                                    sl_order_id, symbol, sl_state, sl_stop, current_px,
+                                )
 
                     except Exception as exc:
                         LOGGER.error("[SL-WATCHDOG] Error polling SL %s for %s: %s",
@@ -1623,9 +1657,13 @@ class LiveTrader:
             last_stop   = self._tp_last_stop_price.get(symbol, 0.0)
 
             # ── Price already at/past trail level → reactive exit ─────────────
+            # Add TP_BUFFER: if price is within 3 mils of the stop, skip the
+            # standing stop-limit (Schwab will reject it due to API latency race)
+            # and fire reactively instead.
+            TP_BUFFER = 0.003
             already_past = (
-                (direction == "LONG"  and current_price <= desired_stop) or
-                (direction == "SHORT" and current_price >= desired_stop)
+                (direction == "LONG"  and current_price <= desired_stop + TP_BUFFER) or
+                (direction == "SHORT" and current_price >= desired_stop - TP_BUFFER)
             )
             if already_past:
                 LOGGER.info(
