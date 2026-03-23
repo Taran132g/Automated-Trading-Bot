@@ -418,6 +418,50 @@ class SchwabOrderExecutor:
             builder = builder_factory(symbol=symbol, quantity=qty, price=price)
         return self._send(builder, symbol=symbol, side=side.upper(), qty=qty)
 
+    def submit_stop_limit(self, *, symbol: str, qty: int, side: str, stop_price: float, limit_price: float) -> Dict[str, Optional[str]]:
+        """Place a stop-limit order (SELL or COVER only).
+
+        The order sits on the exchange and becomes a limit order at *limit_price*
+        once *stop_price* is touched.  Used for protective SL orders placed
+        immediately after an entry fill.
+        """
+        from schwab.orders.common import Duration, EquityInstruction, OrderStrategyType, OrderType, Session
+        from schwab.orders.generic import OrderBuilder
+
+        instructions = {
+            "SELL":  EquityInstruction.SELL,
+            "COVER": EquityInstruction.BUY_TO_COVER,
+        }
+        try:
+            instruction = instructions[side.upper()]
+        except KeyError as exc:
+            raise ValueError(f"submit_stop_limit supports SELL/COVER, got '{side}'") from exc
+
+        builder = (
+            OrderBuilder()
+            .set_order_type(OrderType.STOP_LIMIT)
+            .set_price(limit_price)
+            .set_stop_price(stop_price)
+            .set_session(Session.NORMAL)
+            .set_duration(Duration.DAY)
+            .set_order_strategy_type(OrderStrategyType.SINGLE)
+            .add_equity_leg(instruction, symbol, qty)
+        )
+        return self._send(builder, symbol=symbol, side=side.upper(), qty=qty)
+
+    def cancel_order(self, order_id: str) -> bool:
+        """Cancel a single order by ID. Returns True if the request was sent."""
+        if self.dry_run:
+            LOGGER.info("[DRY-RUN] Skip cancel_order %s", order_id)
+            return True
+        try:
+            self.client.cancel_order(order_id, self.account_id)
+            LOGGER.info("Cancel request sent for order %s", order_id)
+            return True
+        except Exception as exc:
+            LOGGER.error("cancel_order %s failed: %s", order_id, exc)
+            return False
+
     def submit_market(self, *, symbol: str, qty: int, side: str) -> Dict[str, Optional[str]]:
         builders = {
             "BUY": equity_orders.equity_buy_market,
@@ -544,7 +588,14 @@ class LiveTrader:
         
         # Zero-Latency State
         self.live_prices: Dict[str, float] = {} # symbol -> latest stream price (zero-latency)
-        self.active_limit_stops: Dict[str, bool] = {}  # symbol -> True (if a limit lock-in is active)
+        self.active_limit_stops: Dict[str, bool] = {}  # symbol -> True (exit order in flight, block re-entry)
+        self.trailing_high_water: Dict[str, float] = {}  # LONG: peak price seen; SHORT: trough price seen
+        self.trailing_activated: Dict[str, bool] = {}   # True once pnl >= trailing_activate_pps
+        self.sl_order_ids: Dict[str, str] = {}          # symbol -> order_id of standing stop-limit SL
+        self._sl_last_check: Dict[str, float] = {}      # symbol -> last time we polled the standing SL
+        self.tp_order_ids: Dict[str, str] = {}          # symbol -> order_id of standing stop-limit TP
+        self._tp_last_check: Dict[str, float] = {}      # symbol -> last time we polled the standing TP
+        self._tp_last_stop_price: Dict[str, float] = {} # symbol -> stop price of last placed TP order
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
@@ -1119,6 +1170,15 @@ class LiveTrader:
         if new_qty == 0:
             self.positions.pop(symbol, None)
             self.position_entry_times.pop(symbol, None)
+            # Clear all per-position exit-tracking state so a fresh entry starts clean
+            self.trailing_activated.pop(symbol, None)
+            self.trailing_high_water.pop(symbol, None)
+            self.active_limit_stops.pop(symbol, None)
+            self.sl_order_ids.pop(symbol, None)
+            self._sl_last_check.pop(symbol, None)
+            self.tp_order_ids.pop(symbol, None)
+            self._tp_last_check.pop(symbol, None)
+            self._tp_last_stop_price.pop(symbol, None)
         else:
             self.positions[symbol] = new_qty
         LOGGER.info("Position update %s => %s", symbol, new_qty)
@@ -1261,33 +1321,133 @@ class LiveTrader:
         """Disabled — positions close only on opposing signals."""
         pass
 
+    def _place_protective_sl(self, symbol: str) -> None:
+        """Place a standing stop-limit SL on the exchange right after an entry fill.
+
+        For LONG: SELL STOP_LIMIT with stop at entry - sl_per_share,
+                  limit at stop - 0.001 (one sub-penny below to guarantee fill).
+        For SHORT: COVER STOP_LIMIT with stop at entry + sl_per_share,
+                   limit at stop + 0.001.
+
+        The order_id is stored in self.sl_order_ids[symbol] so the watchdog in
+        _check_profit_limits can monitor it.  Skipped gracefully in dry-run
+        (no order_id returned) or if position/entry_price is unavailable.
+        """
+        cfg = config_manager.load_config()
+        sl_threshold = float(cfg.get("sl_per_share", 0.008))
+
+        with self._lock:
+            qty = self.positions.get(symbol, 0)
+            entry_price = self.position_entry_prices.get(symbol, 0.0)
+
+        if qty == 0 or entry_price <= 0:
+            LOGGER.warning("[SL-PLACE] Skipped %s: qty=%s entry=%.4f", symbol, qty, entry_price)
+            return
+
+        direction = "LONG" if qty > 0 else "SHORT"
+        if direction == "LONG":
+            side = "SELL"
+            stop_price  = round(entry_price - sl_threshold,         4)
+            limit_price = round(entry_price - sl_threshold - 0.001, 4)
+        else:
+            side = "COVER"
+            stop_price  = round(entry_price + sl_threshold,         4)
+            limit_price = round(entry_price + sl_threshold + 0.001, 4)
+
+        LOGGER.info(
+            "[SL-PLACE] %s %s — placing stop-limit: stop=$%.4f limit=$%.4f qty=%d",
+            direction, symbol, stop_price, limit_price, abs(qty),
+        )
+        try:
+            result = self.executor.submit_stop_limit(
+                symbol=symbol,
+                qty=abs(qty),
+                side=side,
+                stop_price=stop_price,
+                limit_price=limit_price,
+            )
+            order_id = result.get("order_id")
+            if order_id:
+                with self._lock:
+                    self.sl_order_ids[symbol] = order_id
+                    self._sl_last_check[symbol] = time.time()
+                LOGGER.info("[SL-PLACE] Standing SL order %s placed for %s", order_id, symbol)
+            else:
+                LOGGER.warning("[SL-PLACE] No order_id for %s (dry_run=%s, err=%s)",
+                               symbol, result.get("dry_run"), result.get("error"))
+        except Exception as exc:
+            LOGGER.error("[SL-PLACE] Failed to place standing SL for %s: %s", symbol, exc)
+
     def update_live_price(self, symbol: str, price: float) -> None:
         """Zero-latency update from grok.py's streaming websocket feed."""
         if price > 0:
             self.live_prices[symbol] = price
 
     def _check_profit_limits(self) -> None:
-        """Dynamic Trailing Stop: Activates at +$0.03, then trails from peak by $0.01 using Zero-Latency Live Prices."""
+        """Per-position exit logic running every 0.5 s on zero-latency WebSocket prices.
+
+        Layer 1 — Hard SL
+          Exit immediately (limit at current price) when unrealized loss >= sl_per_share.
+          The limit is submitted AT current_price, so it fills at the live bid/ask rather
+          than at a stale trigger level.  Works symmetrically for LONG (SELL) and SHORT
+          (COVER).
+
+        Layer 2 — Trailing TP
+          Activates once pnl >= trailing_activate_pps.  Tracks a per-symbol high-water
+          mark (lowest price for shorts).  When price retraces by trailing_trail_pps from
+          that peak, a limit exit is submitted AT the trail level.
+
+          For LONG:  trail fires when current_price <= high_water - trail_amount
+                     → SELL limit at trail_level
+          For SHORT: trail fires when current_price >= low_water  + trail_amount
+                     → COVER limit at trail_level
+
+          Both cases submit the limit AT the trail trigger price, which is at or very near
+          current market, so the order fills immediately.  This is NOT placing a limit
+          below/above the current price as a standing order — it is submitted only when
+          price has already reached the exit level.
+
+        Layer 0 — Time Stop
+          Unconditional market exit once a position has been held for >= time_stop_seconds.
+          Fires regardless of PnL direction.  No limit order — straight MARKET so the
+          position is guaranteed flat.
+
+        Config keys (config_manager):
+          time_stop_seconds     default 180    (exit any position held >= 3 minutes)
+          sl_per_share          default 0.008  ($0.008 / share hard stop)
+          trailing_activate_pps default 0.012  (activate trailing after +$0.012 / share)
+          trailing_trail_pps    default 0.008  (trail by $0.008 from peak)
+        """
         if not self.positions:
             return
 
+        cfg = config_manager.load_config()
+        time_stop_secs = float(cfg.get("time_stop_seconds",     180))
+        sl_threshold   = float(cfg.get("sl_per_share",          0.008))
+        trail_activate = float(cfg.get("trailing_activate_pps", 0.012))
+        trail_amount   = float(cfg.get("trailing_trail_pps",    0.008))
+
         with self._lock:
-            # Snapshot positions to iterate safely
             current_positions = dict(self.positions)
 
         for symbol, qty in current_positions.items():
             if qty == 0:
+                # Shouldn't normally appear (positions are removed on close), but clean up
+                # if stale state somehow remains.
                 self.trailing_activated.pop(symbol, None)
                 self.trailing_high_water.pop(symbol, None)
+                self.active_limit_stops.pop(symbol, None)
+                continue
+
+            # Skip while an exit order for this symbol is already in flight.
+            if self.active_limit_stops.get(symbol):
                 continue
 
             entry_price = self.position_entry_prices.get(symbol, 0.0)
             if entry_price <= 0:
                 continue
 
-            # ZERO-LATENCY OVERRIDE: 
-            # We strictly bypass the 3-5 second REST API latency of self._latest_price(symbol)
-            # and only use the direct Web-Socket price piped from grok.py
+            # Use zero-latency WebSocket price exclusively — REST API adds 3-5 s lag.
             current_price = self.live_prices.get(symbol, 0.0)
             if current_price <= 0:
                 continue
@@ -1295,27 +1455,295 @@ class LiveTrader:
             direction = "LONG" if qty > 0 else "SHORT"
             pnl = (current_price - entry_price) if direction == "LONG" else (entry_price - current_price)
 
-            if pnl >= 0.03:
-                # guaranteed +$0.01 limit stop
-                target_price = entry_price + 0.01 if direction == "LONG" else entry_price - 0.01
+            # ── Layer 0: Time Stop ────────────────────────────────────────────────
+            entry_ts = self.position_entry_times.get(symbol, 0.0)
+            age_secs = time.time() - entry_ts
+            if entry_ts > 0 and age_secs >= time_stop_secs:
                 side = "SELL" if direction == "LONG" else "COVER"
-                LOGGER.info("💰 Submitting guaranteed +$0.01 Profit Limit for %s at Current: $%.4f (Entry: $%.4f). Limit %s at $%.4f", 
-                            symbol, current_price, entry_price, side, target_price)
+                LOGGER.warning(
+                    "[TIME-STOP] %s %s held %.1fs >= %.0fs → MARKET %s (pnl=%.5f)",
+                    direction, symbol, age_secs, time_stop_secs, side, pnl,
+                )
+                # Cancel any standing SL and TP before the market exit
+                with self._lock:
+                    sl_oid = self.sl_order_ids.pop(symbol, None)
+                    tp_oid = self.tp_order_ids.pop(symbol, None)
+                    self._tp_last_stop_price.pop(symbol, None)
+                if sl_oid or tp_oid:
+                    try:
+                        self.executor.cancel_all_orders()
+                    except Exception as _ce:
+                        LOGGER.warning("[TIME-STOP] cancel_all before market exit failed: %s", _ce)
                 self.active_limit_stops[symbol] = True
-
                 try:
                     self._submit_order(
                         alert_id=-1,
                         symbol=symbol,
-                        direction="profit-limit",
+                        direction="time-stop",
                         side=side,
                         qty=abs(qty),
-                        price=target_price,
+                        price=current_price,
+                        order_type="MARKET",
+                    )
+                except Exception as exc:
+                    LOGGER.error("[TIME-STOP] Submit failed for %s: %s", symbol, exc)
+                    self.active_limit_stops.pop(symbol, None)
+                continue  # one exit per symbol per iteration
+
+            # ── Update high-water mark ────────────────────────────────────────────
+            with self._lock:
+                if direction == "LONG":
+                    hw = self.trailing_high_water.get(symbol, entry_price)
+                    if current_price > hw:
+                        self.trailing_high_water[symbol] = current_price
+                        hw = current_price
+                else:  # SHORT: track lowest price (most favourable)
+                    hw = self.trailing_high_water.get(symbol, entry_price)
+                    if current_price < hw:
+                        self.trailing_high_water[symbol] = current_price
+                        hw = current_price
+
+            hw_pnl = abs(hw - entry_price)
+
+            # ── Layer 1: Standing SL watchdog ────────────────────────────────────
+            # Primary path: if we have a standing stop-limit on the exchange,
+            # poll its status every ~1.5 s to detect fills or cancellations.
+            # Fallback (no standing order, e.g. dry-run or placement failed):
+            # reactive limit at current price when pnl <= -sl_threshold.
+            sl_order_id = self.sl_order_ids.get(symbol)
+            if sl_order_id:
+                now = time.time()
+                last_check = self._sl_last_check.get(symbol, 0.0)
+                if now - last_check >= 1.5:
+                    self._sl_last_check[symbol] = now
+                    try:
+                        sl_status = self.executor.fetch_order_status(sl_order_id)
+                        sl_state = (sl_status.get("status") or "").upper()
+                        sl_filled = sl_status.get("filled_quantity") or 0
+
+                        if sl_state in {"FILLED", "EXPIRED"} or sl_filled >= abs(qty):
+                            # Standing SL filled on the exchange — sync position state
+                            avg_p = sl_status.get("avg_fill_price")
+                            fill_price = float(avg_p) if avg_p else (
+                                entry_price - sl_threshold if direction == "LONG"
+                                else entry_price + sl_threshold
+                            )
+                            exit_side = "SELL" if direction == "LONG" else "COVER"
+                            LOGGER.warning(
+                                "[SL-FILL] Standing SL for %s %s confirmed FILLED @ $%.4f",
+                                direction, symbol, fill_price,
+                            )
+                            with self._lock:
+                                self.sl_order_ids.pop(symbol, None)
+                                self.tp_order_ids.pop(symbol, None)
+                                self._tp_last_stop_price.pop(symbol, None)
+                                self.active_limit_stops[symbol] = True
+                            # Cancel any remaining standing orders (TP etc.)
+                            try:
+                                self.executor.cancel_all_orders()
+                            except Exception:
+                                pass
+                            self._record_fill(
+                                symbol=symbol, side=exit_side,
+                                qty=abs(qty), price=fill_price,
+                            )
+                            continue
+
+                        elif sl_state in {"CANCELED", "REJECTED"}:
+                            # Standing SL was cancelled externally — re-place it
+                            LOGGER.warning(
+                                "[SL-WATCHDOG] Standing SL %s for %s is %s — re-placing",
+                                sl_order_id, symbol, sl_state,
+                            )
+                            with self._lock:
+                                self.sl_order_ids.pop(symbol, None)
+                            self._place_protective_sl(symbol)
+
+                    except Exception as exc:
+                        LOGGER.error("[SL-WATCHDOG] Error polling SL %s for %s: %s",
+                                     sl_order_id, symbol, exc)
+
+            elif pnl <= -sl_threshold:
+                # No standing SL (dry-run or placement failed) — reactive fallback:
+                # cancel any outstanding orders first to avoid double-exit, then
+                # submit a fresh LIMIT at the current live price.
+                side = "SELL" if direction == "LONG" else "COVER"
+                LOGGER.warning(
+                    "[SL-REACTIVE] %s %s unrealized=%.5f <= -%.5f → limit %s at $%.4f",
+                    direction, symbol, pnl, sl_threshold, side, current_price,
+                )
+                try:
+                    self.executor.cancel_all_orders()
+                except Exception:
+                    pass
+                self.active_limit_stops[symbol] = True
+                try:
+                    self._submit_order(
+                        alert_id=-1,
+                        symbol=symbol,
+                        direction="hard-sl",
+                        side=side,
+                        qty=abs(qty),
+                        price=current_price,
                         order_type="LIMIT",
                     )
                 except Exception as exc:
-                    LOGGER.error("Failed to submit guaranteed profit limit for %s: %s", symbol, exc)
+                    LOGGER.error("[SL-REACTIVE] Submit failed for %s: %s", symbol, exc)
                     self.active_limit_stops.pop(symbol, None)
+                continue  # one exit order per symbol per iteration
+
+            # ── Layer 2: Trailing TP (standing stop-limit) ───────────────────────
+            # Trail not armed yet — nothing more to do this iteration.
+            if hw_pnl < trail_activate:
+                continue
+
+            # Log first activation.
+            if not self.trailing_activated.get(symbol):
+                self.trailing_activated[symbol] = True
+                LOGGER.info(
+                    "[TRAIL] Armed for %s %s: hw=$%.4f locked=+%.5f",
+                    direction, symbol, hw, hw_pnl,
+                )
+
+            # Compute the desired TP stop-limit level.
+            # Note: a plain SELL LIMIT placed below the current market fills
+            # immediately (limit is a floor, not a target).  A STOP-LIMIT sits
+            # on the exchange idle until price drops to the stop, then becomes
+            # a limit order — which is exactly the behaviour we want here.
+            if direction == "LONG":
+                desired_stop  = round(hw - trail_amount,         4)
+                desired_limit = round(hw - trail_amount - 0.001, 4)
+                exit_side = "SELL"
+            else:
+                desired_stop  = round(hw + trail_amount,         4)
+                desired_limit = round(hw + trail_amount + 0.001, 4)
+                exit_side = "COVER"
+
+            tp_order_id = self.tp_order_ids.get(symbol)
+            last_stop   = self._tp_last_stop_price.get(symbol, 0.0)
+
+            # ── Price already at/past trail level → reactive exit ─────────────
+            already_past = (
+                (direction == "LONG"  and current_price <= desired_stop) or
+                (direction == "SHORT" and current_price >= desired_stop)
+            )
+            if already_past:
+                LOGGER.info(
+                    "[TRAIL-TP] %s %s price $%.4f already past trail $%.4f → reactive LIMIT %s",
+                    direction, symbol, current_price, desired_stop, exit_side,
+                )
+                # Cancel any standing TP + SL before reactive submit
+                with self._lock:
+                    sl_oid = self.sl_order_ids.pop(symbol, None)
+                    tp_oid_old = self.tp_order_ids.pop(symbol, None)
+                    self._tp_last_stop_price.pop(symbol, None)
+                if sl_oid or tp_oid_old:
+                    try:
+                        self.executor.cancel_all_orders()
+                    except Exception:
+                        pass
+                self.active_limit_stops[symbol] = True
+                try:
+                    self._submit_order(
+                        alert_id=-1, symbol=symbol, direction="trailing-tp",
+                        side=exit_side, qty=abs(qty), price=current_price,
+                        order_type="LIMIT",
+                    )
+                except Exception as exc:
+                    LOGGER.error("[TRAIL-TP] Reactive exit failed for %s: %s", symbol, exc)
+                    self.active_limit_stops.pop(symbol, None)
+                continue
+
+            # ── Place or update the standing TP stop-limit ────────────────────
+            # Only replace when stop moves >= $0.005 to avoid excessive API churn
+            # on a smoothly trending stock.
+            need_update = (tp_order_id is None) or (abs(desired_stop - last_stop) >= 0.005)
+
+            if need_update:
+                # Cancel old TP by order_id (targeted — does not touch SL)
+                if tp_order_id:
+                    try:
+                        self.executor.cancel_order(tp_order_id)
+                        LOGGER.info(
+                            "[TRAIL-TP] Cancelled old TP %s for %s (trail moved by %.4f)",
+                            tp_order_id, symbol, abs(desired_stop - last_stop),
+                        )
+                    except Exception as exc:
+                        LOGGER.warning("[TRAIL-TP] Cancel old TP %s failed: %s", tp_order_id, exc)
+                    with self._lock:
+                        self.tp_order_ids.pop(symbol, None)
+                        self._tp_last_stop_price.pop(symbol, None)
+
+                # Place new TP stop-limit
+                try:
+                    result = self.executor.submit_stop_limit(
+                        symbol=symbol, qty=abs(qty), side=exit_side,
+                        stop_price=desired_stop, limit_price=desired_limit,
+                    )
+                    new_oid = result.get("order_id")
+                    if new_oid:
+                        with self._lock:
+                            self.tp_order_ids[symbol]          = new_oid
+                            self._tp_last_stop_price[symbol]   = desired_stop
+                            self._tp_last_check[symbol]        = time.time()
+                        LOGGER.info(
+                            "[TRAIL-TP] %s %s: TP stop-limit @ stop=$%.4f limit=$%.4f (order=%s)",
+                            direction, symbol, desired_stop, desired_limit, new_oid,
+                        )
+                    else:
+                        LOGGER.warning(
+                            "[TRAIL-TP] No order_id for TP (dry_run=%s, err=%s)",
+                            result.get("dry_run"), result.get("error"),
+                        )
+                except Exception as exc:
+                    LOGGER.error("[TRAIL-TP] Failed to place TP for %s: %s", symbol, exc)
+
+            # ── Watchdog: detect TP fill on exchange ──────────────────────────
+            tp_oid = self.tp_order_ids.get(symbol)
+            if tp_oid:
+                now = time.time()
+                if now - self._tp_last_check.get(symbol, 0.0) >= 1.5:
+                    self._tp_last_check[symbol] = now
+                    try:
+                        tp_status = self.executor.fetch_order_status(tp_oid)
+                        tp_state  = (tp_status.get("status") or "").upper()
+                        tp_filled = tp_status.get("filled_quantity") or 0
+
+                        if tp_state in {"FILLED", "EXPIRED"} or tp_filled >= abs(qty):
+                            avg_p      = tp_status.get("avg_fill_price")
+                            fill_price = float(avg_p) if avg_p else desired_stop
+                            locked_pnl = (fill_price - entry_price if direction == "LONG"
+                                          else entry_price - fill_price)
+                            LOGGER.info(
+                                "[TRAIL-TP] %s %s TP FILLED @ $%.4f (locked=+%.5f/sh)",
+                                direction, symbol, fill_price, locked_pnl,
+                            )
+                            with self._lock:
+                                self.tp_order_ids.pop(symbol, None)
+                                self._tp_last_stop_price.pop(symbol, None)
+                                self.sl_order_ids.pop(symbol, None)
+                                self.active_limit_stops[symbol] = True
+                            # Cancel any remaining standing orders (SL etc.)
+                            try:
+                                self.executor.cancel_all_orders()
+                            except Exception:
+                                pass
+                            self._record_fill(
+                                symbol=symbol, side=exit_side,
+                                qty=abs(qty), price=fill_price,
+                            )
+
+                        elif tp_state in {"CANCELED", "REJECTED"}:
+                            LOGGER.warning(
+                                "[TRAIL-TP] TP %s for %s was %s — will re-place next cycle",
+                                tp_oid, symbol, tp_state,
+                            )
+                            with self._lock:
+                                self.tp_order_ids.pop(symbol, None)
+                                self._tp_last_stop_price.pop(symbol, None)
+
+                    except Exception as exc:
+                        LOGGER.error("[TRAIL-TP] Error polling TP %s for %s: %s", tp_oid, symbol, exc)
 
     # ------------------------------------------------------------------
     # Order + alert processing
@@ -1460,9 +1888,13 @@ class LiveTrader:
                     LOGGER.warning("[PI-DEBUG] No avg_fill_price for order %s. Raw status: %s", order_id, status)
                 # Record fill with confirmed actual price (or submitted price if status unavailable)
                 self._record_fill(symbol=symbol, side=side, qty=qty, price=actual_price)
+                if side in ("BUY", "SHORT"):
+                    self._place_protective_sl(symbol)
             else:
                 # dry_run or no order_id: record immediately (no real order on Schwab)
                 self._record_fill(symbol=symbol, side=side, qty=qty, price=price)
+                if side in ("BUY", "SHORT"):
+                    self._place_protective_sl(symbol)
         else:
             fill_status = "FAILED"
             # CHECK FOR BOXED POSITION ERROR
@@ -1557,6 +1989,13 @@ class LiveTrader:
              time.sleep(self.limit_poll_interval)
              LOGGER.info("[DRY-RUN] Limit order 'filled' after wait")
              self._record_fill(symbol=symbol, side=side, qty=qty, price=limit_price)
+             if side in ("BUY", "SHORT"):
+                 self._place_protective_sl(symbol)
+             elif side in ("SELL", "COVER"):
+                 with self._lock:
+                     self.sl_order_ids.pop(symbol, None)
+                     self.tp_order_ids.pop(symbol, None)
+                     self._tp_last_stop_price.pop(symbol, None)
              result["fill_status"] = "FILLED"
              result["filled_qty"] = qty
              self._record_order(
@@ -1611,9 +2050,22 @@ class LiveTrader:
                 # Use actual filled qty if available, otherwise assume full qty if status is FILLED
                 actual_fill = int(filled_qty) if filled_qty > 0 else qty
                 self._record_fill(symbol=symbol, side=side, qty=actual_fill, price=realized_price)
+                if side in ("BUY", "SHORT"):
+                    self._place_protective_sl(symbol)
+                elif side in ("SELL", "COVER"):
+                    # Cancel any standing SL/TP orders so nothing is left orphaned
+                    with self._lock:
+                        sl_oid = self.sl_order_ids.pop(symbol, None)
+                        tp_oid = self.tp_order_ids.pop(symbol, None)
+                        self._tp_last_stop_price.pop(symbol, None)
+                    if sl_oid or tp_oid:
+                        try:
+                            self.executor.cancel_all_orders()
+                        except Exception as _ce:
+                            LOGGER.warning("[SL-CANCEL] cancel_all after %s fill failed: %s", side, _ce)
                 result["fill_status"] = "FILLED"
                 result["filled_qty"] = actual_fill
-            
+
                 # Calculate PI on limit fill
                 quote = self.executor.fetch_quote(symbol)
                 if quote:
