@@ -418,6 +418,36 @@ class SchwabOrderExecutor:
             builder = builder_factory(symbol=symbol, quantity=qty, price=price)
         return self._send(builder, symbol=symbol, side=side.upper(), qty=qty)
 
+    def submit_stop_limit(self, *, symbol: str, qty: int, side: str, stop_price: float, limit_price: float) -> Dict[str, Optional[str]]:
+        """Place a stop-limit protective order (SELL to exit LONG, COVER to exit SHORT).
+
+        Prices are passed as strings (Schwab API requires this; passing floats
+        triggers a deprecation warning and may cause malformed JSON).
+        """
+        from schwab.orders.common import Duration, EquityInstruction, OrderStrategyType, OrderType, Session
+        from schwab.orders.generic import OrderBuilder
+
+        instructions = {
+            "SELL":  EquityInstruction.SELL,
+            "COVER": EquityInstruction.BUY_TO_COVER,
+        }
+        try:
+            instruction = instructions[side.upper()]
+        except KeyError as exc:
+            raise ValueError(f"submit_stop_limit supports SELL/COVER, got '{side}'") from exc
+
+        builder = (
+            OrderBuilder()
+            .set_order_type(OrderType.STOP_LIMIT)
+            .set_price(f"{limit_price:.4f}")
+            .set_stop_price(f"{stop_price:.4f}")
+            .set_session(Session.NORMAL)
+            .set_duration(Duration.DAY)
+            .set_order_strategy_type(OrderStrategyType.SINGLE)
+            .add_equity_leg(instruction, symbol, qty)
+        )
+        return self._send(builder, symbol=symbol, side=side.upper(), qty=qty)
+
     def submit_market(self, *, symbol: str, qty: int, side: str) -> Dict[str, Optional[str]]:
         builders = {
             "BUY": equity_orders.equity_buy_market,
@@ -547,6 +577,9 @@ class LiveTrader:
         self.active_limit_stops: Dict[str, bool] = {}  # symbol -> True (exit order in flight, block re-entry)
         self.trailing_high_water: Dict[str, float] = {}  # LONG: peak price seen; SHORT: trough price seen
         self.trailing_activated: Dict[str, bool] = {}   # True once pnl >= trailing_activate_pps
+        self.sl_order_ids: Dict[str, str] = {}          # symbol -> order_id of standing stop-limit SL
+        self._sl_last_check: Dict[str, float] = {}      # symbol -> last time we polled the standing SL
+        self._sl_reject_count: Dict[str, int] = {}      # symbol -> how many times standing SL was rejected
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
@@ -1125,6 +1158,9 @@ class LiveTrader:
             self.trailing_activated.pop(symbol, None)
             self.trailing_high_water.pop(symbol, None)
             self.active_limit_stops.pop(symbol, None)
+            self.sl_order_ids.pop(symbol, None)
+            self._sl_last_check.pop(symbol, None)
+            self._sl_reject_count.pop(symbol, None)
         else:
             self.positions[symbol] = new_qty
         LOGGER.info("Position update %s => %s", symbol, new_qty)
@@ -1267,6 +1303,78 @@ class LiveTrader:
         """Disabled — positions close only on opposing signals."""
         pass
 
+    def _place_protective_sl(self, symbol: str) -> None:
+        """Place a standing stop-limit SL on the exchange right after an entry fill.
+
+        For LONG: SELL STOP_LIMIT  stop=entry-sl_per_share  limit=stop-0.001
+        For SHORT: COVER STOP_LIMIT stop=entry+sl_per_share  limit=stop+0.001
+
+        Prices are passed as strings to satisfy Schwab's API requirement.
+        Skipped if the stop price is already past the current market (reactive
+        monitoring in _check_profit_limits will handle exit instead).
+        """
+        cfg = config_manager.load_config()
+        sl_threshold = float(cfg.get("sl_per_share", 0.008))
+
+        with self._lock:
+            qty         = self.positions.get(symbol, 0)
+            entry_price = self.position_entry_prices.get(symbol, 0.0)
+
+        if qty == 0 or entry_price <= 0:
+            LOGGER.warning("[SL-PLACE] Skipped %s: qty=%s entry=%.4f", symbol, qty, entry_price)
+            return
+
+        direction = "LONG" if qty > 0 else "SHORT"
+        if direction == "LONG":
+            side        = "SELL"
+            stop_price  = round(entry_price - sl_threshold,         4)
+            limit_price = round(entry_price - sl_threshold - 0.001, 4)
+        else:
+            side        = "COVER"
+            stop_price  = round(entry_price + sl_threshold,         4)
+            limit_price = round(entry_price + sl_threshold + 0.001, 4)
+
+        # Skip if stop is already past the current market — Schwab will reject it.
+        # The reactive fallback in _check_profit_limits will handle exit instead.
+        current_price = self.live_prices.get(symbol, 0.0)
+        if current_price > 0:
+            if direction == "LONG" and stop_price >= current_price:
+                LOGGER.warning(
+                    "[SL-PLACE] Stop $%.4f >= current $%.4f for LONG %s — skipping, reactive active",
+                    stop_price, current_price, symbol,
+                )
+                return
+            elif direction == "SHORT" and stop_price <= current_price:
+                LOGGER.warning(
+                    "[SL-PLACE] Stop $%.4f <= current $%.4f for SHORT %s — skipping, reactive active",
+                    stop_price, current_price, symbol,
+                )
+                return
+
+        LOGGER.info(
+            "[SL-PLACE] %s %s — stop-limit: stop=$%.4f limit=$%.4f qty=%d",
+            direction, symbol, stop_price, limit_price, abs(qty),
+        )
+        try:
+            result   = self.executor.submit_stop_limit(
+                symbol=symbol, qty=abs(qty), side=side,
+                stop_price=stop_price, limit_price=limit_price,
+            )
+            order_id = result.get("order_id")
+            if order_id:
+                with self._lock:
+                    self.sl_order_ids[symbol]     = order_id
+                    self._sl_last_check[symbol]   = time.time()
+                    self._sl_reject_count[symbol] = 0
+                LOGGER.info("[SL-PLACE] Standing SL order %s placed for %s", order_id, symbol)
+            else:
+                LOGGER.warning(
+                    "[SL-PLACE] No order_id for %s (dry_run=%s, err=%s)",
+                    symbol, result.get("dry_run"), result.get("error"),
+                )
+        except Exception as exc:
+            LOGGER.error("[SL-PLACE] Failed to place standing SL for %s: %s", symbol, exc)
+
     def update_live_price(self, symbol: str, price: float) -> None:
         """Zero-latency update from grok.py's streaming websocket feed."""
         if price > 0:
@@ -1384,13 +1492,81 @@ class LiveTrader:
 
             hw_pnl = abs(hw - entry_price)
 
-            # ── Layer 1: Reactive SL ─────────────────────────────────────────────
-            # Pure reactive: fire LIMIT exit when pnl <= -sl_threshold.
-            # (Standing stop-limit orders are not used — Schwab rejects them.)
-            if pnl <= -sl_threshold:
-                # No standing SL (dry-run or placement failed) — reactive fallback:
-                # cancel any outstanding orders first to avoid double-exit, then
-                # submit a fresh LIMIT at the current live price.
+            # ── Layer 1: Standing SL watchdog + reactive fallback ────────────────
+            # Primary: standing stop-limit on exchange (survives process crash).
+            # Fallback: reactive LIMIT when pnl <= -sl_threshold (covers the case
+            # where stop-limit placement failed or exhausted its one retry).
+            sl_order_id = self.sl_order_ids.get(symbol)
+            if sl_order_id:
+                now = time.time()
+                if now - self._sl_last_check.get(symbol, 0.0) >= 1.5:
+                    self._sl_last_check[symbol] = now
+                    try:
+                        sl_status  = self.executor.fetch_order_status(sl_order_id)
+                        sl_state   = (sl_status.get("status") or "").upper()
+                        sl_filled  = sl_status.get("filled_quantity") or 0
+
+                        if sl_state in {"FILLED", "EXPIRED"} or sl_filled >= abs(qty):
+                            avg_p      = sl_status.get("avg_fill_price")
+                            fill_price = float(avg_p) if avg_p else (
+                                entry_price - sl_threshold if direction == "LONG"
+                                else entry_price + sl_threshold
+                            )
+                            exit_side = "SELL" if direction == "LONG" else "COVER"
+                            LOGGER.warning(
+                                "[SL-FILL] Standing SL for %s %s confirmed FILLED @ $%.4f",
+                                direction, symbol, fill_price,
+                            )
+                            with self._lock:
+                                self.sl_order_ids.pop(symbol, None)
+                                self._sl_reject_count.pop(symbol, None)
+                                self.active_limit_stops[symbol] = True
+                            try:
+                                self.executor.cancel_all_orders()
+                            except Exception:
+                                pass
+                            self._record_fill(
+                                symbol=symbol, side=exit_side,
+                                qty=abs(qty), price=fill_price,
+                            )
+                            continue
+
+                        elif sl_state in {"CANCELED", "REJECTED"}:
+                            reject_count = self._sl_reject_count.get(symbol, 0) + 1
+                            with self._lock:
+                                self.sl_order_ids.pop(symbol, None)
+                                self._sl_reject_count[symbol] = reject_count
+
+                            sl_stop    = (entry_price - sl_threshold if direction == "LONG"
+                                          else entry_price + sl_threshold)
+                            current_px = self.live_prices.get(symbol, 0.0)
+                            stop_valid = (
+                                current_px <= 0 or
+                                (direction == "LONG"  and sl_stop < current_px) or
+                                (direction == "SHORT" and sl_stop > current_px)
+                            )
+                            if reject_count <= 1 and stop_valid:
+                                LOGGER.warning(
+                                    "[SL-WATCHDOG] SL %s for %s is %s (attempt %d) — re-placing once",
+                                    sl_order_id, symbol, sl_state, reject_count,
+                                )
+                                self._place_protective_sl(symbol)
+                            else:
+                                LOGGER.warning(
+                                    "[SL-WATCHDOG] SL %s for %s is %s (attempt %d, stop_valid=%s)"
+                                    " — switching to reactive monitoring",
+                                    sl_order_id, symbol, sl_state, reject_count, stop_valid,
+                                )
+                                # Fall through to reactive check below
+
+                    except Exception as exc:
+                        LOGGER.error(
+                            "[SL-WATCHDOG] Error polling SL %s for %s: %s",
+                            sl_order_id, symbol, exc,
+                        )
+
+            if pnl <= -sl_threshold and not self.sl_order_ids.get(symbol):
+                # Reactive fallback: no standing SL (or it exhausted retries).
                 side = "SELL" if direction == "LONG" else "COVER"
                 LOGGER.warning(
                     "[SL-REACTIVE] %s %s unrealized=%.5f <= -%.5f → limit %s at $%.4f",
@@ -1414,7 +1590,7 @@ class LiveTrader:
                 except Exception as exc:
                     LOGGER.error("[SL-REACTIVE] Submit failed for %s: %s", symbol, exc)
                     self.active_limit_stops.pop(symbol, None)
-                continue  # one exit order per symbol per iteration
+                continue
 
             # ── Layer 2: Trailing TP (reactive) ──────────────────────────────────
             # Trail not armed yet — nothing more to do this iteration.
@@ -1602,9 +1778,13 @@ class LiveTrader:
                     LOGGER.warning("[PI-DEBUG] No avg_fill_price for order %s. Raw status: %s", order_id, status)
                 # Record fill with confirmed actual price (or submitted price if status unavailable)
                 self._record_fill(symbol=symbol, side=side, qty=qty, price=actual_price)
+                if side in ("BUY", "SHORT"):
+                    self._place_protective_sl(symbol)
             else:
                 # dry_run or no order_id: record immediately (no real order on Schwab)
                 self._record_fill(symbol=symbol, side=side, qty=qty, price=price)
+                if side in ("BUY", "SHORT"):
+                    self._place_protective_sl(symbol)
         else:
             fill_status = "FAILED"
             # CHECK FOR BOXED POSITION ERROR
@@ -1699,6 +1879,8 @@ class LiveTrader:
              time.sleep(self.limit_poll_interval)
              LOGGER.info("[DRY-RUN] Limit order 'filled' after wait")
              self._record_fill(symbol=symbol, side=side, qty=qty, price=limit_price)
+             if side in ("BUY", "SHORT"):
+                 self._place_protective_sl(symbol)
              result["fill_status"] = "FILLED"
              result["filled_qty"] = qty
              self._record_order(
@@ -1753,6 +1935,8 @@ class LiveTrader:
                 # Use actual filled qty if available, otherwise assume full qty if status is FILLED
                 actual_fill = int(filled_qty) if filled_qty > 0 else qty
                 self._record_fill(symbol=symbol, side=side, qty=actual_fill, price=realized_price)
+                if side in ("BUY", "SHORT"):
+                    self._place_protective_sl(symbol)
                 result["fill_status"] = "FILLED"
                 result["filled_qty"] = actual_fill
 
