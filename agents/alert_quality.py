@@ -1,7 +1,7 @@
 """
 Alert Quality Analyst Agent
 Runs weekly on Sundays at 6 PM ET.
-Joins alerts with live_trades over the last 30 days to measure signal quality,
+Joins alerts with live_trades over the last 5 days to measure signal quality,
 then calls Claude for tuning recommendations.
 """
 
@@ -17,7 +17,7 @@ from agents.base import get_db, save_report, send_telegram, get_previous_reports
 
 LOGGER = logging.getLogger("agents.alert_quality")
 ET = pytz.timezone("America/New_York")
-LOOKBACK_DAYS = 30
+LOOKBACK_DAYS = 5
 MATCH_WINDOW_SECS = 5  # max seconds between alert and trade to be considered related
 
 
@@ -36,7 +36,7 @@ def collect_stats() -> dict:
         )
 
     if alerts.empty:
-        return {"error": "No alerts in the last 30 days"}
+        return {"error": f"No alerts in the last {LOOKBACK_DAYS} days"}
 
     # Match each alert to the nearest trade on same symbol within MATCH_WINDOW_SECS
     matched_rows = []

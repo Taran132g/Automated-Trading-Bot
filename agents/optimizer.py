@@ -1,7 +1,7 @@
 """
 Strategy Parameter Optimizer Agent
 Runs weekly on Sundays at 7 PM ET (after alert_quality has run).
-Analyzes 30 days of alerts + trades to surface parameter optimization opportunities.
+Analyzes 5 days of alerts + trades to surface parameter optimization opportunities.
 """
 
 import logging
@@ -15,7 +15,7 @@ from agents.base import get_db, save_report, send_telegram, get_previous_reports
 
 LOGGER = logging.getLogger("agents.optimizer")
 ET = pytz.timezone("America/New_York")
-LOOKBACK_DAYS = 30
+LOOKBACK_DAYS = 5
 MATCH_WINDOW_SECS = 5
 
 
@@ -33,7 +33,7 @@ def collect_stats() -> dict:
         )
 
     if trades.empty:
-        return {"error": "No trade data in the last 30 days"}
+        return {"error": f"No trade data in the last {LOOKBACK_DAYS} days"}
 
     trades["dt"] = pd.to_datetime(trades["timestamp"], unit="s", utc=True).dt.tz_convert("America/New_York")
     trades["hour"] = trades["dt"].dt.hour
