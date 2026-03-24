@@ -823,10 +823,12 @@ def on_book(msg: dict):
                 curr_min_venues = max(MIN_ASK_HEAVY, MIN_BID_HEAVY)
 
             curr_min_volume = STOCK_VOLUME_OVERRIDES.get(sym, MIN_VOLUME)
+            ratio = metrics.ask_to_bid_ratio if direction == "ask-heavy" else metrics.bid_to_ask_ratio
             if (imbalance_duration >= curr_min_duration and
                 metrics.valid_exchanges >= curr_min_venues and
-                vol_per_min >= curr_min_volume):
-                ratio = metrics.ask_to_bid_ratio if direction == "ask-heavy" else metrics.bid_to_ask_ratio
+                vol_per_min >= curr_min_volume and
+                ratio >= 3.0):
+
                 heavy_venues = metrics.ask_heavy_venues if direction == "ask-heavy" else metrics.bid_heavy_venues
                 target_limit_price = bid_price if direction == "bid-heavy" else ask_price
                 alert = {
