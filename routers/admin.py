@@ -149,9 +149,8 @@ def get_schwab_auth_url(_: dict = Depends(verify_token)):
         load_dotenv()
         import schwab
         client_id = os.getenv("SCHWAB_CLIENT_ID")
-        app_secret = os.getenv("SCHWAB_APP_SECRET")
         redirect_uri = os.getenv("SCHWAB_REDIRECT_URI")
-        ctx = schwab.auth.get_auth_context(client_id, app_secret, redirect_uri)
+        ctx = schwab.auth.get_auth_context(client_id, redirect_uri)
         _pending_auth_ctx = ctx
         return {"authorization_url": ctx.authorization_url}
     except Exception as e:
@@ -176,8 +175,12 @@ def save_schwab_tokens(req: SaveTokensRequest, _: dict = Depends(verify_token)):
         client_id = os.getenv("SCHWAB_CLIENT_ID")
         app_secret = os.getenv("SCHWAB_APP_SECRET")
         token_path = os.getenv("SCHWAB_TOKEN_PATH", str(SCHWAB_TOKEN_PATH))
+        import json as _json
+        def _write_token(token):
+            with open(token_path, 'w') as f:
+                _json.dump(token, f)
         schwab.auth.client_from_received_url(
-            req.callback_url, _pending_auth_ctx, client_id, app_secret, token_path
+            client_id, app_secret, _pending_auth_ctx, req.callback_url, _write_token
         )
         _pending_auth_ctx = None
         return {"success": True}
