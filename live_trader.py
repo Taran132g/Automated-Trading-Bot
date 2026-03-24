@@ -1373,9 +1373,12 @@ class LiveTrader:
             order_id = result.get("order_id")
             if order_id:
                 with self._lock:
-                    self.sl_order_ids[symbol]     = order_id
-                    self._sl_last_check[symbol]   = time.time()
-                    self._sl_reject_count[symbol] = 0
+                    self.sl_order_ids[symbol]   = order_id
+                    self._sl_last_check[symbol] = time.time()
+                    # Do NOT reset _sl_reject_count here — it must persist across
+                    # re-placements so the watchdog's max-1-retry limit holds.
+                    # It is reset only on fresh entry (call sites set it to 0 before
+                    # the first placement, and _apply_position_delta clears it on close).
                 LOGGER.info("[SL-PLACE] Standing SL order %s placed for %s", order_id, symbol)
             else:
                 LOGGER.warning(
@@ -1751,10 +1754,13 @@ class LiveTrader:
                     new_oid = result.get("order_id")
                     if new_oid:
                         with self._lock:
-                            self.tp_order_ids[symbol]         = new_oid
-                            self._tp_last_stop_price[symbol]  = desired_stop
-                            self._tp_last_check[symbol]       = time.time()
-                            self._tp_reject_count[symbol]     = 0
+                            self.tp_order_ids[symbol]        = new_oid
+                            self._tp_last_stop_price[symbol] = desired_stop
+                            self._tp_last_check[symbol]      = time.time()
+                            # Reset reject count only when trail moved (old_tp_id existed,
+                            # meaning this is a genuine trail-update, not a rejection retry).
+                            if old_tp_id:
+                                self._tp_reject_count[symbol] = 0
                         LOGGER.info(
                             "[TRAIL-TP] %s %s: TP stop-limit @ stop=$%.4f limit=$%.4f (order=%s)",
                             direction, symbol, desired_stop, desired_limit, new_oid,
@@ -1911,11 +1917,13 @@ class LiveTrader:
                 # Record fill with confirmed actual price (or submitted price if status unavailable)
                 self._record_fill(symbol=symbol, side=side, qty=qty, price=actual_price)
                 if side in ("BUY", "SHORT"):
+                    self._sl_reject_count[symbol] = 0  # fresh entry — reset retry counter
                     self._place_protective_sl(symbol)
             else:
                 # dry_run or no order_id: record immediately (no real order on Schwab)
                 self._record_fill(symbol=symbol, side=side, qty=qty, price=price)
                 if side in ("BUY", "SHORT"):
+                    self._sl_reject_count[symbol] = 0  # fresh entry — reset retry counter
                     self._place_protective_sl(symbol)
         else:
             fill_status = "FAILED"
@@ -2012,6 +2020,7 @@ class LiveTrader:
              LOGGER.info("[DRY-RUN] Limit order 'filled' after wait")
              self._record_fill(symbol=symbol, side=side, qty=qty, price=limit_price)
              if side in ("BUY", "SHORT"):
+                 self._sl_reject_count[symbol] = 0  # fresh entry — reset retry counter
                  self._place_protective_sl(symbol)
              result["fill_status"] = "FILLED"
              result["filled_qty"] = qty
@@ -2068,6 +2077,7 @@ class LiveTrader:
                 actual_fill = int(filled_qty) if filled_qty > 0 else qty
                 self._record_fill(symbol=symbol, side=side, qty=actual_fill, price=realized_price)
                 if side in ("BUY", "SHORT"):
+                    self._sl_reject_count[symbol] = 0  # fresh entry — reset retry counter
                     self._place_protective_sl(symbol)
                 result["fill_status"] = "FILLED"
                 result["filled_qty"] = actual_fill
