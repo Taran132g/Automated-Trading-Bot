@@ -1973,7 +1973,7 @@ class LiveTrader:
                       (direction == "bid-heavy" and current_position < 0)
 
             if not is_exit:
-                # Execution filter: only enter on aligned signals; log the rest
+                # Execution filter: log non-aligned signals but allow them through
                 if pattern_bucket in ("neutral", "countertrend"):
                     self._log_filtered_alert(
                         symbol=symbol, direction=direction, price=price,
@@ -1981,10 +1981,9 @@ class LiveTrader:
                         size_factor=size_factor, bull_score=bull_score, bear_score=bear_score,
                     )
                     LOGGER.info(
-                        "[%s] [FILTER] Skipping %s %s alert - bucket=%s (bias=%s, bull=%.2f, bear=%.2f)",
+                        "[%s] [UNALIGNED] Allowing %s %s alert - bucket=%s (bias=%s, bull=%.2f, bear=%.2f)",
                         self.name, direction, symbol, pattern_bucket, chart_bias, bull_score, bear_score,
                     )
-                    return
 
                 if decision == "skip":
                     LOGGER.info("[%s] [FILTER] Skipping %s %s alert due to pattern mismatch (bias=%s)",
