@@ -1598,7 +1598,7 @@ class LiveTrader:
                         side=side,
                         qty=abs(qty),
                         price=current_price,
-                        order_type="LIMIT",
+                        order_type="MARKET",
                     )
                 except Exception as exc:
                     LOGGER.error("[SL-REACTIVE] Submit failed for %s: %s", symbol, exc)
@@ -1654,7 +1654,7 @@ class LiveTrader:
                     self._submit_order(
                         alert_id=-1, symbol=symbol, direction="trailing-tp",
                         side=exit_side, qty=abs(qty), price=current_price,
-                        order_type="LIMIT",
+                        order_type="MARKET",
                     )
                 except Exception as exc:
                     LOGGER.error("[TRAIL-TP] Reactive exit failed for %s: %s", symbol, exc)
