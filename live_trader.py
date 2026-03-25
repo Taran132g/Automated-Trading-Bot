@@ -1273,62 +1273,20 @@ class LiveTrader:
             self.live_prices[symbol] = price
 
     def _check_profit_limits(self) -> None:
-        """Per-position exit logic running every 0.5 s on zero-latency WebSocket prices.
-
-        Layer 1 — Hard SL
-          Exit immediately (limit at current price) when unrealized loss >= sl_per_share.
-          The limit is submitted AT current_price, so it fills at the live bid/ask rather
-          than at a stale trigger level.  Works symmetrically for LONG (SELL) and SHORT
-          (COVER).
-
-        Layer 2 — Trailing TP
-          Activates once pnl >= trailing_activate_pps.  Tracks a per-symbol high-water
-          mark (lowest price for shorts).  When price retraces by trailing_trail_pps from
-          that peak, a limit exit is submitted AT the trail level.
-
-          For LONG:  trail fires when current_price <= high_water - trail_amount
-                     → SELL limit at trail_level
-          For SHORT: trail fires when current_price >= low_water  + trail_amount
-                     → COVER limit at trail_level
-
-          Both cases submit the limit AT the trail trigger price, which is at or very near
-          current market, so the order fills immediately.  This is NOT placing a limit
-          below/above the current price as a standing order — it is submitted only when
-          price has already reached the exit level.
-
-        Layer 0 — Time Stop
-          Unconditional market exit once a position has been held for >= time_stop_seconds.
-          Fires regardless of PnL direction.  No limit order — straight MARKET so the
-          position is guaranteed flat.
-
-        Config keys (config_manager):
-          time_stop_seconds     default 180    (exit any position held >= 3 minutes)
-          sl_per_share          default 0.008  ($0.008 / share hard stop)
-          trailing_activate_pps default 0.012  (activate trailing after +$0.012 / share)
-          trailing_trail_pps    default 0.008  (trail by $0.008 from peak)
-        """
+        """Time stop only — SL and TP disabled, exits otherwise on flipped signals."""
         if not self.positions:
             return
 
         cfg = config_manager.load_config()
-        time_stop_secs = float(cfg.get("time_stop_seconds",     180))
-        sl_threshold   = float(cfg.get("sl_per_share",          0.008))
-        trail_activate = float(cfg.get("trailing_activate_pps", 0.012))
-        trail_amount   = float(cfg.get("trailing_trail_pps",    0.008))
+        time_stop_secs = float(cfg.get("time_stop_seconds", 180))
 
         with self._lock:
             current_positions = dict(self.positions)
 
         for symbol, qty in current_positions.items():
             if qty == 0:
-                # Shouldn't normally appear (positions are removed on close), but clean up
-                # if stale state somehow remains.
-                self.trailing_activated.pop(symbol, None)
-                self.trailing_high_water.pop(symbol, None)
-                self.active_limit_stops.pop(symbol, None)
                 continue
 
-            # Skip while an exit order for this symbol is already in flight.
             if self.active_limit_stops.get(symbol):
                 continue
 
@@ -1336,7 +1294,6 @@ class LiveTrader:
             if entry_price <= 0:
                 continue
 
-            # Use zero-latency WebSocket price exclusively — REST API adds 3-5 s lag.
             current_price = self.live_prices.get(symbol, 0.0)
             if current_price <= 0:
                 continue
@@ -1356,107 +1313,21 @@ class LiveTrader:
                 self.active_limit_stops[symbol] = True
                 try:
                     self._submit_order(
-                        alert_id=-1,
-                        symbol=symbol,
-                        direction="time-stop",
-                        side=side,
-                        qty=abs(qty),
-                        price=current_price,
-                        order_type="MARKET",
+                        alert_id=-1, symbol=symbol, direction="time-stop",
+                        side=side, qty=abs(qty), price=current_price, order_type="MARKET",
                     )
                 except Exception as exc:
                     LOGGER.error("[TIME-STOP] Submit failed for %s: %s", symbol, exc)
                     self.active_limit_stops.pop(symbol, None)
-                continue  # one exit per symbol per iteration
-
-            # ── Update high-water mark ────────────────────────────────────────────
-            with self._lock:
-                if direction == "LONG":
-                    hw = self.trailing_high_water.get(symbol, entry_price)
-                    if current_price > hw:
-                        self.trailing_high_water[symbol] = current_price
-                        hw = current_price
-                else:  # SHORT: track lowest price (most favourable)
-                    hw = self.trailing_high_water.get(symbol, entry_price)
-                    if current_price < hw:
-                        self.trailing_high_water[symbol] = current_price
-                        hw = current_price
-
-            hw_pnl = abs(hw - entry_price)
-
-            # ── Layer 1: Hard SL ─────────────────────────────────────────────────
-            # Reactive: fire MARKET exit when unrealized loss >= sl_threshold.
-            if pnl <= -sl_threshold:
-                side = "SELL" if direction == "LONG" else "COVER"
-                LOGGER.warning(
-                    "[SL] %s %s pnl=%.5f <= -%.5f → MARKET %s",
-                    direction, symbol, pnl, sl_threshold, side,
-                )
-                try:
-                    self.executor.cancel_all_orders()
-                except Exception:
-                    pass
-                self.active_limit_stops[symbol] = True
-                try:
-                    self._submit_order(
-                        alert_id=-1,
-                        symbol=symbol,
-                        direction="hard-sl",
-                        side=side,
-                        qty=abs(qty),
-                        price=current_price,
-                        order_type="MARKET",
-                    )
-                except Exception as exc:
-                    LOGGER.error("[SL] Submit failed for %s: %s", symbol, exc)
-                    self.active_limit_stops.pop(symbol, None)
                 continue
 
-            # ── Layer 2: Trailing TP ─────────────────────────────────────────────
-            # Trail not armed yet — nothing more to do this iteration.
-            if hw_pnl < trail_activate:
-                continue
+        # ── Layer 1: Hard SL (disabled) ───────────────────────────────────────
+        # if pnl <= -sl_threshold:
+        #     ...
 
-            # Log first activation.
-            if not self.trailing_activated.get(symbol):
-                self.trailing_activated[symbol] = True
-                LOGGER.info(
-                    "[TRAIL] Armed for %s %s: hw=$%.4f locked=+%.5f",
-                    direction, symbol, hw, hw_pnl,
-                )
-
-            # Compute desired trail level.
-            if direction == "LONG":
-                desired_stop  = round(hw - trail_amount,         4)
-                desired_limit = round(hw - trail_amount - 0.001, 4)
-                exit_side = "SELL"
-            else:
-                desired_stop  = round(hw + trail_amount,         4)
-                desired_limit = round(hw + trail_amount + 0.001, 4)
-                exit_side = "COVER"
-
-            # ── Price at/past trail level → MARKET exit ───────────────────────
-            if (direction == "LONG"  and current_price <= desired_stop) or \
-               (direction == "SHORT" and current_price >= desired_stop):
-                LOGGER.info(
-                    "[TRAIL-TP] %s %s price $%.4f reached trail $%.4f → MARKET %s",
-                    direction, symbol, current_price, desired_stop, exit_side,
-                )
-                try:
-                    self.executor.cancel_all_orders()
-                except Exception:
-                    pass
-                self.active_limit_stops[symbol] = True
-                try:
-                    self._submit_order(
-                        alert_id=-1, symbol=symbol, direction="trailing-tp",
-                        side=exit_side, qty=abs(qty), price=current_price,
-                        order_type="MARKET",
-                    )
-                except Exception as exc:
-                    LOGGER.error("[TRAIL-TP] Submit failed for %s: %s", symbol, exc)
-                    self.active_limit_stops.pop(symbol, None)
-                continue
+        # ── Layer 2: Trailing TP (disabled) ──────────────────────────────────
+        # if hw_pnl >= trail_activate:
+        #     ...
 
     # ------------------------------------------------------------------
     # Order + alert processing
