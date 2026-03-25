@@ -50,6 +50,9 @@ class PaperTrader:
         self.daily_pnl = 0.0
         self.daily_date = time.strftime("%Y-%m-%d")
 
+        # === Exit cooldown (mirrors live trader: 30s after any close) ===
+        self.last_exit_time: dict = {}
+
         atexit.register(self.save_state)
 
     # ============================================================
@@ -329,21 +332,38 @@ class PaperTrader:
 
         pos = self.positions.get(symbol, {})
         current_qty = pos.get("qty", 0)
+        cooldown_seconds = 30.0
 
-        # ASK-HEAVY → SHORT
+        # ASK-HEAVY → exit long OR enter short (not both on same alert)
         if direction == "ask-heavy":
-            if current_qty > 0:  # flip long → short
+            if current_qty > 0:  # close long, then wait for next alert to enter short
                 self._execute_order(symbol, -current_qty, price, "SELL", size_factor=size_factor)
-                self._execute_order(symbol, -current_short_size, price, "SHORT", size_factor=size_factor)
-            elif current_qty == 0:  # open new short
+                self.last_exit_time[symbol] = time.time()
+                return
+            elif current_qty < 0:  # already short, skip
+                pass
+            else:  # flat — check cooldown before entering short
+                last_exit = self.last_exit_time.get(symbol, 0)
+                if time.time() - last_exit < cooldown_seconds:
+                    remaining = cooldown_seconds - (time.time() - last_exit)
+                    print(f"[{self.name.upper()}] Cooldown active for {symbol} ({remaining:.1f}s remaining); skipping Short entry", flush=True)
+                    return
                 self._execute_order(symbol, -current_short_size, price, "SHORT", size_factor=size_factor)
 
-        # BID-HEAVY → LONG
+        # BID-HEAVY → exit short OR enter long (not both on same alert)
         elif direction == "bid-heavy":
-            if current_qty < 0:  # flip short → long
+            if current_qty < 0:  # close short, then wait for next alert to enter long
                 self._execute_order(symbol, abs(current_qty), price, "COVER", size_factor=size_factor)
-                self._execute_order(symbol, current_position_size, price, "BUY", size_factor=size_factor)
-            elif current_qty == 0:  # open new long
+                self.last_exit_time[symbol] = time.time()
+                return
+            elif current_qty > 0:  # already long, skip
+                pass
+            else:  # flat — check cooldown before entering long
+                last_exit = self.last_exit_time.get(symbol, 0)
+                if time.time() - last_exit < cooldown_seconds:
+                    remaining = cooldown_seconds - (time.time() - last_exit)
+                    print(f"[{self.name.upper()}] Cooldown active for {symbol} ({remaining:.1f}s remaining); skipping Long entry", flush=True)
+                    return
                 self._execute_order(symbol, current_position_size, price, "BUY", size_factor=size_factor)
 
         # Update current price and PnL even when no trade is executed
