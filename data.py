@@ -46,7 +46,7 @@ class PatternIntegrationConfig:
     breakout_size_factor: float = 1.50   # aligned + breakout confirmed
     aligned_size_factor: float = 1.25    # aligned, no breakout yet
     neutral_size_factor: float = 1.00
-    countertrend_size_factor: float = 1.00
+    countertrend_size_factor: float = 0.75
 
     aligned_hold_seconds: int = 600
     neutral_hold_seconds: int = 420
@@ -58,6 +58,9 @@ class PatternIntegrationConfig:
 
     # Optional confidence gating
     min_pattern_count_for_bias: int = 1
+
+    # Backtest signal lookback window (how many bars back a pattern can end and still count)
+    backtest_signal_lookback: int = 120
 
 
 # ============================================================================
@@ -160,8 +163,7 @@ class PatternContextManager:
         if is_backtest:
             all_signals = self.detector.detect(df)
             last_idx = len(df) - 1
-            # In backtest, be very forgiving (2 hours of context)
-            signals = [s for s in all_signals if s.end_idx >= last_idx - 120]
+            signals = [s for s in all_signals if s.end_idx >= last_idx - self.cfg.backtest_signal_lookback]
         else:
             signals = self.detector.latest(df)
             
