@@ -937,7 +937,7 @@ class LiveTrader:
                         return float(quote[key])
         return float(fallback)
 
-    def _log_live_trade(self, *, symbol: str, side: str, qty: int, price: float, entry_price: float, pnl: float) -> None:
+    def _log_live_trade(self, *, symbol: str, side: str, qty: int, price: float, entry_price: float, pnl: float, pattern_bucket: str = "neutral") -> None:
         """Log live trade to database for comparison with paper trades."""
         LOGGER.info(
             "[LIVE] %s %s %s @ $%.4f | Entry: $%.4f | PnL: $%.2f | Daily PnL: $%.2f",
@@ -947,10 +947,10 @@ class LiveTrader:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO live_trades (timestamp, symbol, side, qty, price, entry_price, pnl)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO live_trades (timestamp, symbol, side, qty, price, entry_price, pnl, pattern_bucket)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (time.time(), symbol, side, qty, price, entry_price, pnl)
+                (time.time(), symbol, side, qty, price, entry_price, pnl, pattern_bucket)
             )
             conn.commit()
 
@@ -1180,7 +1180,8 @@ class LiveTrader:
                 self._intraday_qty[symbol] = self._intraday_qty.get(symbol, 0) + qty
             
             # Log trade to database
-            self._log_live_trade(symbol=symbol, side=side, qty=qty, price=price, entry_price=entry_price, pnl=pnl)
+            self._log_live_trade(symbol=symbol, side=side, qty=qty, price=price, entry_price=entry_price, pnl=pnl,
+                                 pattern_bucket=self.pattern_buckets.get(symbol, "neutral"))
             
             delta = qty if side in {"BUY", "COVER"} else -qty
             self._apply_position_delta(symbol, delta)
