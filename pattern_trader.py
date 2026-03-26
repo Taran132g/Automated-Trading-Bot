@@ -76,16 +76,32 @@ class PatternPosition:
 # ── Trader ────────────────────────────────────────────────────────────────────
 
 class PatternTrader:
-    """Bar-driven pattern strategy (paper simulation).
+    """Bar-driven pattern strategy.
 
     Call ``on_new_bar(symbol, bar)`` on every completed 1-minute bar.
     The trader manages its own OHLCV store, runs detection, and handles all exits.
+
+    Args:
+        mode: ``"live"`` — fires real Schwab market orders when executor is attached.
+              ``"paper"`` — paper simulation only (no real orders).
+              Controls which config size key is read and which DB tables are used.
     """
 
-    DB_PATH    = "penny_basing.db"
-    STATE_FILE = "pattern_trader_state.json"
+    DB_PATH = "penny_basing.db"
 
-    def __init__(self) -> None:
+    def __init__(self, mode: str = "paper") -> None:
+        self.mode = mode  # "live" or "paper"
+
+        # Per-mode table and state file names
+        if mode == "live":
+            self._trade_table  = "pattern_trades"
+            self._pos_table    = "pattern_positions"
+            self._state_file   = "pattern_trader_state.json"
+        else:
+            self._trade_table  = "pattern_trades_paper"
+            self._pos_table    = "pattern_positions_paper"
+            self._state_file   = "pattern_trader_paper_state.json"
+
         self._lock = threading.Lock()
         self._bars: Dict[str, List[dict]] = {}
         self._positions: Dict[str, PatternPosition] = {}
@@ -93,7 +109,7 @@ class PatternTrader:
         self._intraday_pnls: Dict[str, List[float]] = {}
         self._daily_pnl: float = 0.0
         self._daily_date: str = time.strftime("%Y-%m-%d")
-        self._last_price: Dict[str, float] = {}   # latest price per symbol
+        self._last_price: Dict[str, float] = {}   # latest price per symbol (from stream)
         self._executor: Optional[Any] = None       # SchwabOrderExecutor, if live
         self._stop_poll = threading.Event()
         self._detector = ChartPatternDetector()
@@ -101,7 +117,7 @@ class PatternTrader:
         self._load_state()
         self._start_poll_thread()
         atexit.register(self._shutdown)
-        LOGGER.info("[PatternTrader] Initialized (polling every %.1fs)", POLL_INTERVAL)
+        LOGGER.info("[PatternTrader:%s] Initialized (polling every %.1fs)", mode, POLL_INTERVAL)
 
     # ── DB setup ──────────────────────────────────────────────────────────────
 
@@ -111,9 +127,11 @@ class PatternTrader:
         return conn
 
     def _init_db(self) -> None:
+        t = self._trade_table
+        p = self._pos_table
         with closing(self._open_conn()) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS pattern_trades (
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {t} (
                     id          INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp   REAL,
                     symbol      TEXT,
@@ -126,8 +144,8 @@ class PatternTrader:
                     exit_reason TEXT
                 )
             """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS pattern_positions (
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {p} (
                     symbol          TEXT PRIMARY KEY,
                     qty             INTEGER,
                     direction       INTEGER,
@@ -147,7 +165,7 @@ class PatternTrader:
             """)
             # Migrate existing table if atr_stop column is missing
             try:
-                conn.execute("ALTER TABLE pattern_positions ADD COLUMN atr_stop REAL DEFAULT 0.0")
+                conn.execute(f"ALTER TABLE {p} ADD COLUMN atr_stop REAL DEFAULT 0.0")
             except Exception:
                 pass  # Column already exists
             conn.commit()
@@ -156,7 +174,7 @@ class PatternTrader:
 
     def _load_state(self) -> None:
         try:
-            p = Path(self.STATE_FILE)
+            p = Path(self._state_file)
             if p.exists():
                 data = json.loads(p.read_text())
                 self._daily_pnl  = float(data.get("daily_pnl", 0.0))
@@ -164,7 +182,7 @@ class PatternTrader:
                 for sym, pnls in data.get("intraday_pnls", {}).items():
                     self._intraday_pnls[sym] = [float(v) for v in pnls]
         except Exception as exc:
-            LOGGER.warning("[PatternTrader] Failed to load state: %s", exc)
+            LOGGER.warning("[PatternTrader:%s] Failed to load state: %s", self.mode, exc)
 
     def _save_state(self) -> None:
         try:
@@ -173,9 +191,9 @@ class PatternTrader:
                 "daily_date":   self._daily_date,
                 "intraday_pnls": {k: v for k, v in self._intraday_pnls.items()},
             }
-            Path(self.STATE_FILE).write_text(json.dumps(state, indent=2))
+            Path(self._state_file).write_text(json.dumps(state, indent=2))
         except Exception as exc:
-            LOGGER.warning("[PatternTrader] Failed to save state: %s", exc)
+            LOGGER.warning("[PatternTrader:%s] Failed to save state: %s", self.mode, exc)
 
     def _reset_daily_if_needed(self) -> None:
         today = time.strftime("%Y-%m-%d")
@@ -198,8 +216,17 @@ class PatternTrader:
         LiveTrader's executor is available.
         """
         self._executor = executor
-        mode = "DRY-RUN" if getattr(executor, "dry_run", True) else "LIVE"
-        LOGGER.info("[PatternTrader] Executor attached — mode=%s", mode)
+        order_mode = "DRY-RUN" if getattr(executor, "dry_run", True) else "LIVE"
+        LOGGER.info("[PatternTrader:%s] Executor attached — mode=%s", self.mode, order_mode)
+
+    def update_live_price(self, symbol: str, price: float) -> None:
+        """Called by grok.py on every L1 tick to cache the latest stream price.
+
+        This eliminates HTTP fetch_quote() calls in the poll thread — the stream
+        price is always more current and has zero network latency.
+        """
+        if price > 0:
+            self._last_price[symbol] = price
 
     # ── 0.5-second exit polling ────────────────────────────────────────────────
 
@@ -234,9 +261,15 @@ class PatternTrader:
     def _fetch_live_price(self, symbol: str) -> Optional[float]:
         """Return the latest price for *symbol*.
 
-        Live mode: fetches from Schwab via executor.fetch_quote().
-        Paper mode: returns the last known bar close price.
+        Prefers the stream-cached price (set by update_live_price on every L1 tick)
+        which has zero network latency. Falls back to HTTP fetch_quote() only on
+        cold start before any stream data has arrived.
         """
+        # Stream cache is always fresher and has zero latency — use it first
+        cached = self._last_price.get(symbol)
+        if cached and cached > 0:
+            return cached
+        # Cold-start fallback: no stream data yet, try HTTP
         if self._executor is not None:
             try:
                 quote = self._executor.fetch_quote(symbol)
@@ -247,10 +280,12 @@ class PatternTrader:
                         or quote.get("last")
                     )
                     if price:
-                        return float(price)
+                        val = float(price)
+                        self._last_price[symbol] = val
+                        return val
             except Exception as exc:
-                LOGGER.debug("[PatternTrader] fetch_quote error %s: %s", symbol, exc)
-        return self._last_price.get(symbol)
+                LOGGER.debug("[PatternTrader:%s] fetch_quote error %s: %s", self.mode, symbol, exc)
+        return None
 
     # ── Main entry point ───────────────────────────────────────────────────────
 
@@ -333,7 +368,8 @@ class PatternTrader:
         cfg                  = config_manager.load_config()
         min_conf             = float(cfg.get("pattern_min_confidence", 0.60))
         hold_secs            = int(cfg.get("pattern_hold_seconds", DEFAULT_HOLD_SECS))
-        base_qty             = int(cfg.get("pattern_position_size", 100))
+        size_key             = f"pattern_{self.mode}_position_size"
+        base_qty             = int(cfg.get(size_key, cfg.get("pattern_position_size", 100)))
         atr_period           = int(cfg.get("pattern_atr_period", 14))
         atr_entry_max_pct    = float(cfg.get("pattern_atr_entry_max_pct", 0.005))
         atr_stop_multiplier  = float(cfg.get("pattern_atr_stop_multiplier", 1.5))
@@ -592,10 +628,11 @@ class PatternTrader:
         self, symbol: str, lookback_days: int
     ) -> Tuple[Optional[float], Optional[float]]:
         cutoff = time.time() - lookback_days * 86_400
+        t = self._trade_table
         try:
             with closing(self._open_conn()) as conn:
                 rows = conn.execute(
-                    "SELECT pnl FROM pattern_trades "
+                    f"SELECT pnl FROM {t} "
                     "WHERE symbol=? AND side IN ('SELL','COVER') "
                     "AND timestamp>=? AND pnl IS NOT NULL",
                     (symbol, cutoff),
@@ -603,7 +640,7 @@ class PatternTrader:
                 pnls = [float(r[0]) for r in rows if r[0] not in (None, 0.0)]
                 if not pnls:
                     rows = conn.execute(
-                        "SELECT pnl FROM pattern_trades "
+                        f"SELECT pnl FROM {t} "
                         "WHERE side IN ('SELL','COVER') AND timestamp>=? AND pnl IS NOT NULL",
                         (cutoff,),
                     ).fetchall()
@@ -636,7 +673,7 @@ class PatternTrader:
         try:
             with closing(self._open_conn()) as conn:
                 conn.execute(
-                    "INSERT INTO pattern_trades "
+                    f"INSERT INTO {self._trade_table} "
                     "(timestamp,symbol,side,qty,price,entry_price,pnl,pattern,exit_reason) "
                     "VALUES (?,?,?,?,?,?,?,?,?)",
                     (time.time(), symbol, side, qty, price,
@@ -644,13 +681,13 @@ class PatternTrader:
                 )
                 conn.commit()
         except Exception as exc:
-            LOGGER.error("[PatternTrader] DB write error: %s", exc)
+            LOGGER.error("[PatternTrader:%s] DB write error: %s", self.mode, exc)
 
     def _persist_position(self, pos: PatternPosition) -> None:
         try:
             with closing(self._open_conn()) as conn:
                 conn.execute(
-                    """INSERT INTO pattern_positions
+                    f"""INSERT INTO {self._pos_table}
                        (symbol, qty, direction, entry_price, entry_time, pattern,
                         target_level, stop_level, atr_stop, breakout_level, hold_seconds,
                         trailing_active, trailing_stop, partial_taken, best_price)
@@ -686,7 +723,7 @@ class PatternTrader:
     def _remove_db_position(self, symbol: str) -> None:
         try:
             with closing(self._open_conn()) as conn:
-                conn.execute("DELETE FROM pattern_positions WHERE symbol=?", (symbol,))
+                conn.execute(f"DELETE FROM {self._pos_table} WHERE symbol=?", (symbol,))
                 conn.commit()
         except Exception as exc:
-            LOGGER.error("[PatternTrader] Position remove error: %s", exc)
+            LOGGER.error("[PatternTrader:%s] Position remove error: %s", self.mode, exc)

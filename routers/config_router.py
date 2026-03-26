@@ -30,7 +30,8 @@ class TradingConfig(BaseModel):
 
 class PatternConfig(BaseModel):
     pattern_symbols: str = ""
-    pattern_position_size: int = 100
+    pattern_live_position_size: int = 100
+    pattern_paper_position_size: int = 1000
     pattern_kelly_enabled: bool = True
     pattern_kelly_fraction: float = 0.5
     pattern_kelly_min_trades: int = 10

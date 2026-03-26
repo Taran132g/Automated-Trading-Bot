@@ -320,7 +320,8 @@ export function AdminPage() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
               {[
                 { key: 'pattern_symbols', label: 'Pattern Symbols', type: 'text' },
-                { key: 'pattern_position_size', label: 'Position Size', type: 'number' },
+                { key: 'pattern_live_position_size', label: 'Live Position Size', type: 'number' },
+                { key: 'pattern_paper_position_size', label: 'Paper Position Size', type: 'number' },
               ].map(({ key, label, type }) => (
                 <div key={key}>
                   <label style={{ fontSize: '0.7rem', color: '#94A3B8', display: 'block', marginBottom: 5 }}>{label}</label>
