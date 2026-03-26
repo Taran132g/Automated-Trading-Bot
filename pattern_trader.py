@@ -369,7 +369,7 @@ class PatternTrader:
 
         cfg                  = config_manager.load_config()
         min_conf             = float(cfg.get("pattern_min_confidence", 0.60))
-        hold_secs            = int(cfg.get("pattern_hold_seconds", DEFAULT_HOLD_SECS))
+        max_hold_secs        = int(cfg.get("pattern_hold_seconds", DEFAULT_HOLD_SECS))
         size_key             = f"pattern_{self.mode}_position_size"
         base_qty             = int(cfg.get(size_key, cfg.get("pattern_position_size", 100)))
         atr_period           = int(cfg.get("pattern_atr_period", 14))
@@ -409,6 +409,15 @@ class PatternTrader:
         direction = +1 if sig.direction == "bullish" else -1
         atr_stop  = close - direction * atr_stop_multiplier * atr  # fixed at entry
         qty       = max(1, int(base_qty * self._kelly_size_multiplier(symbol)))
+
+        # Derive hold time from pattern width: a breakout should resolve in roughly
+        # the same time the pattern took to form. Clamped to [5 min, max_hold_secs].
+        pattern_bars = max(1, sig.end_idx - sig.start_idx)
+        hold_secs    = max(300, min(pattern_bars * 60, max_hold_secs))
+        LOGGER.info(
+            "[PatternTrader:%s] %s pattern_bars=%d → hold=%ds (cap=%ds)",
+            self.mode, symbol, pattern_bars, hold_secs, max_hold_secs,
+        )
         self._enter(symbol, sig, close, direction, qty, hold_secs, atr_stop)
 
     def _enter(
