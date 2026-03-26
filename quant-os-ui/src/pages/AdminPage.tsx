@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SectionHeader } from '@/components/ui/SectionHeader'
-import { adminService, configService } from '@/services/api'
+import { adminService, configService, patternConfigService } from '@/services/api'
 
 function ConfirmButton({ label, onConfirm, danger = false }: { label: string; onConfirm: () => void; danger?: boolean }) {
   const [confirming, setConfirming] = useState(false)
@@ -57,6 +57,7 @@ export function AdminPage() {
   const [authUrlData, setAuthUrlData] = useState<string | null>(null)
   const [callbackUrl, setCallbackUrl] = useState('')
   const [configForm, setConfigForm] = useState<ConfigForm | null>(null)
+  const [patternForm, setPatternForm] = useState<ConfigForm | null>(null)
   const [actionResult, setActionResult] = useState<string | null>(null)
 
   const { data: status, refetch: refetchStatus } = useQuery({
@@ -70,9 +71,18 @@ export function AdminPage() {
     queryFn: () => configService.get().then((r) => r.data),
   })
 
+  const { data: patternCfg } = useQuery({
+    queryKey: ['config-pattern'],
+    queryFn: () => patternConfigService.get().then((r) => r.data),
+  })
+
   useEffect(() => {
     if (cfg && !configForm) setConfigForm(cfg as Record<string, string | number>)
   }, [cfg, configForm])
+
+  useEffect(() => {
+    if (patternCfg && !patternForm) setPatternForm(patternCfg as Record<string, string | number>)
+  }, [patternCfg, patternForm])
 
   const startMut = useMutation({ mutationFn: adminService.start, onSuccess: () => { refetchStatus(); setActionResult('Backend started') } })
   const stopMut = useMutation({ mutationFn: adminService.stop, onSuccess: () => { refetchStatus(); setActionResult('Backend stopped') } })
@@ -81,6 +91,7 @@ export function AdminPage() {
   const authUrlMut = useMutation({ mutationFn: adminService.getSchwabAuthUrl, onSuccess: (r) => setAuthUrlData(r.data.authorization_url) })
   const saveTokensMut = useMutation({ mutationFn: (url: string) => adminService.saveSchwabTokens(url), onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin-status-page'] }); setActionResult('Tokens saved') } })
   const configMut = useMutation({ mutationFn: (d: ConfigForm) => configService.update(d), onSuccess: () => setActionResult('Config saved') })
+  const patternConfigMut = useMutation({ mutationFn: (d: ConfigForm) => patternConfigService.update(d), onSuccess: () => setActionResult('Pattern config saved') })
 
   const backendOnline = status?.loop_running || status?.trader_running
 
@@ -296,6 +307,100 @@ export function AdminPage() {
             color: '#0B0E14', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700,
           }}>
             💾 Save Configuration
+          </button>
+        )}
+      </div>
+
+      {/* Pattern Strategy config */}
+      <div style={{ background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
+        <SectionHeader>Pattern Strategy</SectionHeader>
+        {patternForm && (
+          <>
+            {/* Base config */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+              {[
+                { key: 'pattern_symbols', label: 'Pattern Symbols', type: 'text' },
+                { key: 'pattern_position_size', label: 'Position Size', type: 'number' },
+              ].map(({ key, label, type }) => (
+                <div key={key}>
+                  <label style={{ fontSize: '0.7rem', color: '#94A3B8', display: 'block', marginBottom: 5 }}>{label}</label>
+                  <input
+                    type={type}
+                    value={patternForm[key] as string ?? ''}
+                    onChange={(e) => setPatternForm({ ...patternForm, [key]: type === 'number' ? Number(e.target.value) : e.target.value })}
+                    style={{
+                      width: '100%', background: '#0B0E14', border: '1px solid #1F2937', borderRadius: 6,
+                      padding: '8px 10px', color: '#E2E8F0', fontSize: '0.82rem', fontFamily: 'Roboto Mono',
+                      outline: 'none', boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+
+            {/* Pattern Kelly (no PI) */}
+            <div style={{ marginTop: 20, paddingTop: 16, borderTop: '1px solid #1F2937' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                  Kelly Criterion Sizing
+                </span>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                  <div
+                    onClick={() => setPatternForm({ ...patternForm, pattern_kelly_enabled: !patternForm.pattern_kelly_enabled })}
+                    style={{
+                      width: 36, height: 20, borderRadius: 10, position: 'relative', cursor: 'pointer',
+                      background: patternForm.pattern_kelly_enabled ? '#00FF99' : '#374151',
+                      transition: 'background 0.2s',
+                    }}
+                  >
+                    <div style={{
+                      position: 'absolute', top: 3, left: patternForm.pattern_kelly_enabled ? 18 : 3,
+                      width: 14, height: 14, borderRadius: '50%', background: '#0B0E14',
+                      transition: 'left 0.2s',
+                    }} />
+                  </div>
+                  <span style={{ fontSize: '0.72rem', color: patternForm.pattern_kelly_enabled ? '#00FF99' : '#64748B' }}>
+                    {patternForm.pattern_kelly_enabled ? 'Enabled' : 'Disabled'}
+                  </span>
+                </label>
+              </div>
+              <div style={{ fontSize: '0.7rem', color: '#64748B', marginBottom: 12 }}>
+                Scales entry size by historical win rate and reward/risk. No PI adjustment — optimized independently from scalping.
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 12 }}>
+                {[
+                  { key: 'pattern_kelly_fraction',      label: 'Kelly Fraction',   min: 0.1, max: 1.0,  step: 0.05, hint: '0.5 = half-Kelly (recommended)' },
+                  { key: 'pattern_kelly_min_trades',    label: 'Min Trades',       min: 5,   max: 200,  step: 5,    hint: 'Per-symbol trades before using symbol Kelly' },
+                  { key: 'pattern_kelly_lookback_days', label: 'Lookback Days',    min: 1,   max: 365,  step: 1,    hint: 'Days of history to include' },
+                  { key: 'pattern_kelly_min_multiplier',label: 'Min Multiplier',   min: 0.05,max: 1.0,  step: 0.05, hint: 'Floor size multiplier' },
+                  { key: 'pattern_kelly_max_multiplier',label: 'Max Multiplier',   min: 1.0, max: 5.0,  step: 0.25, hint: 'Cap size multiplier' },
+                ].map(({ key, label, min, max, step, hint }) => (
+                  <div key={key}>
+                    <label style={{ fontSize: '0.7rem', color: '#94A3B8', display: 'block', marginBottom: 5 }} title={hint}>{label}</label>
+                    <input
+                      type="number"
+                      min={min} max={max} step={step}
+                      value={patternForm[key] as number ?? ''}
+                      onChange={(e) => setPatternForm({ ...patternForm, [key]: Number(e.target.value) })}
+                      style={{
+                        width: '100%', background: '#0B0E14', border: '1px solid #1F2937', borderRadius: 6,
+                        padding: '8px 10px', color: '#E2E8F0', fontSize: '0.82rem', fontFamily: 'Roboto Mono',
+                        outline: 'none', boxSizing: 'border-box',
+                      }}
+                    />
+                    <div style={{ fontSize: '0.62rem', color: '#475569', marginTop: 3 }}>{hint}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+        {patternForm && (
+          <button onClick={() => patternConfigMut.mutate(patternForm)} style={{
+            marginTop: 16, padding: '9px 20px', background: '#00FF99', border: 'none', borderRadius: 6,
+            color: '#0B0E14', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700,
+          }}>
+            💾 Save Pattern Config
           </button>
         )}
       </div>

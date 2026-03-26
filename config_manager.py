@@ -26,6 +26,15 @@ DEFAULT_CONFIG = {
     # PI-adjusted Kelly: scales multiplier by intraday PnL/share vs neutral
     "pi_neutral": 0.001,          # Neutral PnL/share ($0.001 = breakeven execution quality)
     "pi_kelly_weight": 0.5,       # How aggressively PI shifts the Kelly multiplier (log-scale)
+    # Pattern strategy (separate symbol list, position size, and plain Kelly — no PI)
+    "pattern_symbols": os.getenv("PATTERN_SYMBOLS", ""),
+    "pattern_position_size": int(os.getenv("PATTERN_POSITION_SIZE", "100")),
+    "pattern_kelly_enabled": True,
+    "pattern_kelly_fraction": 0.5,
+    "pattern_kelly_min_trades": 10,
+    "pattern_kelly_lookback_days": 30,
+    "pattern_kelly_min_multiplier": 0.25,
+    "pattern_kelly_max_multiplier": 2.0,
 }
 
 def load_config() -> Dict[str, Any]:
