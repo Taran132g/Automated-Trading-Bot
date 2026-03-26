@@ -1183,6 +1183,7 @@ async def main():
         queue: asyncio.Queue = asyncio.Queue(maxsize=_get_int_env("INLINE_TRADER_QUEUE", 100, 10))
         worker_count = _get_int_env("INLINE_TRADER_WORKERS", 1, 1)
         inline_queue_drops = 0
+        _inline_base_qty = config_manager.load_config().get("paper_position_size" if inline_dry_run else "live_position_size", 100)
 
         async def _inline_worker() -> None:
             while True:
@@ -1191,15 +1192,15 @@ async def main():
                     lag = time() - enqueued_at
                     if lag > 0.5:
                         log_structured("INLINE_TRADER_LAG", {"alert_id": alert_id, "lag_sec": round(lag, 3)})
-                    
+
                     if not traders:
                         log_structured("INLINE_DISPATCH", {"alert_id": alert_id, "message": "No in-process traders to notify"})
                         continue
-                        
+
                     # 1. Pattern Enrichment (Now before dispatch)
                     enriched = None
                     if 'PIPELINE' in globals() and PIPELINE:
-                        enriched = PIPELINE.on_l2_alert(alert, base_qty=_paper_size)
+                        enriched = PIPELINE.on_l2_alert(alert, base_qty=_inline_base_qty)
 
                     pool = _TRADER_POOL
                     if pool is not None:
