@@ -548,8 +548,8 @@ export function HomePage() {
 
         {/* Bottom ticker */}
         <div style={{
-          background: 'rgba(0,0,0,0.35)',
-          borderTop: '1px solid rgba(255,255,255,0.06)',
+          background: 'rgba(0,255,153,0.03)',
+          borderTop: '1px solid rgba(0,255,153,0.12)',
           padding: '7px 0',
           flexShrink: 0,
         }}>
