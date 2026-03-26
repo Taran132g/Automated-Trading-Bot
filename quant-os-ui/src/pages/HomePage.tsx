@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity, Search, BarChart2, FlaskConical,
   GitCompare, Terminal, Bot, ShieldAlert, Cpu,
-  TrendingUp, TrendingDown, Minus,
+  TrendingUp, TrendingDown, Minus, Wallet,
 } from 'lucide-react'
 import { adminService, terminalService, patternService } from '@/services/api'
 
@@ -363,6 +363,33 @@ export function HomePage() {
                 {' '}strategy enters confirmed chart-pattern breakouts on 1-minute bar closes.
                 Both run live with full Kelly position sizing.
               </p>
+            </div>
+
+            {/* Account value card */}
+            <div style={{
+              background: 'rgba(13, 18, 30, 0.85)',
+              border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: 16,
+              padding: '22px 28px',
+              display: 'flex', flexDirection: 'column', gap: 10,
+              flexShrink: 0, minWidth: 180,
+              backdropFilter: 'blur(12px)',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Wallet size={14} color="#64748B" />
+                <span style={{ fontSize: '0.66rem', color: '#475569', letterSpacing: '0.14em', textTransform: 'uppercase' }}>
+                  Account Value
+                </span>
+              </div>
+              <div style={{ fontFamily: 'Roboto Mono', fontSize: '1.45rem', fontWeight: 700, color: '#F1F5F9', letterSpacing: '-0.5px' }}>
+                {scalperState?.account_details?.liquidation_value != null
+                  ? `$${scalperState.account_details.liquidation_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                  : <span style={{ color: '#334155', fontSize: '1.1rem' }}>—</span>
+                }
+              </div>
+              <div style={{ fontSize: '0.68rem', color: '#334155', letterSpacing: '0.04em' }}>
+                LIQUIDATION VALUE
+              </div>
             </div>
 
             {/* Right: system status */}
