@@ -1825,7 +1825,7 @@ class LiveTrader:
         bear_score = 0.0
         if pattern_info:
             decision = pattern_info.get("decision", "enter_or_manage")
-            size_factor = float(pattern_info.get("size_factor", 1.0))
+            size_factor = 1.0  # pattern sizing handled by PatternTrader; scalper always uses base size
             chart_bias = pattern_info.get("chart_bias", "neutral")
             aligned = pattern_info.get("pattern_alignment", False)
             bull_score = pattern_info.get("bullish_score", 0.0)
