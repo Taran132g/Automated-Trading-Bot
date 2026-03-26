@@ -35,6 +35,10 @@ BOTTOM_SYMBOLS = [
     ("EURUSD=X", "EUR/USD"),      # largest DXY component (57.6%), moves inverse to DXY
     ("JPY=X",    "USD/JPY"),      # yen safe-haven, risk-off visible here
     ("BZ=F",     "Brent"),        # international oil benchmark, correlates with WTI/GLD
+    ("^AXJO",    "ASX 200"),      # Australia — world's #2 gold producer, top silver miner → GLD/SLV
+    ("^GSPTSE",  "TSX"),          # Canada — #3 oil exporter to US, major gold miner → WTI/GLD
+    ("CNH=X",    "USD/CNH"),      # offshore yuan — MAG7 manufacturing costs, largest BTC trading pair
+    ("^FCHI",    "CAC 40"),       # France — DXY/oil sensitive via LVMH/TotalEnergies
 ]
 
 _CACHE: dict = {"data": None, "ts": 0.0}
