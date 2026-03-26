@@ -294,9 +294,10 @@ class PatternTrader:
     def on_new_bar(self, symbol: str, bar: dict) -> None:
         """Called by grok.py each time a completed 1-minute bar is available."""
         cfg = config_manager.load_config()
+        sym_key = "pattern_symbols" if self.mode == "live" else "paper_symbols"
         pattern_syms = [
             s.strip().upper()
-            for s in cfg.get("pattern_symbols", "").split(",")
+            for s in cfg.get(sym_key, cfg.get("pattern_symbols", "")).split(",")
             if s.strip()
         ]
         if pattern_syms and symbol not in pattern_syms:
