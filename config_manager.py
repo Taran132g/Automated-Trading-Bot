@@ -26,9 +26,10 @@ DEFAULT_CONFIG = {
     # PI-adjusted Kelly: scales multiplier by intraday PnL/share vs neutral
     "pi_neutral": 0.001,          # Neutral PnL/share ($0.001 = breakeven execution quality)
     "pi_kelly_weight": 0.5,       # How aggressively PI shifts the Kelly multiplier (log-scale)
-    # Pattern strategy (separate symbol list, position size, and plain Kelly — no PI)
+    # Pattern strategy (separate symbol list, position sizes, and plain Kelly — no PI)
     "pattern_symbols": os.getenv("PATTERN_SYMBOLS", ""),
-    "pattern_position_size": int(os.getenv("PATTERN_POSITION_SIZE", "100")),
+    "pattern_live_position_size": int(os.getenv("PATTERN_LIVE_POSITION_SIZE", "100")),
+    "pattern_paper_position_size": int(os.getenv("PATTERN_PAPER_POSITION_SIZE", "1000")),
     "pattern_min_confidence": 0.60,        # Minimum breakout confidence to enter
     "pattern_hold_seconds": 1800,          # Hard time stop (30 minutes)
     "pattern_atr_period": 14,              # Bars used to compute ATR

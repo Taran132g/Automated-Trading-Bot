@@ -408,7 +408,8 @@ _chart_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _timesale_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _last_chart_or_timesale_ts: Dict[str, float] = defaultdict(float)
 PIPELINE = None
-PATTERN_TRADER = None
+PATTERN_TRADER = None       # live instance (real orders when executor attached)
+PATTERN_TRADER_PAPER = None # paper instance (simulation only)
 last_bar_minute: Dict[str, int] = {}
 current_bar: Dict[str, dict] = {}
 _last_volume_fallback_ts: Dict[str, float] = defaultdict(float)
@@ -533,6 +534,10 @@ def on_level1(msg: dict):
                     for name, trader in traders:
                         if hasattr(trader, "update_live_price"):
                             trader.update_live_price(sym, price)
+                # Feed stream price to both pattern traders (eliminates HTTP fetch_quote in poll)
+                for _pt in (PATTERN_TRADER, PATTERN_TRADER_PAPER):
+                    if _pt is not None:
+                        _pt.update_live_price(sym, price)
             except (TypeError, ValueError):
                 log_structured("L1_WARNING", {"symbol": sym, "message": "Invalid price", "value": price})
                 continue
@@ -597,8 +602,22 @@ def on_chart_equity(msg: dict):
             # If minute changed, finalize the previous bar
             if sym in last_bar_minute and curr_min != last_bar_minute[sym]:
                 PIPELINE.on_new_bar(sym, current_bar[sym])
-                if 'PATTERN_TRADER' in globals() and PATTERN_TRADER:
-                    PATTERN_TRADER.on_new_bar(sym, current_bar[sym])
+                # Dispatch to both pattern traders in parallel threads so
+                # neither blocks the event loop or each other.
+                _bar_snap = current_bar[sym].copy()
+                _pt_instances = [
+                    t for t in (PATTERN_TRADER, PATTERN_TRADER_PAPER)
+                    if t is not None
+                ]
+                if _pt_instances:
+                    import concurrent.futures as _cf
+                    with _cf.ThreadPoolExecutor(max_workers=len(_pt_instances)) as _pt_pool:
+                        _pt_futs = [_pt_pool.submit(t.on_new_bar, sym, _bar_snap) for t in _pt_instances]
+                        for _f in _cf.as_completed(_pt_futs):
+                            try:
+                                _f.result()
+                            except Exception as _pe:
+                                log_structured("PATTERN_BAR_ERROR", {"symbol": sym, "error": str(_pe)})
                 # Reset for new minute
                 current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta, "timestamp": ts}
             else:
@@ -1104,15 +1123,17 @@ async def main():
         else:
             log_structured("STARTUP", {"message": "In-process (inline) traders disabled via ENABLE_INLINE_DISPATCH=0"})
         
-        # --- PATTERN TRADER (independent breakout strategy) ---
-        global PATTERN_TRADER
+        # --- PATTERN TRADER (independent breakout strategy — live + paper) ---
+        global PATTERN_TRADER, PATTERN_TRADER_PAPER
         try:
             from pattern_trader import PatternTrader as _PT
-            PATTERN_TRADER = _PT()
-            log_structured("PATTERN_TRADER", {"status": "initialized"})
+            PATTERN_TRADER       = _PT(mode="live")
+            PATTERN_TRADER_PAPER = _PT(mode="paper")
+            log_structured("PATTERN_TRADER", {"status": "initialized", "modes": "live+paper"})
         except Exception as _pt_err:
             log_structured("PATTERN_TRADER_ERROR", {"error": str(_pt_err)})
             PATTERN_TRADER = None
+            PATTERN_TRADER_PAPER = None
         
         # Pattern Engine Integration
         try:
@@ -1131,11 +1152,11 @@ async def main():
                     executor_for_backfill = trader.executor
                     break
             
-            # Wire executor into PatternTrader for live exit orders
+            # Wire executor into live PatternTrader only (paper runs without it)
             if executor_for_backfill and PATTERN_TRADER is not None:
                 try:
                     PATTERN_TRADER.set_executor(executor_for_backfill)
-                    log_structured("PATTERN_TRADER_EXECUTOR", {"status": "attached"})
+                    log_structured("PATTERN_TRADER_EXECUTOR", {"status": "attached", "mode": "live"})
                 except Exception as _pe:
                     log_structured("PATTERN_TRADER_EXECUTOR_ERROR", {"error": str(_pe)})
 
