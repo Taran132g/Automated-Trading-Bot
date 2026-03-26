@@ -5,9 +5,14 @@ pattern breakouts. Signals come from ChartPatternDetector on 1-minute bar closes
 
 Exit cascade (checked in order on every bar close):
     1. Pattern failure stop  — price retreats back through stop_level
-    2. Trailing stop         — activates after partial profit or 0.5% move in favor
-    3. Price target          — measured-move target_level from PatternSignal
-    4. Time stop             — hard exit after pattern_hold_seconds
+    2. ATR stop              — fixed level at entry ± (atr_stop_multiplier × ATR)
+    3. Trailing stop         — activates after partial profit or 0.5% move in favor
+    4. Price target          — measured-move target_level from PatternSignal
+    5. Time stop             — hard exit after pattern_hold_seconds
+
+Entry filter:
+    ATR must be below pattern_atr_entry_max_pct of price at the moment of entry.
+    High ATR = noisy tape, pattern geometry unreliable → skip.
 
 Partial profit (exit 7):
     When price reaches 50% of (entry → target), close 50% of the position and
@@ -58,6 +63,7 @@ class PatternPosition:
     pattern: str
     target_level: float
     stop_level: float       # pattern-failure stop
+    atr_stop: float         # ATR-based stop computed at entry (fixed level)
     breakout_level: float   # anchor price for trailing stop after partial
     hold_seconds: int       # time-stop threshold
     trailing_active: bool = False
@@ -125,6 +131,7 @@ class PatternTrader:
                     pattern         TEXT,
                     target_level    REAL,
                     stop_level      REAL,
+                    atr_stop        REAL    DEFAULT 0.0,
                     breakout_level  REAL,
                     hold_seconds    INTEGER,
                     trailing_active INTEGER DEFAULT 0,
@@ -133,6 +140,11 @@ class PatternTrader:
                     best_price      REAL    DEFAULT 0.0
                 )
             """)
+            # Migrate existing table if atr_stop column is missing
+            try:
+                conn.execute("ALTER TABLE pattern_positions ADD COLUMN atr_stop REAL DEFAULT 0.0")
+            except Exception:
+                pass  # Column already exists
             conn.commit()
 
     # ── State persistence ──────────────────────────────────────────────────────
@@ -218,6 +230,24 @@ class PatternTrader:
             df[col] = pd.to_numeric(df[col], errors="coerce")
         return df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
 
+    # ── ATR helper ────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _compute_atr(df: pd.DataFrame, period: int = 14) -> float:
+        """Return the most recent ATR value from the df (standard Wilder/rolling mean)."""
+        if len(df) < period + 1:
+            return 0.0
+        high  = df["high"]
+        low   = df["low"]
+        close = df["close"]
+        prev_close = close.shift(1)
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low  - prev_close).abs(),
+        ], axis=1).max(axis=1)
+        return float(tr.rolling(period).mean().iloc[-1])
+
     # ── Entry logic ───────────────────────────────────────────────────────────
 
     def _check_entries(self, symbol: str, close: float, df: pd.DataFrame) -> None:
@@ -225,10 +255,24 @@ class PatternTrader:
         if time.time() - self._last_exit_time.get(symbol, 0.0) < COOLDOWN_AFTER_EXIT:
             return
 
-        cfg          = config_manager.load_config()
-        min_conf     = float(cfg.get("pattern_min_confidence", 0.60))
-        hold_secs    = int(cfg.get("pattern_hold_seconds", DEFAULT_HOLD_SECS))
-        base_qty     = int(cfg.get("pattern_position_size", 100))
+        cfg                  = config_manager.load_config()
+        min_conf             = float(cfg.get("pattern_min_confidence", 0.60))
+        hold_secs            = int(cfg.get("pattern_hold_seconds", DEFAULT_HOLD_SECS))
+        base_qty             = int(cfg.get("pattern_position_size", 100))
+        atr_period           = int(cfg.get("pattern_atr_period", 14))
+        atr_entry_max_pct    = float(cfg.get("pattern_atr_entry_max_pct", 0.005))
+        atr_stop_multiplier  = float(cfg.get("pattern_atr_stop_multiplier", 1.5))
+
+        # ── ATR entry filter ─────────────────────────────────────────────────
+        atr = self._compute_atr(df, atr_period)
+        if atr <= 0:
+            return  # Can't assess volatility yet
+        if close > 0 and (atr / close) > atr_entry_max_pct:
+            LOGGER.debug(
+                "[PatternTrader] %s ATR filter: atr=%.4f is %.3f%% of price (max %.3f%%) — skipping",
+                symbol, atr, atr / close * 100, atr_entry_max_pct * 100,
+            )
+            return
 
         try:
             signals = self._detector.latest(df)
@@ -250,8 +294,9 @@ class PatternTrader:
 
         sig       = max(candidates, key=lambda s: s.confidence)
         direction = +1 if sig.direction == "bullish" else -1
+        atr_stop  = close - direction * atr_stop_multiplier * atr  # fixed at entry
         qty       = max(1, int(base_qty * self._kelly_size_multiplier(symbol)))
-        self._enter(symbol, sig, close, direction, qty, hold_secs)
+        self._enter(symbol, sig, close, direction, qty, hold_secs, atr_stop)
 
     def _enter(
         self,
@@ -261,6 +306,7 @@ class PatternTrader:
         direction: int,
         qty: int,
         hold_seconds: int,
+        atr_stop: float = 0.0,
     ) -> None:
         fill = price + SLIPPAGE * direction
         side = "BUY" if direction == +1 else "SHORT"
@@ -274,6 +320,7 @@ class PatternTrader:
             pattern=sig.pattern,
             target_level=float(sig.target_level),
             stop_level=float(sig.stop_level),
+            atr_stop=float(atr_stop),
             breakout_level=float(sig.price_level),
             hold_seconds=hold_seconds,
             best_price=fill,
@@ -282,8 +329,10 @@ class PatternTrader:
         self._write_trade(symbol, side, qty, fill, fill, 0.0, sig.pattern, "entry")
         self._persist_position(pos)
         LOGGER.info(
-            "[PatternTrader] ENTER %s %s %d @ $%.4f  pattern=%s  target=$%.4f  stop=$%.4f",
-            side, symbol, qty, fill, sig.pattern, sig.target_level, sig.stop_level,
+            "[PatternTrader] ENTER %s %s %d @ $%.4f  pattern=%s  target=$%.4f  "
+            "failure_stop=$%.4f  atr_stop=$%.4f",
+            side, symbol, qty, fill, sig.pattern, sig.target_level,
+            sig.stop_level, atr_stop,
         )
 
     # ── Exit logic ────────────────────────────────────────────────────────────
@@ -308,7 +357,15 @@ class PatternTrader:
             self._exit(symbol, close, "failure_stop", pos.qty)
             return
 
-        # ── 2. Trailing stop (if already active) ─────────────────────────────
+        # ── 2. ATR stop (fixed level computed at entry) ───────────────────────
+        if pos.atr_stop > 0:
+            atr_hit = (d == +1 and close <= pos.atr_stop) or \
+                      (d == -1 and close >= pos.atr_stop)
+            if atr_hit:
+                self._exit(symbol, close, "atr_stop", pos.qty)
+                return
+
+        # ── 3. Trailing stop (if active) ─────────────────────────────────────
         if pos.trailing_active and pos.trailing_stop > 0:
             hit_trail = (d == +1 and close <= pos.trailing_stop) or \
                         (d == -1 and close >= pos.trailing_stop)
@@ -505,9 +562,9 @@ class PatternTrader:
                 conn.execute(
                     """INSERT INTO pattern_positions
                        (symbol, qty, direction, entry_price, entry_time, pattern,
-                        target_level, stop_level, breakout_level, hold_seconds,
+                        target_level, stop_level, atr_stop, breakout_level, hold_seconds,
                         trailing_active, trailing_stop, partial_taken, best_price)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(symbol) DO UPDATE SET
                          qty=excluded.qty,
                          direction=excluded.direction,
@@ -516,6 +573,7 @@ class PatternTrader:
                          pattern=excluded.pattern,
                          target_level=excluded.target_level,
                          stop_level=excluded.stop_level,
+                         atr_stop=excluded.atr_stop,
                          breakout_level=excluded.breakout_level,
                          hold_seconds=excluded.hold_seconds,
                          trailing_active=excluded.trailing_active,
@@ -525,9 +583,10 @@ class PatternTrader:
                     (
                         pos.symbol, pos.qty, pos.direction,
                         pos.entry_price, pos.entry_time, pos.pattern,
-                        pos.target_level, pos.stop_level, pos.breakout_level,
-                        pos.hold_seconds, int(pos.trailing_active),
-                        pos.trailing_stop, int(pos.partial_taken), pos.best_price,
+                        pos.target_level, pos.stop_level, pos.atr_stop,
+                        pos.breakout_level, pos.hold_seconds,
+                        int(pos.trailing_active), pos.trailing_stop,
+                        int(pos.partial_taken), pos.best_price,
                     ),
                 )
                 conn.commit()
