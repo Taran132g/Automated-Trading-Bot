@@ -5,7 +5,7 @@ import {
   GitCompare, Terminal, Bot, ShieldAlert, Cpu,
   TrendingUp, TrendingDown, Minus, Wallet,
 } from 'lucide-react'
-import { adminService, terminalService, patternService } from '@/services/api'
+import { adminService, terminalService, patternService, paperService } from '@/services/api'
 
 const CARDS = [
   {
@@ -46,7 +46,7 @@ const CARDS = [
     label: 'Scalper Backtest',
     description: 'Run historical scalping strategy simulations and review past performance.',
     color: '#F59E0B',
-    badge: null,
+    badge: 'PAPER',
   },
   {
     to: '/patterns',
@@ -285,12 +285,20 @@ export function HomePage() {
     retry: false,
   })
 
+  const { data: scalperPaperState } = useQuery({
+    queryKey: ['paper-state'],
+    queryFn: () => paperService.getState().then((r) => r.data),
+    refetchInterval: 10000,
+    retry: false,
+  })
+
   const backendOnline = status?.loop_running || status?.trader_running || status?.grok_running
 
   const pnlByRoute: Record<string, number | undefined> = {
     '/scalper': scalperState?.daily_pnl,
     '/pattern': patternState?.daily_pnl,
     '/patterns': paperState?.daily_pnl,
+    '/backtest': scalperPaperState?.daily_pnl,
   }
 
   return (
