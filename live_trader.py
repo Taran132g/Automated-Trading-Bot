@@ -1480,7 +1480,7 @@ class LiveTrader:
             fill_status = "FAILED"
             # CHECK FOR BOXED POSITION ERROR
             err_msg = str(result.get("error") or "").lower()
-            if "boxed" in err_msg:
+            if "boxed" in err_msg or "oversold" in err_msg or "overbought" in err_msg:
                  LOGGER.warning("Boxed Position Error detected in result: %s", err_msg)
                  raise BoxedPositionError(err_msg)
 
@@ -1550,7 +1550,7 @@ class LiveTrader:
              LOGGER.error("Limit order submission failed: %s", error)
              # CHECK FOR BOXED POSITION ERROR
              err_msg = str(error).lower()
-             if "boxed" in err_msg:
+             if "boxed" in err_msg or "oversold" in err_msg or "overbought" in err_msg:
                   LOGGER.warning("Boxed Position Error detected in result: %s", err_msg)
                   raise BoxedPositionError(err_msg)
              # Record failure
