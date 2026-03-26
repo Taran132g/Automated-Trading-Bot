@@ -6,6 +6,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { TerminalPage } from '@/pages/TerminalPage'
 import { BacktestPage } from '@/pages/BacktestPage'
 import { PatternLabPage } from '@/pages/PatternLabPage'
+import { PatternPage } from '@/pages/PatternPage'
 import { ComparisonPage } from '@/pages/ComparisonPage'
 import { GrokPage } from '@/pages/GrokPage'
 import { AgentsPage } from '@/pages/AgentsPage'
@@ -22,9 +23,10 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route element={<RootLayout />}>
-            <Route index element={<Navigate to="/terminal" replace />} />
-            <Route path="/terminal" element={<TerminalPage />} />
+            <Route index element={<Navigate to="/scalper" replace />} />
+            <Route path="/scalper" element={<TerminalPage />} />
             <Route path="/backtest" element={<BacktestPage />} />
+            <Route path="/pattern" element={<PatternPage />} />
             <Route path="/patterns" element={<PatternLabPage />} />
             <Route path="/comparison" element={<ComparisonPage />} />
             <Route path="/grok" element={<GrokPage />} />
@@ -35,7 +37,7 @@ export default function App() {
               </ProtectedRoute>
             } />
           </Route>
-          <Route path="*" element={<Navigate to="/terminal" replace />} />
+          <Route path="*" element={<Navigate to="/scalper" replace />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>
