@@ -396,8 +396,7 @@ class PatternTrader:
 
         candidates = [
             s for s in signals
-            if s.breakout
-            and s.confidence >= min_conf
+            if s.confidence >= min_conf
             and s.direction in ("bullish", "bearish")
             and s.target_level is not None
             and s.stop_level is not None
