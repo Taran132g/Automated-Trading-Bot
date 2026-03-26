@@ -53,12 +53,13 @@ def _fetch_one(yahoo_sym: str, display: str) -> dict | None:
         )
         r.raise_for_status()
         meta = r.json()["chart"]["result"][0]["meta"]
-        change_pct = meta.get("regularMarketChangePercent", 0.0)
-        price = meta.get("regularMarketPrice", 0.0)
+        price = float(meta.get("regularMarketPrice") or 0)
+        prev = float(meta.get("chartPreviousClose") or meta.get("previousClose") or price)
+        change_pct = ((price - prev) / prev * 100) if prev else 0.0
         return {
             "symbol": display,
-            "price": round(float(price), 4),
-            "change_pct": round(float(change_pct), 2),
+            "price": round(price, 4),
+            "change_pct": round(change_pct, 2),
         }
     except Exception:
         return None
