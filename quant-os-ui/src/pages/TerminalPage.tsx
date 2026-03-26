@@ -121,7 +121,7 @@ export function TerminalPage() {
         {/* Left: equity curve */}
         <div style={{ flex: 7, background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px', minWidth: 0 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-            <SectionHeader>Account Value Trajectory</SectionHeader>
+            <SectionHeader>Trade PnL</SectionHeader>
             <div style={{ display: 'flex', gap: 4 }}>
               {(['today', 'alltime'] as const).map((r) => (
                 <button
