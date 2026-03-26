@@ -54,13 +54,17 @@ def get_previous_reports(agent_name: str, limit: int = 5) -> list[dict]:
     ensure_reports_table()
     with closing(get_db()) as conn:
         rows = conn.execute(
-            "SELECT timestamp, report_data FROM agent_reports "
+            "SELECT timestamp, report_data, report_markdown FROM agent_reports "
             "WHERE agent_name = ? ORDER BY timestamp DESC LIMIT ?",
             (agent_name, limit),
         ).fetchall()
     return [
-        {"timestamp": ts, "report_data": json.loads(data) if data else {}}
-        for ts, data in rows
+        {
+            "timestamp": ts,
+            "report_data": json.loads(data) if data else {},
+            "report_markdown": md or "",
+        }
+        for ts, data, md in rows
     ]
 
 
