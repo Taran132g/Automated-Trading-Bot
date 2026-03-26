@@ -143,27 +143,23 @@ def get_equity_curve(
             conn.row_factory = sqlite3.Row
             if range == "today":
                 rows = conn.execute(
-                    "SELECT timestamp, liquidation_value FROM account_history WHERE timestamp >= ? ORDER BY timestamp ASC",
+                    "SELECT timestamp, pnl FROM live_trades WHERE timestamp >= ? ORDER BY timestamp ASC",
                     (today_start,)
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """SELECT * FROM (
-                        SELECT timestamp, liquidation_value FROM account_history WHERE timestamp >= ?
-                        UNION ALL
-                        SELECT timestamp, liquidation_value FROM account_history WHERE timestamp < ? AND rowid % 50 = 0
-                    ) ORDER BY timestamp ASC""",
-                    (today_start, today_start)
+                    "SELECT timestamp, pnl FROM live_trades ORDER BY timestamp ASC"
                 ).fetchall()
+            cumulative = 0.0
             for r in rows:
+                pnl = float(r["pnl"]) if r["pnl"] else 0.0
+                cumulative += pnl
                 ts = float(r["timestamp"])
-                lv = r["liquidation_value"]
-                if lv is not None:
-                    points.append({
-                        "timestamp": ts,
-                        "value": float(lv),
-                        "datetime_est": datetime.utcfromtimestamp(ts).strftime("%m/%d %H:%M")
-                    })
+                points.append({
+                    "timestamp": ts,
+                    "value": round(cumulative, 2),
+                    "datetime_est": datetime.utcfromtimestamp(ts).strftime("%m/%d %H:%M")
+                })
     except Exception:
         pass
     return {"points": points}
