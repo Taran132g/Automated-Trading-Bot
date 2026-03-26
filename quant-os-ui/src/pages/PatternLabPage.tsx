@@ -3,7 +3,6 @@ import { useQuery } from '@tanstack/react-query'
 import { MetricCard } from '@/components/ui/MetricCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { PnLCurve } from '@/components/charts/PnLCurve'
-import { Badge } from '@/components/ui/Badge'
 import { patternService } from '@/services/api'
 
 export function PatternLabPage() {
@@ -33,22 +32,21 @@ export function PatternLabPage() {
     <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#F8FAFC', letterSpacing: '-0.3px' }}>
-          PATTERN LAB
+          PATTERN STRATEGY
         </h2>
-        <Badge type="shadow" label="SHADOW TEST" />
       </div>
 
       <div style={{ display: 'flex', gap: 12 }}>
-        <MetricCard label="Shadow Daily PnL" value={`${(state?.daily_pnl ?? 0) >= 0 ? '+' : ''}$${Math.abs(state?.daily_pnl ?? 0).toFixed(2)}`} color={(state?.daily_pnl ?? 0) >= 0 ? '#A855F7' : '#EF4444'} />
-        <MetricCard label="Shadow Total PnL" value={`${(state?.total_pnl ?? 0) >= 0 ? '+' : ''}$${Math.abs(state?.total_pnl ?? 0).toFixed(2)}`} color={(state?.total_pnl ?? 0) >= 0 ? '#A855F7' : '#EF4444'} />
-        <MetricCard label="Pattern Win Rate" value={`${state?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(state?.win_rate ?? 0) > 50 ? '#A855F7' : '#F8FAFC'} />
-        <MetricCard label="Pattern Trades" value={state?.trades_today?.toLocaleString() ?? '0'} sub="TODAY" />
+        <MetricCard label="Daily PnL" value={`${(state?.daily_pnl ?? 0) >= 0 ? '+' : ''}$${Math.abs(state?.daily_pnl ?? 0).toFixed(2)}`} color={(state?.daily_pnl ?? 0) >= 0 ? '#A855F7' : '#EF4444'} />
+        <MetricCard label="Total PnL" value={`${(state?.total_pnl ?? 0) >= 0 ? '+' : ''}$${Math.abs(state?.total_pnl ?? 0).toFixed(2)}`} color={(state?.total_pnl ?? 0) >= 0 ? '#A855F7' : '#EF4444'} />
+        <MetricCard label="Win Rate" value={`${state?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(state?.win_rate ?? 0) > 50 ? '#A855F7' : '#F8FAFC'} />
+        <MetricCard label="Trades" value={state?.trades_today?.toLocaleString() ?? '0'} sub="TODAY" />
       </div>
 
       <div style={{ display: 'flex', gap: 16 }}>
         <div style={{ flex: 7, background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-            <SectionHeader>Shadow Strategy Trajectory</SectionHeader>
+            <SectionHeader>Pattern Strategy Trajectory</SectionHeader>
             <div style={{ display: 'flex', gap: 4 }}>
               {(['today', 'all'] as const).map((r) => (
                 <button key={r} onClick={() => setRange(r)} style={{
@@ -66,7 +64,7 @@ export function PatternLabPage() {
         </div>
 
         <div style={{ flex: 3, background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
-          <SectionHeader>Shadow Positions</SectionHeader>
+          <SectionHeader>Open Positions</SectionHeader>
           {openPositions.length === 0 ? (
             <div style={{ color: '#64748B', fontSize: '0.78rem' }}>No open positions</div>
           ) : (
@@ -87,24 +85,25 @@ export function PatternLabPage() {
 
       {performance && performance.length > 0 && (
         <div style={{ background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
-          <SectionHeader>Pattern System Performance</SectionHeader>
+          <SectionHeader>Performance by Symbol</SectionHeader>
           <table>
             <thead>
               <tr>
                 <th>Symbol</th>
-                <th>Today PnL/Share</th>
+                <th>Today PnL</th>
                 <th>Today Win%</th>
-                <th>All Time PnL/Share</th>
+                <th>All Time PnL</th>
                 <th>All Time Win%</th>
+                <th>Avg PnL/Trade</th>
                 <th>Trades</th>
               </tr>
             </thead>
             <tbody>
-              {performance.map((row: { symbol: string; total_pnl: number; win_rate: number; trades: number; today_pi: number; alltime_pi: number; today_win_rate: number }) => (
+              {performance.map((row: { symbol: string; total_pnl: number; win_rate: number; trades: number; today_pnl: number; avg_pnl_per_trade: number; today_win_rate: number }) => (
                 <tr key={row.symbol}>
                   <td style={{ fontWeight: 700, fontFamily: 'Roboto Mono', color: '#A855F7' }}>{row.symbol}</td>
-                  <td style={{ color: (row.today_pi ?? 0) >= 0 ? '#A855F7' : '#EF4444', fontFamily: 'Roboto Mono', fontWeight: 600 }}>
-                    {(row.today_pi ?? 0) >= 0 ? '+' : ''}${Math.abs(row.today_pi ?? 0).toFixed(4)}
+                  <td style={{ color: (row.today_pnl ?? 0) >= 0 ? '#A855F7' : '#EF4444', fontFamily: 'Roboto Mono', fontWeight: 600 }}>
+                    {(row.today_pnl ?? 0) >= 0 ? '+' : ''}${Math.abs(row.today_pnl ?? 0).toFixed(2)}
                   </td>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -114,8 +113,8 @@ export function PatternLabPage() {
                       <span style={{ color: '#94A3B8', minWidth: 40 }}>{(row.today_win_rate ?? 0).toFixed(1)}%</span>
                     </div>
                   </td>
-                  <td style={{ color: (row.alltime_pi ?? 0) >= 0 ? '#A855F7' : '#EF4444', fontFamily: 'Roboto Mono' }}>
-                    {(row.alltime_pi ?? 0) >= 0 ? '+' : ''}${Math.abs(row.alltime_pi ?? 0).toFixed(4)}
+                  <td style={{ color: (row.total_pnl ?? 0) >= 0 ? '#A855F7' : '#EF4444', fontFamily: 'Roboto Mono' }}>
+                    {(row.total_pnl ?? 0) >= 0 ? '+' : ''}${Math.abs(row.total_pnl ?? 0).toFixed(2)}
                   </td>
                   <td>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -124,6 +123,9 @@ export function PatternLabPage() {
                       </div>
                       <span style={{ color: '#64748B', minWidth: 40 }}>{row.win_rate.toFixed(1)}%</span>
                     </div>
+                  </td>
+                  <td style={{ color: (row.avg_pnl_per_trade ?? 0) >= 0 ? '#A855F7' : '#EF4444', fontFamily: 'Roboto Mono' }}>
+                    {(row.avg_pnl_per_trade ?? 0) >= 0 ? '+' : ''}${Math.abs(row.avg_pnl_per_trade ?? 0).toFixed(2)}
                   </td>
                   <td style={{ color: '#94A3B8' }}>{row.trades}</td>
                 </tr>

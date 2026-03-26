@@ -28,6 +28,20 @@ class TradingConfig(BaseModel):
     kelly_lookback_days: int = 30
 
 
+class PatternConfig(BaseModel):
+    pattern_symbols: str = ""
+    pattern_position_size: int = 100
+    pattern_kelly_enabled: bool = True
+    pattern_kelly_fraction: float = 0.5
+    pattern_kelly_min_trades: int = 10
+    pattern_kelly_lookback_days: int = 30
+    pattern_kelly_min_multiplier: float = 0.25
+    pattern_kelly_max_multiplier: float = 2.0
+
+
+PATTERN_KEYS = set(PatternConfig.model_fields.keys())
+
+
 @router.get("")
 def get_config(_: dict = Depends(verify_token)):
     try:
@@ -42,7 +56,31 @@ def get_config(_: dict = Depends(verify_token)):
 def update_config(cfg: TradingConfig, _: dict = Depends(verify_token)):
     try:
         import config_manager
-        config_manager.save_config(cfg.model_dump())
+        existing = config_manager.load_config()
+        existing.update(cfg.model_dump())
+        config_manager.save_config(existing)
+        return {"success": True}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/pattern")
+def get_pattern_config(_: dict = Depends(verify_token)):
+    try:
+        import config_manager
+        cfg = config_manager.load_config()
+        return PatternConfig(**{k: cfg[k] for k in PATTERN_KEYS if k in cfg})
+    except Exception:
+        return PatternConfig()
+
+
+@router.put("/pattern")
+def update_pattern_config(cfg: PatternConfig, _: dict = Depends(verify_token)):
+    try:
+        import config_manager
+        existing = config_manager.load_config()
+        existing.update(cfg.model_dump())
+        config_manager.save_config(existing)
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}

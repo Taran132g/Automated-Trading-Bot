@@ -10,8 +10,8 @@ from fastapi import APIRouter, Query
 router = APIRouter()
 
 BASE_DIR = Path(__file__).parent.parent.resolve()
-PATTERN_DB = BASE_DIR / "penny_basing_patterns.db"
-PATTERN_STATE = BASE_DIR / "paper_trader_state_patterns.json"
+PATTERN_DB = BASE_DIR / "penny_basing.db"
+PATTERN_STATE = BASE_DIR / "pattern_trader_state.json"
 
 
 def _get_today_start() -> float:
@@ -46,36 +46,35 @@ def get_pattern_state():
             with closing(db) as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
-                    "SELECT COALESCE(SUM(pnl),0) FROM paper_trades WHERE timestamp >= ?", (today_start,)
+                    "SELECT COALESCE(SUM(pnl),0) FROM pattern_trades WHERE timestamp >= ?", (today_start,)
                 ).fetchone()
                 daily_pnl = float(row[0]) if row else 0.0
 
-                row = conn.execute("SELECT COALESCE(SUM(pnl),0) FROM paper_trades").fetchone()
+                row = conn.execute("SELECT COALESCE(SUM(pnl),0) FROM pattern_trades").fetchone()
                 total_pnl = float(row[0]) if row else 0.0
 
                 wins = conn.execute(
-                    "SELECT COUNT(*) FROM paper_trades WHERE pnl > 0 AND side IN ('SELL','COVER') AND timestamp >= ?",
+                    "SELECT COUNT(*) FROM pattern_trades WHERE pnl > 0 AND side IN ('SELL','COVER') AND timestamp >= ?",
                     (today_start,)
                 ).fetchone()[0]
                 exits = conn.execute(
-                    "SELECT COUNT(*) FROM paper_trades WHERE side IN ('SELL','COVER') AND timestamp >= ?",
+                    "SELECT COUNT(*) FROM pattern_trades WHERE side IN ('SELL','COVER') AND timestamp >= ?",
                     (today_start,)
                 ).fetchone()[0]
                 win_rate = (wins / exits * 100) if exits > 0 else 0.0
                 trades_today = conn.execute(
-                    "SELECT COUNT(*) FROM paper_trades WHERE timestamp >= ?", (today_start,)
+                    "SELECT COUNT(*) FROM pattern_trades WHERE timestamp >= ?", (today_start,)
                 ).fetchone()[0]
         except Exception:
             pass
 
-    # Read open positions from DB (paper_trader writes to paper_positions table, not state JSON)
     positions = {}
     db2 = _get_db()
     if db2:
         try:
             with closing(db2) as conn:
                 conn.row_factory = sqlite3.Row
-                rows = conn.execute("SELECT symbol, qty FROM paper_positions").fetchall()
+                rows = conn.execute("SELECT symbol, qty FROM pattern_positions").fetchall()
                 for r in rows:
                     if r["qty"] != 0:
                         positions[r["symbol"]] = r["qty"]
@@ -105,10 +104,10 @@ def get_pattern_equity_curve(
             conn.row_factory = sqlite3.Row
             if range == "today":
                 rows = conn.execute(
-                    "SELECT * FROM paper_trades WHERE timestamp >= ? ORDER BY timestamp ASC", (today_start,)
+                    "SELECT * FROM pattern_trades WHERE timestamp >= ? ORDER BY timestamp ASC", (today_start,)
                 ).fetchall()
             else:
-                rows = conn.execute("SELECT * FROM paper_trades ORDER BY timestamp ASC").fetchall()
+                rows = conn.execute("SELECT * FROM pattern_trades ORDER BY timestamp ASC").fetchall()
             cumulative = 0.0
             for r in rows:
                 pnl = float(r["pnl"]) if r["pnl"] else 0.0
@@ -136,24 +135,20 @@ def get_pattern_performance():
             rows = conn.execute(
                 """SELECT symbol,
                           SUM(pnl) as total_pnl,
-                          SUM(ABS(qty)) as total_shares,
                           COUNT(*) as trades,
                           SUM(CASE WHEN pnl > 0 AND side IN ('SELL','COVER') THEN 1 ELSE 0 END) as wins,
                           SUM(CASE WHEN side IN ('SELL','COVER') THEN 1 ELSE 0 END) as exits,
                           SUM(CASE WHEN timestamp >= ? THEN pnl ELSE 0 END) as today_pnl,
-                          SUM(CASE WHEN timestamp >= ? THEN ABS(qty) ELSE 0 END) as today_shares,
                           SUM(CASE WHEN pnl > 0 AND side IN ('SELL','COVER') AND timestamp >= ? THEN 1 ELSE 0 END) as today_wins,
                           SUM(CASE WHEN side IN ('SELL','COVER') AND timestamp >= ? THEN 1 ELSE 0 END) as today_exits
-                   FROM paper_trades GROUP BY symbol ORDER BY total_pnl DESC""",
-                (today_start, today_start, today_start, today_start)
+                   FROM pattern_trades GROUP BY symbol ORDER BY total_pnl DESC""",
+                (today_start, today_start, today_start)
             ).fetchall()
             for r in rows:
                 exits = r["exits"] or 0
                 wins = r["wins"] or 0
                 today_exits = r["today_exits"] or 0
                 today_wins = r["today_wins"] or 0
-                total_shares = r["total_shares"] or 0
-                today_shares = r["today_shares"] or 0
                 total_pnl = float(r["total_pnl"])
                 today_pnl = float(r["today_pnl"])
                 rows_out.append({
@@ -162,8 +157,8 @@ def get_pattern_performance():
                     "trades": r["trades"],
                     "win_rate": round(wins / exits * 100, 1) if exits > 0 else 0.0,
                     "today_win_rate": round(today_wins / today_exits * 100, 1) if today_exits > 0 else 0.0,
-                    "today_pi": round(today_pnl / today_shares, 4) if today_shares > 0 else 0.0,
-                    "alltime_pi": round(total_pnl / total_shares, 4) if total_shares > 0 else 0.0,
+                    "today_pnl": round(today_pnl, 2),
+                    "avg_pnl_per_trade": round(total_pnl / exits, 2) if exits > 0 else 0.0,
                 })
     except Exception:
         pass

@@ -81,6 +81,11 @@ export const configService = {
   update: (cfg: Record<string, unknown>) => api.put('/config', cfg),
 }
 
+export const patternConfigService = {
+  get: () => api.get('/config/pattern'),
+  update: (cfg: Record<string, unknown>) => api.put('/config/pattern', cfg),
+}
+
 export const agentService = {
   getReports: (agent = 'all', limit = 50) =>
     api.get(`/agents/reports?agent=${agent}&limit=${limit}`),
