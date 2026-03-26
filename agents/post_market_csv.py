@@ -219,6 +219,82 @@ def get_db_account_stats(date_str: str) -> dict:
     return {"account_value": None, "day_pnl": None}
 
 
+def get_pattern_trades_stats(date_str: str) -> dict:
+    """Query pattern_trades table for the day and return per-pattern, per-exit-reason stats."""
+    try:
+        start_ts, end_ts = _day_range(date_str)
+        with closing(get_db()) as conn:
+            df = pd.read_sql_query(
+                "SELECT symbol, qty, price, entry_price, pnl, pattern, exit_reason "
+                "FROM pattern_trades "
+                "WHERE timestamp >= ? AND timestamp < ?",
+                conn, params=(start_ts, end_ts),
+            )
+    except Exception as e:
+        LOGGER.warning("Pattern trades DB query failed: %s", e)
+        return {}
+
+    if df.empty:
+        return {}
+
+    # Closers have a non-zero realized PnL
+    closers = df[df["pnl"].notna() & (df["pnl"] != 0)].copy()
+    if closers.empty:
+        return {}
+
+    closers["win"] = closers["pnl"] > 0
+    closers["qty"] = closers["qty"].replace(0, 1)
+    closers["pnl_per_share"] = closers["pnl"] / closers["qty"]
+
+    total = len(closers)
+    wins = int(closers["win"].sum())
+
+    stats: dict = {
+        "count": total,
+        "wins": wins,
+        "win_rate": round(wins / total * 100, 1) if total else None,
+        "total_pnl": round(float(closers["pnl"].sum()), 4),
+        "avg_pnl_per_share": round(float(closers["pnl_per_share"].mean()), 6) if total else None,
+    }
+
+    # By pattern name
+    by_pattern = []
+    for pat, grp in closers.groupby("pattern"):
+        w = int(grp["win"].sum())
+        n = len(grp)
+        by_pattern.append({
+            "pattern": pat or "unknown",
+            "count": n,
+            "win_rate": round(w / n * 100, 1),
+            "total_pnl": round(float(grp["pnl"].sum()), 4),
+        })
+    stats["by_pattern"] = sorted(by_pattern, key=lambda x: x["total_pnl"], reverse=True)
+
+    # By exit reason
+    by_exit = []
+    for reason, grp in closers.groupby("exit_reason"):
+        w = int(grp["win"].sum())
+        n = len(grp)
+        by_exit.append({
+            "exit_reason": reason or "unknown",
+            "count": n,
+            "win_rate": round(w / n * 100, 1),
+            "total_pnl": round(float(grp["pnl"].sum()), 4),
+        })
+    stats["by_exit_reason"] = sorted(by_exit, key=lambda x: x["count"], reverse=True)
+
+    # Top individual wins and losses
+    sorted_cl = closers.sort_values("pnl", ascending=False)
+    stats["top_wins"] = sorted_cl.head(3)[
+        ["symbol", "pattern", "exit_reason", "qty", "pnl", "pnl_per_share"]
+    ].to_dict("records")
+    stats["top_losses"] = sorted_cl.tail(3)[
+        ["symbol", "pattern", "exit_reason", "qty", "pnl", "pnl_per_share"]
+    ].to_dict("records")
+
+    return stats
+
+
 # ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
@@ -375,50 +451,140 @@ def format_report(date_str, stats, account, overnight_closes, open_at_eod) -> st
 # Main entry point
 # ---------------------------------------------------------------------------
 
-def _build_claude_prompt(date_str: str, stats: dict, account: dict, previous: list[dict]) -> str:
+def _extract_ai_analysis(markdown: str) -> str:
+    """Pull just the AI analysis text out of a saved report markdown."""
+    marker = "🤖 *AI Analysis:*"
+    idx = markdown.find(marker)
+    if idx == -1:
+        return ""
+    return markdown[idx + len(marker):].strip()
+
+
+def _build_claude_prompt(
+    date_str: str,
+    stats: dict,
+    account: dict,
+    previous: list[dict],
+    trips: list,
+    pattern_stats: dict,
+) -> str:
+    # ── Scalper summary ──────────────────────────────────────────────────────
     overall = stats.get("overall", {})
-    trips = stats.get("total_trips", 0)
-    by_sym = stats.get("by_symbol", [])[:4]
+    scalper_trips = stats.get("total_trips", 0)
+    by_sym = stats.get("by_symbol", [])[:6]
     by_bucket = stats.get("by_bucket", [])
     day_pnl = account.get("day_pnl")
     day_pnl_str = f"${day_pnl:+.2f}" if day_pnl is not None else "N/A"
+    acct_val = account.get("account_value")
+    acct_str = f"${acct_val:,.2f}" if acct_val is not None else "N/A"
 
-    sym_parts = ' | '.join(
-        f"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR" for s in by_sym
-    ) or 'none'
-    bucket_parts = ' | '.join(
-        f"{b['bucket']} ${b['total_pnl']:+.4f} {b['win_rate']}%WR" for b in by_bucket
-    ) or 'none'
+    sym_parts = "  ".join(
+        f"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR ({s['count']}t)"
+        for s in by_sym
+    ) or "none"
+    bucket_parts = "  ".join(
+        f"{b['bucket']} ${b['total_pnl']:+.4f} {b['win_rate']}%WR ({b['count']}t)"
+        for b in by_bucket
+    ) or "none"
 
-    today = (
-        f"Date: {date_str}  PnL: ${overall.get('total_pnl', 0):+.4f}  "
-        f"Win rate: {overall.get('win_rate', 'N/A')}%  Trips: {trips}  "
-        f"Day PnL (broker): {day_pnl_str}\n"
-        f"By symbol: {sym_parts}\n"
-        f"By pattern bucket: {bucket_parts}"
+    # Top 3 wins and losses from CSV trips
+    sorted_trips = sorted(trips, key=lambda t: t["pnl"], reverse=True)
+    def _fmt_trip(t: dict) -> str:
+        return (
+            f"  {t['symbol']} {t['dir']} {t['qty']}sh "
+            f"${t['entry_price']:.4f}→${t['exit_price']:.4f} "
+            f"pnl=${t['pnl']:+.4f} bucket={t['pattern_bucket']} "
+            f"@ {str(t['entry_ts'])[:16]}"
+        )
+    top_wins_str = "\n".join(_fmt_trip(t) for t in sorted_trips[:3]) or "  none"
+    top_losses_str = "\n".join(_fmt_trip(t) for t in sorted_trips[-3:][::-1]) or "  none"
+
+    scalper_block = (
+        f"SCALPER STRATEGY (from Schwab CSV + DB annotations):\n"
+        f"  Trips: {scalper_trips}  WR: {overall.get('win_rate', 'N/A')}%  "
+        f"PnL: ${overall.get('total_pnl', 0):+.4f}  "
+        f"Avg $/sh: ${overall.get('avg_pnl_per_share', 0) or 0:+.6f}\n"
+        f"  By symbol: {sym_parts}\n"
+        f"  By pattern_bucket: {bucket_parts}\n"
+        f"  Top wins:\n{top_wins_str}\n"
+        f"  Top losses:\n{top_losses_str}"
     )
 
+    # ── Pattern strategy summary ──────────────────────────────────────────────
+    if pattern_stats:
+        pat_by_pattern = "  ".join(
+            f"{p['pattern']} ${p['total_pnl']:+.4f} {p['win_rate']}%WR ({p['count']}t)"
+            for p in pattern_stats.get("by_pattern", [])
+        ) or "none"
+        pat_by_exit = "  ".join(
+            f"{e['exit_reason']} ${e['total_pnl']:+.4f} {e['win_rate']}%WR ({e['count']}t)"
+            for e in pattern_stats.get("by_exit_reason", [])
+        ) or "none"
+        def _fmt_pat(t: dict) -> str:
+            return (
+                f"  {t['symbol']} pattern={t['pattern']} exit={t['exit_reason']} "
+                f"{int(t['qty'])}sh pnl=${t['pnl']:+.4f} (${t['pnl_per_share']:+.4f}/sh)"
+            )
+        pw = "\n".join(_fmt_pat(t) for t in pattern_stats.get("top_wins", [])) or "  none"
+        pl = "\n".join(_fmt_pat(t) for t in pattern_stats.get("top_losses", [])) or "  none"
+        pattern_block = (
+            f"PATTERN STRATEGY (from DB pattern_trades):\n"
+            f"  Trades: {pattern_stats['count']}  WR: {pattern_stats.get('win_rate', 'N/A')}%  "
+            f"PnL: ${pattern_stats['total_pnl']:+.4f}  "
+            f"Avg $/sh: ${pattern_stats.get('avg_pnl_per_share', 0) or 0:+.6f}\n"
+            f"  By pattern: {pat_by_pattern}\n"
+            f"  By exit reason: {pat_by_exit}\n"
+            f"  Top wins:\n{pw}\n"
+            f"  Top losses:\n{pl}"
+        )
+    else:
+        pattern_block = "PATTERN STRATEGY: No trades recorded today."
+
+    # ── Previous report history ───────────────────────────────────────────────
     hist_lines = []
     for r in previous:
         d = r["report_data"]
         dt = d.get("date") or datetime.fromtimestamp(r["timestamp"], tz=ET).strftime("%Y-%m-%d")
         ov = d.get("trip_stats", {}).get("overall", {})
-        syms = d.get("trip_stats", {}).get("by_symbol", [])[:3]
-        sym_str = " | ".join(f"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR" for s in syms)
-        hist_lines.append(
-            f"{dt}: PnL ${ov.get('total_pnl', 0):+.4f}  WR {ov.get('win_rate', 'N/A')}%  "
-            f"{d.get('trip_stats', {}).get('total_trips', 0)} trips | {sym_str}"
+        prev_ai = _extract_ai_analysis(r.get("report_markdown", ""))
+        summary = (
+            f"{dt}: scalper PnL ${ov.get('total_pnl', 0):+.4f} "
+            f"WR {ov.get('win_rate', 'N/A')}%  {d.get('trip_stats', {}).get('total_trips', 0)} trips"
         )
+        if prev_ai:
+            summary += f"\n  AI notes: {prev_ai[:400]}"
+        hist_lines.append(summary)
 
-    hist = "\n".join(hist_lines) if hist_lines else "No prior history available."
+    hist = "\n\n".join(hist_lines) if hist_lines else "No prior reports available."
 
     return (
-        "You are a concise trading performance analyst for a momentum/imbalance strategy.\n\n"
-        f"TODAY:\n{today}\n\n"
-        f"RECENT HISTORY (newest first):\n{hist}\n\n"
-        "In 3-4 sentences: state how today compares to recent days (better/worse/average and by how much), "
-        "call out the most notable symbol or pattern bucket result, and give one specific actionable observation. "
-        "Be direct and data-driven. Plain text only — no bullet points or headers."
+        "You are an expert quantitative trading analyst reviewing daily performance for a 2-strategy bot.\n\n"
+        "STRATEGY CONTEXT:\n"
+        "- SCALPER: Momentum/imbalance strategy. pattern_bucket (aligned/countertrend/neutral) "
+        "shows whether the scalp entry was with or against the chart pattern at entry time.\n"
+        "- PATTERN: Chart-pattern recognition strategy. Each trade has a named pattern and exit_reason "
+        "(target/failure_stop/time_stop/trailing_stop).\n\n"
+        f"DATE: {date_str}  |  Account: {acct_str}  |  Broker Day PnL: {day_pnl_str}\n\n"
+        f"{scalper_block}\n\n"
+        f"{pattern_block}\n\n"
+        f"PREVIOUS REPORTS (newest first — for maturity/trend analysis):\n{hist}\n\n"
+        "Write a structured analysis covering ALL of the following sections. "
+        "Be specific and data-driven. Reference exact numbers. Plain text, use section headers.\n\n"
+        "SCALPER ANALYSIS: How did the scalper perform? Highlight the biggest win and loss. "
+        "What does the pattern_bucket breakdown reveal about entry quality?\n\n"
+        "PATTERN STRATEGY ANALYSIS: How did the pattern strategy perform? "
+        "Which patterns worked or failed? What exit reasons dominate — is the bot hitting targets "
+        "or getting stopped out?\n\n"
+        "COMPARISON: Which strategy outperformed today and why? "
+        "Is there a divergence worth noting?\n\n"
+        "RECURRING PATTERNS & ISSUES: Based on today's data AND previous reports, "
+        "what behavioral patterns or systemic issues do you see? "
+        "(e.g. countertrend scalps consistently losing, a specific pattern always failing, "
+        "certain symbols underperforming repeatedly)\n\n"
+        "RECOMMENDATIONS: Give 2-3 specific actionable fixes or parameter adjustments. "
+        "Cite the data that supports each.\n\n"
+        "BOT MATURITY: Is the bot improving vs. previous sessions? "
+        "Are past issues being resolved or persisting?"
     )
 
 
@@ -440,10 +606,12 @@ def run_from_upload(content: bytes, filename: str) -> tuple[str, dict]:
 
     stats   = calc_stats(trips)
     account = get_db_account_stats(date_str)
+    pattern_stats = get_pattern_trades_stats(date_str)
 
-    previous = get_previous_reports("post_market", limit=5)
+    previous = get_previous_reports("post_market", limit=7)
     report_md = format_report(date_str, stats, account, overnight_closes, open_at_eod)
-    analysis = call_claude(_build_claude_prompt(date_str, stats, account, previous), max_tokens=300)
+    prompt = _build_claude_prompt(date_str, stats, account, previous, trips, pattern_stats)
+    analysis = call_claude(prompt, max_tokens=1200)
     if analysis:
         report_md += f"\n\n🤖 *AI Analysis:*\n{analysis}"
 
@@ -451,6 +619,7 @@ def run_from_upload(content: bytes, filename: str) -> tuple[str, dict]:
         "date":             date_str,
         "source":           "schwab_csv",
         "trip_stats":       stats,
+        "pattern_stats":    pattern_stats,
         "account":          account,
         "overnight_closes": overnight_closes,
         "open_at_eod":      open_at_eod,
