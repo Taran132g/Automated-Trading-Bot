@@ -1,0 +1,543 @@
+"""pattern_trader.py — Standalone chart-pattern breakout trader (paper simulation).
+
+Runs alongside the scalping strategy, trading independently on confirmed chart
+pattern breakouts. Signals come from ChartPatternDetector on 1-minute bar closes.
+
+Exit cascade (checked in order on every bar close):
+    1. Pattern failure stop  — price retreats back through stop_level
+    2. Trailing stop         — activates after partial profit or 0.5% move in favor
+    3. Price target          — measured-move target_level from PatternSignal
+    4. Time stop             — hard exit after pattern_hold_seconds
+
+Partial profit (exit 7):
+    When price reaches 50% of (entry → target), close 50% of the position and
+    anchor a trailing stop at the breakout level, locking in a free trade on
+    the remaining half.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+import threading
+import time
+import atexit
+from contextlib import closing
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+
+import config_manager
+from chart_pattern_detector import ChartPatternDetector, PatternSignal
+
+LOGGER = logging.getLogger("pattern_trader")
+
+# ── Simulation constants ──────────────────────────────────────────────────────
+SLIPPAGE            = 0.001   # $/share simulated slippage
+TRAIL_TRIGGER_PCT   = 0.005   # 0.5 % in favor to activate trailing stop
+TRAIL_OFFSET_PCT    = 0.003   # trailing stop trails 0.3 % behind best price seen
+PARTIAL_PROFIT_AT   = 0.50    # trigger partial at 50 % of the way to target
+PARTIAL_SIZE_FRAC   = 0.50    # close this fraction of position on partial
+COOLDOWN_AFTER_EXIT = 600     # seconds before re-entering same symbol after exit
+DEFAULT_HOLD_SECS   = 1800    # 30-min time stop (overridden by pattern_hold_seconds)
+MIN_BARS_REQUIRED   = 40      # minimum bars before pattern detection runs
+MAX_BARS_STORED     = 400     # rolling window kept per symbol
+
+
+# ── Position state ────────────────────────────────────────────────────────────
+
+@dataclass
+class PatternPosition:
+    symbol: str
+    direction: int          # +1 long, -1 short
+    qty: int
+    entry_price: float
+    entry_time: float
+    pattern: str
+    target_level: float
+    stop_level: float       # pattern-failure stop
+    breakout_level: float   # anchor price for trailing stop after partial
+    hold_seconds: int       # time-stop threshold
+    trailing_active: bool = False
+    trailing_stop: float = 0.0
+    partial_taken: bool = False
+    best_price: float = 0.0  # best price seen since entry (for trailing)
+
+
+# ── Trader ────────────────────────────────────────────────────────────────────
+
+class PatternTrader:
+    """Bar-driven pattern strategy (paper simulation).
+
+    Call ``on_new_bar(symbol, bar)`` on every completed 1-minute bar.
+    The trader manages its own OHLCV store, runs detection, and handles all exits.
+    """
+
+    DB_PATH    = "penny_basing.db"
+    STATE_FILE = "pattern_trader_state.json"
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._bars: Dict[str, List[dict]] = {}
+        self._positions: Dict[str, PatternPosition] = {}
+        self._last_exit_time: Dict[str, float] = {}
+        self._intraday_pnls: Dict[str, List[float]] = {}
+        self._daily_pnl: float = 0.0
+        self._daily_date: str = time.strftime("%Y-%m-%d")
+        self._detector = ChartPatternDetector()
+        self._init_db()
+        self._load_state()
+        atexit.register(self._save_state)
+        LOGGER.info("[PatternTrader] Initialized")
+
+    # ── DB setup ──────────────────────────────────────────────────────────────
+
+    def _open_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.DB_PATH, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_db(self) -> None:
+        with closing(self._open_conn()) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pattern_trades (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp   REAL,
+                    symbol      TEXT,
+                    side        TEXT,
+                    qty         INTEGER,
+                    price       REAL,
+                    entry_price REAL,
+                    pnl         REAL,
+                    pattern     TEXT,
+                    exit_reason TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pattern_positions (
+                    symbol          TEXT PRIMARY KEY,
+                    qty             INTEGER,
+                    direction       INTEGER,
+                    entry_price     REAL,
+                    entry_time      REAL,
+                    pattern         TEXT,
+                    target_level    REAL,
+                    stop_level      REAL,
+                    breakout_level  REAL,
+                    hold_seconds    INTEGER,
+                    trailing_active INTEGER DEFAULT 0,
+                    trailing_stop   REAL    DEFAULT 0.0,
+                    partial_taken   INTEGER DEFAULT 0,
+                    best_price      REAL    DEFAULT 0.0
+                )
+            """)
+            conn.commit()
+
+    # ── State persistence ──────────────────────────────────────────────────────
+
+    def _load_state(self) -> None:
+        try:
+            p = Path(self.STATE_FILE)
+            if p.exists():
+                data = json.loads(p.read_text())
+                self._daily_pnl  = float(data.get("daily_pnl", 0.0))
+                self._daily_date = data.get("daily_date", time.strftime("%Y-%m-%d"))
+                for sym, pnls in data.get("intraday_pnls", {}).items():
+                    self._intraday_pnls[sym] = [float(v) for v in pnls]
+        except Exception as exc:
+            LOGGER.warning("[PatternTrader] Failed to load state: %s", exc)
+
+    def _save_state(self) -> None:
+        try:
+            state = {
+                "daily_pnl":    self._daily_pnl,
+                "daily_date":   self._daily_date,
+                "intraday_pnls": {k: v for k, v in self._intraday_pnls.items()},
+            }
+            Path(self.STATE_FILE).write_text(json.dumps(state, indent=2))
+        except Exception as exc:
+            LOGGER.warning("[PatternTrader] Failed to save state: %s", exc)
+
+    def _reset_daily_if_needed(self) -> None:
+        today = time.strftime("%Y-%m-%d")
+        if today != self._daily_date:
+            self._daily_pnl  = 0.0
+            self._daily_date = today
+            self._intraday_pnls.clear()
+
+    # ── Main entry point ───────────────────────────────────────────────────────
+
+    def on_new_bar(self, symbol: str, bar: dict) -> None:
+        """Called by grok.py each time a completed 1-minute bar is available."""
+        cfg = config_manager.load_config()
+        pattern_syms = [
+            s.strip().upper()
+            for s in cfg.get("pattern_symbols", "").split(",")
+            if s.strip()
+        ]
+        if pattern_syms and symbol not in pattern_syms:
+            return
+
+        with self._lock:
+            self._reset_daily_if_needed()
+            self._append_bar(symbol, bar)
+            close = float(bar.get("close", 0.0))
+            if close <= 0:
+                return
+
+            df = self._get_df(symbol)
+            if df is None or len(df) < MIN_BARS_REQUIRED:
+                return
+
+            # Check exits first, then entries
+            if symbol in self._positions:
+                self._check_exits(symbol, close, df)
+
+            if symbol not in self._positions:
+                self._check_entries(symbol, close, df)
+
+    # ── Bar store ─────────────────────────────────────────────────────────────
+
+    def _append_bar(self, symbol: str, bar: dict) -> None:
+        bucket = self._bars.setdefault(symbol, [])
+        bucket.append(bar)
+        if len(bucket) > MAX_BARS_STORED:
+            self._bars[symbol] = bucket[-MAX_BARS_STORED:]
+
+    def _get_df(self, symbol: str) -> Optional[pd.DataFrame]:
+        bars = self._bars.get(symbol)
+        if not bars:
+            return None
+        df = pd.DataFrame(bars)
+        df.columns = [c.lower() for c in df.columns]
+        for col in ("open", "high", "low", "close", "volume"):
+            if col not in df.columns:
+                df[col] = 0.0
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df.dropna(subset=["open", "high", "low", "close"]).reset_index(drop=True)
+
+    # ── Entry logic ───────────────────────────────────────────────────────────
+
+    def _check_entries(self, symbol: str, close: float, df: pd.DataFrame) -> None:
+        # Respect cooldown after last exit
+        if time.time() - self._last_exit_time.get(symbol, 0.0) < COOLDOWN_AFTER_EXIT:
+            return
+
+        cfg          = config_manager.load_config()
+        min_conf     = float(cfg.get("pattern_min_confidence", 0.60))
+        hold_secs    = int(cfg.get("pattern_hold_seconds", DEFAULT_HOLD_SECS))
+        base_qty     = int(cfg.get("pattern_position_size", 100))
+
+        try:
+            signals = self._detector.latest(df)
+        except Exception as exc:
+            LOGGER.debug("[PatternTrader] detect error %s: %s", symbol, exc)
+            return
+
+        candidates = [
+            s for s in signals
+            if s.breakout
+            and s.confidence >= min_conf
+            and s.direction in ("bullish", "bearish")
+            and s.target_level is not None
+            and s.stop_level is not None
+            and s.price_level is not None
+        ]
+        if not candidates:
+            return
+
+        sig       = max(candidates, key=lambda s: s.confidence)
+        direction = +1 if sig.direction == "bullish" else -1
+        qty       = max(1, int(base_qty * self._kelly_size_multiplier(symbol)))
+        self._enter(symbol, sig, close, direction, qty, hold_secs)
+
+    def _enter(
+        self,
+        symbol: str,
+        sig: PatternSignal,
+        price: float,
+        direction: int,
+        qty: int,
+        hold_seconds: int,
+    ) -> None:
+        fill = price + SLIPPAGE * direction
+        side = "BUY" if direction == +1 else "SHORT"
+
+        pos = PatternPosition(
+            symbol=symbol,
+            direction=direction,
+            qty=qty,
+            entry_price=fill,
+            entry_time=time.time(),
+            pattern=sig.pattern,
+            target_level=float(sig.target_level),
+            stop_level=float(sig.stop_level),
+            breakout_level=float(sig.price_level),
+            hold_seconds=hold_seconds,
+            best_price=fill,
+        )
+        self._positions[symbol] = pos
+        self._write_trade(symbol, side, qty, fill, fill, 0.0, sig.pattern, "entry")
+        self._persist_position(pos)
+        LOGGER.info(
+            "[PatternTrader] ENTER %s %s %d @ $%.4f  pattern=%s  target=$%.4f  stop=$%.4f",
+            side, symbol, qty, fill, sig.pattern, sig.target_level, sig.stop_level,
+        )
+
+    # ── Exit logic ────────────────────────────────────────────────────────────
+
+    def _check_exits(self, symbol: str, close: float, df: pd.DataFrame) -> None:
+        pos = self._positions.get(symbol)
+        if not pos:
+            return
+
+        d = pos.direction  # +1 long, -1 short
+
+        # Track best price for trailing stop
+        if d == +1:
+            pos.best_price = max(pos.best_price, close)
+        else:
+            pos.best_price = min(pos.best_price, close) if pos.best_price > 0 else close
+
+        # ── 1. Pattern failure stop ───────────────────────────────────────────
+        failure = (d == +1 and close <= pos.stop_level) or \
+                  (d == -1 and close >= pos.stop_level)
+        if failure:
+            self._exit(symbol, close, "failure_stop", pos.qty)
+            return
+
+        # ── 2. Trailing stop (if already active) ─────────────────────────────
+        if pos.trailing_active and pos.trailing_stop > 0:
+            hit_trail = (d == +1 and close <= pos.trailing_stop) or \
+                        (d == -1 and close >= pos.trailing_stop)
+            if hit_trail:
+                self._exit(symbol, close, "trailing_stop", pos.qty)
+                return
+            # Ratchet the stop tighter as price improves
+            if d == +1:
+                new_trail = pos.best_price * (1.0 - TRAIL_OFFSET_PCT)
+                pos.trailing_stop = max(pos.trailing_stop, new_trail)
+            else:
+                new_trail = pos.best_price * (1.0 + TRAIL_OFFSET_PCT)
+                pos.trailing_stop = min(pos.trailing_stop, new_trail) \
+                                    if pos.trailing_stop > 0 else new_trail
+
+        # ── 7. Partial profit at 50 % of target ──────────────────────────────
+        if not pos.partial_taken:
+            midpoint = pos.entry_price + \
+                       (pos.target_level - pos.entry_price) * PARTIAL_PROFIT_AT
+            hit_mid = (d == +1 and close >= midpoint) or \
+                      (d == -1 and close <= midpoint)
+            if hit_mid:
+                partial_qty = max(1, int(pos.qty * PARTIAL_SIZE_FRAC))
+                self._exit(symbol, close, "partial_profit", partial_qty)
+                # Check if the partial closed the whole position (qty was 1)
+                if symbol not in self._positions:
+                    return
+                pos = self._positions[symbol]
+                pos.partial_taken   = True
+                pos.trailing_active = True
+                # Anchor trailing stop at breakout level — locked-in free trade
+                pos.trailing_stop   = pos.breakout_level
+                self._persist_position(pos)
+                LOGGER.info(
+                    "[PatternTrader] PARTIAL %s: trailing stop anchored at $%.4f",
+                    symbol, pos.trailing_stop,
+                )
+
+        # ── 3. Full price target ──────────────────────────────────────────────
+        hit_target = (d == +1 and close >= pos.target_level) or \
+                     (d == -1 and close <= pos.target_level)
+        if hit_target:
+            self._exit(symbol, close, "target", pos.qty)
+            return
+
+        # Activate trailing stop once price moves TRAIL_TRIGGER_PCT in favor
+        # (even without a partial, we want to protect a meaningful unrealised gain)
+        if not pos.trailing_active:
+            move_pct = (close - pos.entry_price) / pos.entry_price * d
+            if move_pct >= TRAIL_TRIGGER_PCT:
+                pos.trailing_active = True
+                pos.trailing_stop   = pos.breakout_level
+                self._persist_position(pos)
+
+        # ── 4. Time stop ──────────────────────────────────────────────────────
+        if time.time() - pos.entry_time >= pos.hold_seconds:
+            self._exit(symbol, close, "time_stop", pos.qty)
+
+    def _exit(self, symbol: str, price: float, reason: str, qty: int) -> None:
+        pos = self._positions.get(symbol)
+        if not pos:
+            return
+
+        d    = pos.direction
+        fill = price - SLIPPAGE * d
+        side = "SELL" if d == +1 else "COVER"
+        pnl  = (fill - pos.entry_price) * d * qty
+
+        self._daily_pnl += pnl
+        self._intraday_pnls.setdefault(symbol, []).append(pnl)
+
+        self._write_trade(symbol, side, qty, fill, pos.entry_price, pnl, pos.pattern, reason)
+
+        remaining = pos.qty - qty
+        if remaining > 0:
+            pos.qty = remaining
+            self._persist_position(pos)
+            LOGGER.info(
+                "[PatternTrader] PARTIAL EXIT %s %s %d @ $%.4f  pnl=$%.2f  reason=%s  remaining=%d",
+                side, symbol, qty, fill, pnl, reason, remaining,
+            )
+        else:
+            del self._positions[symbol]
+            self._last_exit_time[symbol] = time.time()
+            self._remove_db_position(symbol)
+            self._save_state()
+            LOGGER.info(
+                "[PatternTrader] EXIT %s %s %d @ $%.4f  pnl=$%.2f  reason=%s  daily=$%.2f",
+                side, symbol, qty, fill, pnl, reason, self._daily_pnl,
+            )
+
+    # ── Kelly without PI ──────────────────────────────────────────────────────
+
+    def _kelly_size_multiplier(self, symbol: str) -> float:
+        try:
+            cfg = config_manager.load_config()
+            if not cfg.get("pattern_kelly_enabled", True):
+                return 1.0
+
+            kelly_fraction = float(cfg.get("pattern_kelly_fraction", 0.5))
+            max_mult       = float(cfg.get("pattern_kelly_max_multiplier", 2.0))
+            min_mult       = float(cfg.get("pattern_kelly_min_multiplier", 0.25))
+            lookback_days  = int(cfg.get("pattern_kelly_lookback_days", 30))
+
+            pnls   = list(self._intraday_pnls.get(symbol, []))
+            wins   = [p for p in pnls if p > 0]
+            losses = [abs(p) for p in pnls if p < 0]
+
+            if not pnls:
+                kelly_mult = 1.0
+            elif wins and losses:
+                W          = len(wins) / len(pnls)
+                R          = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
+                full_kelly = (W * R - (1.0 - W)) / R
+                kelly_mult = 1.0 + full_kelly * kelly_fraction
+            else:
+                W, R = self._db_kelly_params(symbol, lookback_days)
+                if W is not None:
+                    full_kelly = (W * R - (1.0 - W)) / R
+                    kelly_mult = 1.0 + full_kelly * kelly_fraction
+                else:
+                    kelly_mult = 1.0
+
+            multiplier = max(min_mult, min(kelly_mult, max_mult))
+            LOGGER.info(
+                "[PatternTrader] [KELLY] %s: kelly=%.3f → mult=%.3f",
+                symbol, kelly_mult, multiplier,
+            )
+            return multiplier
+        except Exception:
+            return 1.0
+
+    def _db_kelly_params(
+        self, symbol: str, lookback_days: int
+    ) -> Tuple[Optional[float], Optional[float]]:
+        cutoff = time.time() - lookback_days * 86_400
+        try:
+            with closing(self._open_conn()) as conn:
+                rows = conn.execute(
+                    "SELECT pnl FROM pattern_trades "
+                    "WHERE symbol=? AND side IN ('SELL','COVER') "
+                    "AND timestamp>=? AND pnl IS NOT NULL",
+                    (symbol, cutoff),
+                ).fetchall()
+                pnls = [float(r[0]) for r in rows if r[0] not in (None, 0.0)]
+                if not pnls:
+                    rows = conn.execute(
+                        "SELECT pnl FROM pattern_trades "
+                        "WHERE side IN ('SELL','COVER') AND timestamp>=? AND pnl IS NOT NULL",
+                        (cutoff,),
+                    ).fetchall()
+                    pnls = [float(r[0]) for r in rows if r[0] not in (None, 0.0)]
+        except Exception:
+            return None, None
+
+        wins   = [p      for p in pnls if p > 0]
+        losses = [abs(p) for p in pnls if p < 0]
+        if not wins or not losses:
+            return None, None
+
+        W = len(wins) / len(pnls)
+        R = (sum(wins) / len(wins)) / (sum(losses) / len(losses))
+        return W, R
+
+    # ── DB helpers ────────────────────────────────────────────────────────────
+
+    def _write_trade(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        price: float,
+        entry_price: float,
+        pnl: float,
+        pattern: str,
+        exit_reason: str,
+    ) -> None:
+        try:
+            with closing(self._open_conn()) as conn:
+                conn.execute(
+                    "INSERT INTO pattern_trades "
+                    "(timestamp,symbol,side,qty,price,entry_price,pnl,pattern,exit_reason) "
+                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    (time.time(), symbol, side, qty, price,
+                     entry_price, pnl, pattern, exit_reason),
+                )
+                conn.commit()
+        except Exception as exc:
+            LOGGER.error("[PatternTrader] DB write error: %s", exc)
+
+    def _persist_position(self, pos: PatternPosition) -> None:
+        try:
+            with closing(self._open_conn()) as conn:
+                conn.execute(
+                    """INSERT INTO pattern_positions
+                       (symbol, qty, direction, entry_price, entry_time, pattern,
+                        target_level, stop_level, breakout_level, hold_seconds,
+                        trailing_active, trailing_stop, partial_taken, best_price)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(symbol) DO UPDATE SET
+                         qty=excluded.qty,
+                         direction=excluded.direction,
+                         entry_price=excluded.entry_price,
+                         entry_time=excluded.entry_time,
+                         pattern=excluded.pattern,
+                         target_level=excluded.target_level,
+                         stop_level=excluded.stop_level,
+                         breakout_level=excluded.breakout_level,
+                         hold_seconds=excluded.hold_seconds,
+                         trailing_active=excluded.trailing_active,
+                         trailing_stop=excluded.trailing_stop,
+                         partial_taken=excluded.partial_taken,
+                         best_price=excluded.best_price""",
+                    (
+                        pos.symbol, pos.qty, pos.direction,
+                        pos.entry_price, pos.entry_time, pos.pattern,
+                        pos.target_level, pos.stop_level, pos.breakout_level,
+                        pos.hold_seconds, int(pos.trailing_active),
+                        pos.trailing_stop, int(pos.partial_taken), pos.best_price,
+                    ),
+                )
+                conn.commit()
+        except Exception as exc:
+            LOGGER.error("[PatternTrader] Position persist error: %s", exc)
+
+    def _remove_db_position(self, symbol: str) -> None:
+        try:
+            with closing(self._open_conn()) as conn:
+                conn.execute("DELETE FROM pattern_positions WHERE symbol=?", (symbol,))
+                conn.commit()
+        except Exception as exc:
+            LOGGER.error("[PatternTrader] Position remove error: %s", exc)

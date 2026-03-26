@@ -29,6 +29,8 @@ DEFAULT_CONFIG = {
     # Pattern strategy (separate symbol list, position size, and plain Kelly — no PI)
     "pattern_symbols": os.getenv("PATTERN_SYMBOLS", ""),
     "pattern_position_size": int(os.getenv("PATTERN_POSITION_SIZE", "100")),
+    "pattern_min_confidence": 0.60,   # Minimum breakout confidence to enter
+    "pattern_hold_seconds": 1800,     # Hard time stop (30 minutes)
     "pattern_kelly_enabled": True,
     "pattern_kelly_fraction": 0.5,
     "pattern_kelly_min_trades": 10,
