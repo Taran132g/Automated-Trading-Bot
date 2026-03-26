@@ -143,11 +143,12 @@ def _get_float_env(name: str, default: float, minimum: float = 0.0) -> float:
     return max(val, minimum)
 def _get_symbols() -> List[str]:
     config = config_manager.load_config()
-    # Combine live and paper symbols for monitoring
-    live = config.get("live_symbols", "").split(",")
-    paper = config.get("paper_symbols", "").split(",")
+    # Combine live, paper, and pattern symbols for monitoring
+    live    = config.get("live_symbols",    "").split(",")
+    paper   = config.get("paper_symbols",   "").split(",")
+    pattern = config.get("pattern_symbols", "").split(",")
     all_syms = set()
-    for s in live + paper:
+    for s in live + paper + pattern:
         s = s.strip().upper()
         if s:
             all_syms.add(s)
@@ -407,6 +408,7 @@ _chart_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _timesale_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _last_chart_or_timesale_ts: Dict[str, float] = defaultdict(float)
 PIPELINE = None
+PATTERN_TRADER = None
 last_bar_minute: Dict[str, int] = {}
 current_bar: Dict[str, dict] = {}
 _last_volume_fallback_ts: Dict[str, float] = defaultdict(float)
@@ -591,10 +593,12 @@ def on_chart_equity(msg: dict):
         if 'PIPELINE' in globals() and PIPELINE:
             dt = datetime.fromtimestamp(ts)
             curr_min = dt.minute
-            
+
             # If minute changed, finalize the previous bar
             if sym in last_bar_minute and curr_min != last_bar_minute[sym]:
                 PIPELINE.on_new_bar(sym, current_bar[sym])
+                if 'PATTERN_TRADER' in globals() and PATTERN_TRADER:
+                    PATTERN_TRADER.on_new_bar(sym, current_bar[sym])
                 # Reset for new minute
                 current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta, "timestamp": ts}
             else:
@@ -1100,16 +1104,15 @@ async def main():
         else:
             log_structured("STARTUP", {"message": "In-process (inline) traders disabled via ENABLE_INLINE_DISPATCH=0"})
         
-        # --- SHADOW PATTERN TRADER (Always Paper) ---
-        # This runs in parallel whether you are Live or Paper trading.
-        # It uses its own DB and State so it doesn't interfere.
-        from paper_trader import PaperTrader
-        import config_manager
-        _paper_size = int(config_manager.get_value("paper_position_size", 1000))
-        
-        shadow_db = "penny_basing_patterns.db"
-        shadow_state = "paper_trader_state_patterns.json"
-        traders.append(("shadow", PaperTrader(db_path=shadow_db, state_file=shadow_state)))
+        # --- PATTERN TRADER (independent breakout strategy) ---
+        global PATTERN_TRADER
+        try:
+            from pattern_trader import PatternTrader as _PT
+            PATTERN_TRADER = _PT()
+            log_structured("PATTERN_TRADER", {"status": "initialized"})
+        except Exception as _pt_err:
+            log_structured("PATTERN_TRADER_ERROR", {"error": str(_pt_err)})
+            PATTERN_TRADER = None
         
         # Pattern Engine Integration
         try:
@@ -1143,7 +1146,7 @@ async def main():
             else:
                 log_structured("PATTERN_BACKFILL_SKIP", {"reason": "No primary executor found"})
                 
-            log_structured("PATTERN_ENGINE", {"status": "initialized", "db": shadow_db})
+            log_structured("PATTERN_ENGINE", {"status": "initialized"})
         except Exception as e:
             log_structured("PATTERN_ENGINE_ERROR", {"error": str(e)})
             PIPELINE = None
