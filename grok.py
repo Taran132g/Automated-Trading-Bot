@@ -1131,6 +1131,14 @@ async def main():
                     executor_for_backfill = trader.executor
                     break
             
+            # Wire executor into PatternTrader for live exit orders
+            if executor_for_backfill and PATTERN_TRADER is not None:
+                try:
+                    PATTERN_TRADER.set_executor(executor_for_backfill)
+                    log_structured("PATTERN_TRADER_EXECUTOR", {"status": "attached"})
+                except Exception as _pe:
+                    log_structured("PATTERN_TRADER_EXECUTOR_ERROR", {"error": str(_pe)})
+
             if executor_for_backfill:
                 log_structured("PATTERN_BACKFILL_START", {"symbols": live_symbols})
                 for sym in live_symbols:

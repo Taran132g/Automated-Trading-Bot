@@ -30,7 +30,7 @@ import atexit
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -39,8 +39,9 @@ from chart_pattern_detector import ChartPatternDetector, PatternSignal
 
 LOGGER = logging.getLogger("pattern_trader")
 
-# ── Simulation constants ──────────────────────────────────────────────────────
-SLIPPAGE            = 0.001   # $/share simulated slippage
+# ── Constants ─────────────────────────────────────────────────────────────────
+SLIPPAGE            = 0.001   # $/share simulated slippage (paper fills only)
+POLL_INTERVAL       = 0.5     # seconds between live price polls for exit checks
 TRAIL_TRIGGER_PCT   = 0.005   # 0.5 % in favor to activate trailing stop
 TRAIL_OFFSET_PCT    = 0.003   # trailing stop trails 0.3 % behind best price seen
 PARTIAL_PROFIT_AT   = 0.50    # trigger partial at 50 % of the way to target
@@ -92,11 +93,15 @@ class PatternTrader:
         self._intraday_pnls: Dict[str, List[float]] = {}
         self._daily_pnl: float = 0.0
         self._daily_date: str = time.strftime("%Y-%m-%d")
+        self._last_price: Dict[str, float] = {}   # latest price per symbol
+        self._executor: Optional[Any] = None       # SchwabOrderExecutor, if live
+        self._stop_poll = threading.Event()
         self._detector = ChartPatternDetector()
         self._init_db()
         self._load_state()
-        atexit.register(self._save_state)
-        LOGGER.info("[PatternTrader] Initialized")
+        self._start_poll_thread()
+        atexit.register(self._shutdown)
+        LOGGER.info("[PatternTrader] Initialized (polling every %.1fs)", POLL_INTERVAL)
 
     # ── DB setup ──────────────────────────────────────────────────────────────
 
@@ -179,6 +184,74 @@ class PatternTrader:
             self._daily_date = today
             self._intraday_pnls.clear()
 
+    def _shutdown(self) -> None:
+        self._stop_poll.set()
+        self._save_state()
+
+    # ── Live executor (optional) ───────────────────────────────────────────────
+
+    def set_executor(self, executor: Any) -> None:
+        """Attach a SchwabOrderExecutor for live order placement.
+
+        When set, stop exits fire real market orders instead of paper fills.
+        Call this after PatternTrader.__init__ from grok.py once the primary
+        LiveTrader's executor is available.
+        """
+        self._executor = executor
+        mode = "DRY-RUN" if getattr(executor, "dry_run", True) else "LIVE"
+        LOGGER.info("[PatternTrader] Executor attached — mode=%s", mode)
+
+    # ── 0.5-second exit polling ────────────────────────────────────────────────
+
+    def _start_poll_thread(self) -> None:
+        t = threading.Thread(target=self._poll_loop, daemon=True, name="pattern-exit-poll")
+        t.start()
+
+    def _poll_loop(self) -> None:
+        """Background thread: fetch live prices and run exit checks every 0.5 s."""
+        while not self._stop_poll.is_set():
+            try:
+                with self._lock:
+                    symbols = list(self._positions.keys())
+
+                for symbol in symbols:
+                    price = self._fetch_live_price(symbol)
+                    if price and price > 0:
+                        with self._lock:
+                            if symbol in self._positions:
+                                # Update best price tracking
+                                pos = self._positions[symbol]
+                                if pos.direction == +1:
+                                    pos.best_price = max(pos.best_price, price)
+                                else:
+                                    pos.best_price = min(pos.best_price, price) \
+                                                     if pos.best_price > 0 else price
+                                self._check_exits(symbol, price)
+            except Exception as exc:
+                LOGGER.debug("[PatternTrader] poll error: %s", exc)
+            self._stop_poll.wait(POLL_INTERVAL)
+
+    def _fetch_live_price(self, symbol: str) -> Optional[float]:
+        """Return the latest price for *symbol*.
+
+        Live mode: fetches from Schwab via executor.fetch_quote().
+        Paper mode: returns the last known bar close price.
+        """
+        if self._executor is not None:
+            try:
+                quote = self._executor.fetch_quote(symbol)
+                if isinstance(quote, dict):
+                    price = (
+                        quote.get("lastPrice")
+                        or quote.get("mark")
+                        or quote.get("last")
+                    )
+                    if price:
+                        return float(price)
+            except Exception as exc:
+                LOGGER.debug("[PatternTrader] fetch_quote error %s: %s", symbol, exc)
+        return self._last_price.get(symbol)
+
     # ── Main entry point ───────────────────────────────────────────────────────
 
     def on_new_bar(self, symbol: str, bar: dict) -> None:
@@ -198,6 +271,8 @@ class PatternTrader:
             close = float(bar.get("close", 0.0))
             if close <= 0:
                 return
+
+            self._last_price[symbol] = close  # keep last known price for poll thread
 
             df = self._get_df(symbol)
             if df is None or len(df) < MIN_BARS_REQUIRED:
@@ -337,7 +412,7 @@ class PatternTrader:
 
     # ── Exit logic ────────────────────────────────────────────────────────────
 
-    def _check_exits(self, symbol: str, close: float, df: pd.DataFrame) -> None:
+    def _check_exits(self, symbol: str, close: float, df: Optional[pd.DataFrame] = None) -> None:
         pos = self._positions.get(symbol)
         if not pos:
             return
@@ -430,8 +505,23 @@ class PatternTrader:
             return
 
         d    = pos.direction
-        fill = price - SLIPPAGE * d
         side = "SELL" if d == +1 else "COVER"
+
+        # Live mode: fire real market order; use submitted price or fall back to quote
+        if self._executor is not None and not getattr(self._executor, "dry_run", True):
+            try:
+                self._executor.submit_market(symbol=symbol, qty=qty, side=side)
+                LOGGER.info(
+                    "[PatternTrader] LIVE ORDER %s %s %d  reason=%s", side, symbol, qty, reason
+                )
+                # Price already known from poll; use it as fill estimate
+                fill = price - SLIPPAGE * d
+            except Exception as exc:
+                LOGGER.error("[PatternTrader] submit_market error %s: %s", symbol, exc)
+                fill = price - SLIPPAGE * d
+        else:
+            fill = price - SLIPPAGE * d
+
         pnl  = (fill - pos.entry_price) * d * qty
 
         self._daily_pnl += pnl
