@@ -554,7 +554,7 @@ export function HomePage() {
           flexShrink: 0,
         }}>
           {bottomItems.length > 0
-            ? <Ticker items={bottomItems} speed={44} direction="reverse" />
+            ? <Ticker items={bottomItems} speed={32} direction="reverse" />
             : <div style={{ fontFamily: 'Roboto Mono', fontSize: '0.7rem', color: '#1F2937', padding: '0 20px' }}>—</div>
           }
         </div>
