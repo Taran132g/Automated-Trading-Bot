@@ -36,6 +36,7 @@ import pandas as pd
 
 import config_manager
 from chart_pattern_detector import ChartPatternDetector, PatternSignal
+from telegram_notifier import TelegramNotifier
 
 LOGGER = logging.getLogger("pattern_trader")
 
@@ -46,7 +47,7 @@ TRAIL_TRIGGER_PCT   = 0.005   # 0.5 % in favor to activate trailing stop
 TRAIL_OFFSET_PCT    = 0.003   # trailing stop trails 0.3 % behind best price seen
 PARTIAL_PROFIT_AT   = 0.50    # trigger partial at 50 % of the way to target
 PARTIAL_SIZE_FRAC   = 0.50    # close this fraction of position on partial
-COOLDOWN_AFTER_EXIT = 600     # seconds before re-entering same symbol after exit
+COOLDOWN_AFTER_EXIT = 300     # 5-min cooldown before re-entering same symbol after exit
 DEFAULT_HOLD_SECS   = 1800    # 30-min time stop (overridden by pattern_hold_seconds)
 MIN_BARS_REQUIRED   = 40      # minimum bars before pattern detection runs
 MAX_BARS_STORED     = 400     # rolling window kept per symbol
@@ -113,6 +114,7 @@ class PatternTrader:
         self._executor: Optional[Any] = None       # SchwabOrderExecutor, if live
         self._stop_poll = threading.Event()
         self._detector = ChartPatternDetector()
+        self._telegram = TelegramNotifier()
         self._init_db()
         self._load_state()
         self._start_poll_thread()
@@ -582,6 +584,28 @@ class PatternTrader:
                 "[PatternTrader] EXIT %s %s %d @ $%.4f  pnl=$%.2f  reason=%s  daily=$%.2f",
                 side, symbol, qty, fill, pnl, reason, self._daily_pnl,
             )
+            # Telegram notification on full close (live mode only — paper is too noisy)
+            if self.mode == "live":
+                try:
+                    direction_label = "LONG" if d == +1 else "SHORT"
+                    pnl_sign = "+" if pnl >= 0 else ""
+                    msg = (
+                        f"{'✅' if pnl >= 0 else '🔴'} *Pattern Trade Closed*\n"
+                        f"Symbol: `{symbol}` ({direction_label})\n"
+                        f"Pattern: `{pos.pattern}`\n"
+                        f"Entry: `${pos.entry_price:.4f}` → Exit: `${fill:.4f}`\n"
+                        f"Qty: `{qty}` | PnL: `{pnl_sign}${pnl:.2f}`\n"
+                        f"Reason: `{reason}`\n"
+                        f"Daily PnL: `{'+' if self._daily_pnl >= 0 else ''}${self._daily_pnl:.2f}`\n"
+                        f"Cooldown: 5 min on `{symbol}`"
+                    )
+                    threading.Thread(
+                        target=self._telegram.send_message,
+                        args=(msg,),
+                        daemon=True,
+                    ).start()
+                except Exception as _tg_err:
+                    LOGGER.debug("[PatternTrader] Telegram notify error: %s", _tg_err)
 
     # ── Kelly without PI ──────────────────────────────────────────────────────
 
