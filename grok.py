@@ -839,8 +839,7 @@ def on_book(msg: dict):
             ratio = metrics.ask_to_bid_ratio if direction == "ask-heavy" else metrics.bid_to_ask_ratio
             if (imbalance_duration >= curr_min_duration and
                 metrics.valid_exchanges >= curr_min_venues and
-                vol_per_min >= curr_min_volume and
-                ratio >= 3.0):
+                vol_per_min >= curr_min_volume):
 
                 heavy_venues = metrics.ask_heavy_venues if direction == "ask-heavy" else metrics.bid_heavy_venues
                 target_limit_price = bid_price if direction == "bid-heavy" else ask_price
