@@ -51,9 +51,9 @@ export const paperService = {
 }
 
 export const patternService = {
-  getState: () => api.get('/patterns/state'),
-  getEquityCurve: (range = 'today') => api.get(`/patterns/equity-curve?range=${range}`),
-  getPerformance: () => api.get('/patterns/performance'),
+  getState: (mode = 'live') => api.get(`/patterns/state?mode=${mode}`),
+  getEquityCurve: (range = 'today', mode = 'live') => api.get(`/patterns/equity-curve?range=${range}&mode=${mode}`),
+  getPerformance: (mode = 'live') => api.get(`/patterns/performance?mode=${mode}`),
 }
 
 export const comparisonService = {

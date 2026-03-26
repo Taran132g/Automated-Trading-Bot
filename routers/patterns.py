@@ -11,7 +11,6 @@ router = APIRouter()
 
 BASE_DIR = Path(__file__).parent.parent.resolve()
 PATTERN_DB = BASE_DIR / "penny_basing.db"
-PATTERN_STATE = BASE_DIR / "pattern_trader_state.json"
 
 
 def _get_today_start() -> float:
@@ -19,9 +18,15 @@ def _get_today_start() -> float:
     return datetime(now.year, now.month, now.day).timestamp()
 
 
-def _load_pattern_state() -> dict:
+def _resolve_tables(mode: str) -> tuple[str, str, Path]:
+    if mode == "paper":
+        return "pattern_trades_paper", "pattern_positions_paper", BASE_DIR / "pattern_trader_paper_state.json"
+    return "pattern_trades", "pattern_positions", BASE_DIR / "pattern_trader_state.json"
+
+
+def _load_pattern_state(state_path: Path) -> dict:
     try:
-        with open(PATTERN_STATE) as f:
+        with open(state_path) as f:
             return json.load(f)
     except Exception:
         return {}
@@ -34,8 +39,9 @@ def _get_db():
 
 
 @router.get("/state")
-def get_pattern_state():
-    state = _load_pattern_state()
+def get_pattern_state(mode: str = Query("live")):
+    trades_table, positions_table, state_path = _resolve_tables(mode)
+    state = _load_pattern_state(state_path)
     today_start = _get_today_start()
     daily_pnl = total_pnl = win_rate = 0.0
     trades_today = 0
@@ -46,24 +52,24 @@ def get_pattern_state():
             with closing(db) as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
-                    "SELECT COALESCE(SUM(pnl),0) FROM pattern_trades WHERE timestamp >= ?", (today_start,)
+                    f"SELECT COALESCE(SUM(pnl),0) FROM {trades_table} WHERE timestamp >= ?", (today_start,)
                 ).fetchone()
                 daily_pnl = float(row[0]) if row else 0.0
 
-                row = conn.execute("SELECT COALESCE(SUM(pnl),0) FROM pattern_trades").fetchone()
+                row = conn.execute(f"SELECT COALESCE(SUM(pnl),0) FROM {trades_table}").fetchone()
                 total_pnl = float(row[0]) if row else 0.0
 
                 wins = conn.execute(
-                    "SELECT COUNT(*) FROM pattern_trades WHERE pnl > 0 AND side IN ('SELL','COVER') AND timestamp >= ?",
+                    f"SELECT COUNT(*) FROM {trades_table} WHERE pnl > 0 AND side IN ('SELL','COVER') AND timestamp >= ?",
                     (today_start,)
                 ).fetchone()[0]
                 exits = conn.execute(
-                    "SELECT COUNT(*) FROM pattern_trades WHERE side IN ('SELL','COVER') AND timestamp >= ?",
+                    f"SELECT COUNT(*) FROM {trades_table} WHERE side IN ('SELL','COVER') AND timestamp >= ?",
                     (today_start,)
                 ).fetchone()[0]
                 win_rate = (wins / exits * 100) if exits > 0 else 0.0
                 trades_today = conn.execute(
-                    "SELECT COUNT(*) FROM pattern_trades WHERE timestamp >= ?", (today_start,)
+                    f"SELECT COUNT(*) FROM {trades_table} WHERE timestamp >= ?", (today_start,)
                 ).fetchone()[0]
         except Exception:
             pass
@@ -74,7 +80,7 @@ def get_pattern_state():
         try:
             with closing(db2) as conn:
                 conn.row_factory = sqlite3.Row
-                rows = conn.execute("SELECT symbol, qty FROM pattern_positions").fetchall()
+                rows = conn.execute(f"SELECT symbol, qty FROM {positions_table}").fetchall()
                 for r in rows:
                     if r["qty"] != 0:
                         positions[r["symbol"]] = r["qty"]
@@ -93,7 +99,9 @@ def get_pattern_state():
 @router.get("/equity-curve")
 def get_pattern_equity_curve(
     range: str = Query("today"),
+    mode: str = Query("live"),
 ):
+    trades_table, _, _ = _resolve_tables(mode)
     points = []
     db = _get_db()
     if not db:
@@ -104,10 +112,10 @@ def get_pattern_equity_curve(
             conn.row_factory = sqlite3.Row
             if range == "today":
                 rows = conn.execute(
-                    "SELECT * FROM pattern_trades WHERE timestamp >= ? ORDER BY timestamp ASC", (today_start,)
+                    f"SELECT * FROM {trades_table} WHERE timestamp >= ? ORDER BY timestamp ASC", (today_start,)
                 ).fetchall()
             else:
-                rows = conn.execute("SELECT * FROM pattern_trades ORDER BY timestamp ASC").fetchall()
+                rows = conn.execute(f"SELECT * FROM {trades_table} ORDER BY timestamp ASC").fetchall()
             cumulative = 0.0
             for r in rows:
                 pnl = float(r["pnl"]) if r["pnl"] else 0.0
@@ -123,7 +131,8 @@ def get_pattern_equity_curve(
 
 
 @router.get("/performance")
-def get_pattern_performance():
+def get_pattern_performance(mode: str = Query("live")):
+    trades_table, _, _ = _resolve_tables(mode)
     rows_out = []
     db = _get_db()
     if not db:
@@ -133,7 +142,7 @@ def get_pattern_performance():
         with closing(db) as conn:
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                """SELECT symbol,
+                f"""SELECT symbol,
                           SUM(pnl) as total_pnl,
                           COUNT(*) as trades,
                           SUM(CASE WHEN pnl > 0 AND side IN ('SELL','COVER') THEN 1 ELSE 0 END) as wins,
@@ -141,7 +150,7 @@ def get_pattern_performance():
                           SUM(CASE WHEN timestamp >= ? THEN pnl ELSE 0 END) as today_pnl,
                           SUM(CASE WHEN pnl > 0 AND side IN ('SELL','COVER') AND timestamp >= ? THEN 1 ELSE 0 END) as today_wins,
                           SUM(CASE WHEN side IN ('SELL','COVER') AND timestamp >= ? THEN 1 ELSE 0 END) as today_exits
-                   FROM pattern_trades GROUP BY symbol ORDER BY total_pnl DESC""",
+                   FROM {trades_table} GROUP BY symbol ORDER BY total_pnl DESC""",
                 (today_start, today_start, today_start)
             ).fetchall()
             for r in rows:

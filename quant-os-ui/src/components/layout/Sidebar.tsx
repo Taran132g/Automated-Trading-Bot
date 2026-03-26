@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Activity, FlaskConical, Search, GitCompare,
-  Terminal, Bot, ShieldAlert, LogOut, Cpu, X
+  Terminal, Bot, ShieldAlert, LogOut, Cpu, X, BarChart2
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { authService } from '@/services/api'
@@ -9,8 +9,9 @@ import { useQuery } from '@tanstack/react-query'
 import { adminService } from '@/services/api'
 
 const NAV = [
-  { to: '/terminal',   icon: Activity,    label: 'Terminal' },
+  { to: '/scalper',    icon: Activity,    label: 'Scalper' },
   { to: '/backtest',   icon: Search,      label: 'Backtest' },
+  { to: '/pattern',    icon: BarChart2,   label: 'Pattern' },
   { to: '/patterns',   icon: FlaskConical, label: 'Pattern Lab' },
   { to: '/comparison', icon: GitCompare,  label: 'Comparison' },
   { to: '/grok',       icon: Terminal,    label: 'Grok Monitor' },

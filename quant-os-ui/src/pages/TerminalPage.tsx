@@ -84,7 +84,7 @@ export function TerminalPage() {
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#F8FAFC', letterSpacing: '-0.3px' }}>
-          EXECUTION TERMINAL
+          SCALPER
         </h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <LiveIndicator isLive={isMarketOpen()} />
