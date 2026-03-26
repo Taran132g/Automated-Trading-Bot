@@ -1,8 +1,11 @@
 import { useState, useRef } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import { Lock } from 'lucide-react'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { Badge } from '@/components/ui/Badge'
 import { agentService } from '@/services/api'
+import { useAuthStore } from '@/store/authStore'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -18,6 +21,8 @@ interface Report {
 }
 
 export function AgentsPage() {
+  const authenticated = useAuthStore((s) => s.authenticated)
+  const navigate = useNavigate()
   const [agentFilter, setAgentFilter] = useState<AgentType>('all')
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [uploadResult, setUploadResult] = useState<Record<string, unknown> | null>(null)
@@ -57,31 +62,55 @@ export function AgentsPage() {
       {/* Upload zone */}
       <div style={{ background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
         <SectionHeader>Upload Post-Market Trade Activity</SectionHeader>
-        <div
-          onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}
-          onClick={() => fileRef.current?.click()}
-          style={{
-            border: `2px dashed ${dragging ? '#00FF99' : '#1F2937'}`,
-            borderRadius: 8, padding: '28px', textAlign: 'center', cursor: 'pointer',
-            background: dragging ? 'rgba(0,255,153,0.04)' : 'transparent',
-            transition: 'all 0.15s',
-          }}
-        >
-          <div style={{ color: '#64748B', fontSize: '0.82rem' }}>
-            Drop Schwab HTML/CSV export here, or click to browse
+        {!authenticated ? (
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            gap: 12, padding: '28px', border: '2px dashed #1F2937', borderRadius: 8,
+          }}>
+            <Lock size={20} color="#64748B" />
+            <div style={{ color: '#64748B', fontSize: '0.82rem', textAlign: 'center' }}>
+              Admin login required to upload reports
+            </div>
+            <button
+              onClick={() => navigate('/login')}
+              style={{
+                padding: '7px 20px', borderRadius: 6, cursor: 'pointer',
+                background: 'rgba(0,255,153,0.08)', border: '1px solid #00FF9933',
+                color: '#00FF99', fontSize: '0.78rem', fontFamily: 'Inter',
+              }}
+            >
+              Login
+            </button>
           </div>
-          <div style={{ color: '#94A3B8', fontSize: '0.68rem', marginTop: 6 }}>
-            Filename must contain date (YYYY-MM-DD)
-          </div>
-        </div>
-        <input ref={fileRef} type="file" accept=".html,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
-        {uploadMut.isPending && <div style={{ color: '#94A3B8', fontSize: '0.78rem', marginTop: 10 }}>Generating report...</div>}
-        {uploadResult && (
-          <div style={{ marginTop: 12, background: '#0B0E14', border: '1px solid #1F2937', borderRadius: 6, padding: '10px 14px', fontSize: '0.75rem', color: '#00FF99' }}>
-            ✓ Report generated successfully
-          </div>
+        ) : (
+          <>
+            <div
+              onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}
+              onClick={() => fileRef.current?.click()}
+              style={{
+                border: `2px dashed ${dragging ? '#00FF99' : '#1F2937'}`,
+                borderRadius: 8, padding: '28px', textAlign: 'center', cursor: 'pointer',
+                background: dragging ? 'rgba(0,255,153,0.04)' : 'transparent',
+                transition: 'all 0.15s',
+              }}
+            >
+              <div style={{ color: '#64748B', fontSize: '0.82rem' }}>
+                Drop Schwab HTML/CSV export here, or click to browse
+              </div>
+              <div style={{ color: '#94A3B8', fontSize: '0.68rem', marginTop: 6 }}>
+                Filename must contain date (YYYY-MM-DD)
+              </div>
+            </div>
+            <input ref={fileRef} type="file" accept=".html,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
+            {uploadMut.isPending && <div style={{ color: '#94A3B8', fontSize: '0.78rem', marginTop: 10 }}>Generating report...</div>}
+            {uploadResult && (
+              <div style={{ marginTop: 12, background: '#0B0E14', border: '1px solid #1F2937', borderRadius: 6, padding: '10px 14px', fontSize: '0.75rem', color: '#00FF99' }}>
+                ✓ Report generated successfully
+              </div>
+            )}
+          </>
         )}
       </div>
 
