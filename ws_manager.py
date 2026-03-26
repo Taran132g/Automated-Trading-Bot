@@ -131,10 +131,10 @@ def _compute_terminal_snapshot(last_trade_id: int, last_alert_id: int) -> dict:
                                 dd = max(dd, (peak - v) / peak * 100)
                         max_drawdown = round(dd, 2)
 
-                # New trades since last_trade_id
+                # New trades since last_trade_id (today only)
                 rows = conn.execute(
-                    "SELECT * FROM live_trades WHERE id > ? ORDER BY id ASC LIMIT 50",
-                    (last_trade_id,)
+                    "SELECT * FROM live_trades WHERE id > ? AND timestamp >= ? ORDER BY id ASC LIMIT 50",
+                    (last_trade_id, today_start)
                 ).fetchall()
                 for r in rows:
                     d = dict(r)
