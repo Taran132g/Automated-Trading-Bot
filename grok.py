@@ -19,6 +19,7 @@ import os
 import sys
 import argparse
 import asyncio
+import concurrent.futures
 from pathlib import Path
 from urllib.parse import urlparse
 from collections import deque, defaultdict
@@ -413,6 +414,11 @@ PATTERN_TRADER_PAPER = None # paper instance (simulation only)
 last_bar_minute: Dict[str, int] = {}
 current_bar: Dict[str, dict] = {}
 _last_volume_fallback_ts: Dict[str, float] = defaultdict(float)
+# Persistent thread pools — created once in run_stream() to avoid per-alert overhead
+_TRADER_POOL: Optional[concurrent.futures.ThreadPoolExecutor] = None
+_PATTERN_BAR_POOL: Optional[concurrent.futures.ThreadPoolExecutor] = None
+# Pre-built ET timezone — avoids reconstructing it on every L2 imbalance check
+ET_TZ = pytz.timezone("America/New_York")
 # Inline live trader hook
 # -----------------------
 # When grok writes a new alert to SQLite, it also forwards that alert directly
@@ -602,22 +608,13 @@ def on_chart_equity(msg: dict):
             # If minute changed, finalize the previous bar
             if sym in last_bar_minute and curr_min != last_bar_minute[sym]:
                 PIPELINE.on_new_bar(sym, current_bar[sym])
-                # Dispatch to both pattern traders in parallel threads so
-                # neither blocks the event loop or each other.
+                # Dispatch to both pattern traders in persistent pool — fire and forget.
+                # Bar processing is fully independent; next bar won't arrive for ~60s.
                 _bar_snap = current_bar[sym].copy()
-                _pt_instances = [
-                    t for t in (PATTERN_TRADER, PATTERN_TRADER_PAPER)
-                    if t is not None
-                ]
-                if _pt_instances:
-                    import concurrent.futures as _cf
-                    with _cf.ThreadPoolExecutor(max_workers=len(_pt_instances)) as _pt_pool:
-                        _pt_futs = [_pt_pool.submit(t.on_new_bar, sym, _bar_snap) for t in _pt_instances]
-                        for _f in _cf.as_completed(_pt_futs):
-                            try:
-                                _f.result()
-                            except Exception as _pe:
-                                log_structured("PATTERN_BAR_ERROR", {"symbol": sym, "error": str(_pe)})
+                if _PATTERN_BAR_POOL is not None:
+                    for _pt in (PATTERN_TRADER, PATTERN_TRADER_PAPER):
+                        if _pt is not None:
+                            _PATTERN_BAR_POOL.submit(_pt.on_new_bar, sym, _bar_snap)
                 # Reset for new minute
                 current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta, "timestamp": ts}
             else:
@@ -677,8 +674,6 @@ def on_book(msg: dict):
     if now - _last_pi_read_ts > 5.0:
         _last_pi_read_ts = now
         try:
-            import json
-            from pathlib import Path
             state_path = Path(__file__).parent / "live_trader_state.json"
             if state_path.exists():
                 with open(state_path, "r") as f:
@@ -734,17 +729,18 @@ def on_book(msg: dict):
                 vol_per_min = _summarize(sym, now) if q else 0
         else:
             vol_per_min = _summarize(sym, now) if q else 0
-        log_structured("IMBALANCE_DEBUG", {
-            "symbol": sym,
-            "ask_heavy": metrics.ask_heavy_venues,
-            "bid_heavy": metrics.bid_heavy_venues,
-            "valid_ex": metrics.valid_exchanges,
-            "bids": metrics.total_bids,
-            "asks": metrics.total_asks,
-            "vol_per_min": vol_per_min,
-            "price": price,
-            "rolling_pi": _cached_rolling_pi
-        })
+        if DEBUG:
+            log_structured("IMBALANCE_DEBUG", {
+                "symbol": sym,
+                "ask_heavy": metrics.ask_heavy_venues,
+                "bid_heavy": metrics.bid_heavy_venues,
+                "valid_ex": metrics.valid_exchanges,
+                "bids": metrics.total_bids,
+                "asks": metrics.total_asks,
+                "vol_per_min": vol_per_min,
+                "price": price,
+                "rolling_pi": _cached_rolling_pi
+            })
         direction = None
         
         # EST = UTC - 5
@@ -828,13 +824,7 @@ def on_book(msg: dict):
             #   12:00–14:00 → 5 venues (midday lull, stricter)
             #   15:00–16:00 → 3 venues (close rush)
             #   otherwise   → default (MIN_ASK_HEAVY)
-            import datetime as _dt
-            _now_et = _dt.datetime.now(_dt.timezone(
-                _dt.timedelta(hours=-5 if _dt.datetime.now(_dt.timezone.utc).month < 3
-                              or (_dt.datetime.now(_dt.timezone.utc).month == 3
-                                  and _dt.datetime.now(_dt.timezone.utc).day < 9)
-                              else -4)
-            ))
+            _now_et = datetime.now(ET_TZ)
             _et_h = _now_et.hour + _now_et.minute / 60.0
             if 10.5 <= _et_h < 12.0:
                 curr_min_venues = 3
@@ -873,12 +863,10 @@ def on_book(msg: dict):
                     alert_history[sym].pop(0)
                 global inline_only_next_alert_id
                 c = conn.cursor()
-                if inline_only_mode:
-                    inline_only_next_alert_id += 1
-                    next_alert_id = inline_only_next_alert_id
-                else:
-                    c.execute("SELECT IFNULL(MAX(rowid), 0) FROM alerts")
-                    next_alert_id = (c.fetchone() or [0])[0] + 1
+                # Always use in-memory counter (initialized from DB at startup)
+                # — avoids a SELECT MAX query on every alert
+                inline_only_next_alert_id += 1
+                next_alert_id = inline_only_next_alert_id
                 inline_ok = True
                 if inline_trader_dispatch:
                     inline_ok = inline_trader_dispatch(next_alert_id, alert)
@@ -1123,6 +1111,17 @@ async def main():
         else:
             log_structured("STARTUP", {"message": "In-process (inline) traders disabled via ENABLE_INLINE_DISPATCH=0"})
         
+        # Persistent thread pools — created once, reused for every alert and bar dispatch
+        global _TRADER_POOL, _PATTERN_BAR_POOL
+        _TRADER_POOL = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(4, len(traders) * 2),
+            thread_name_prefix="trader-dispatch",
+        )
+        _PATTERN_BAR_POOL = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="pattern-bar",
+        )
+
         # --- PATTERN TRADER (independent breakout strategy — live + paper) ---
         global PATTERN_TRADER, PATTERN_TRADER_PAPER
         try:
@@ -1202,22 +1201,21 @@ async def main():
                     if 'PIPELINE' in globals() and PIPELINE:
                         enriched = PIPELINE.on_l2_alert(alert, base_qty=_paper_size)
 
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=len(traders)) as executor:
-                        futures = []
-                        for name, trader in traders:
-                            # Primary and Shadow both get enriched data now
-                            futures.append(executor.submit(
+                    pool = _TRADER_POOL
+                    if pool is not None:
+                        futs = [
+                            pool.submit(
                                 trader.process_alert,
                                 int(alert_id),
                                 alert["symbol"],
                                 alert["direction"],
                                 float(alert["price"]),
                                 range_cents=float(alert.get("range_cents", 0.0)),
-                                pattern_info=enriched
-                            ))
-                        # Wait for all to complete
-                        for future in concurrent.futures.as_completed(futures):
+                                pattern_info=enriched,
+                            )
+                            for name, trader in traders
+                        ]
+                        for future in concurrent.futures.as_completed(futs):
                             try:
                                 future.result()
                             except Exception as e:
@@ -1378,14 +1376,14 @@ async def main():
                 if not traders:
                     await asyncio.sleep(1)
                     continue
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=len(traders)) as executor:
-                    futures = []
-                    for name, trader in traders:
-                        if hasattr(trader, "_check_profit_limits"):
-                            futures.append(executor.submit(trader._check_profit_limits))
-                    
-                    for future in concurrent.futures.as_completed(futures):
+                pool = _TRADER_POOL
+                if pool is not None:
+                    futs = [
+                        pool.submit(trader._check_profit_limits)
+                        for name, trader in traders
+                        if hasattr(trader, "_check_profit_limits")
+                    ]
+                    for future in concurrent.futures.as_completed(futs):
                         try:
                             future.result()
                         except Exception as e:
@@ -1410,9 +1408,9 @@ async def main():
                 for _name, _trader in traders:
                     if hasattr(_trader, "_reconcile_positions_on_startup"):
                         try:
-                            import concurrent.futures as _cf
-                            with _cf.ThreadPoolExecutor(max_workers=1) as _ex:
-                                _ex.submit(_trader._reconcile_positions_on_startup).result(timeout=8)
+                            pool = _TRADER_POOL
+                            if pool is not None:
+                                pool.submit(_trader._reconcile_positions_on_startup).result(timeout=8)
                             log_structured("STREAM_RECONCILE", {"trader": _name, "reason": "stream_timeout"})
                         except Exception as _e:
                             log_structured("STREAM_RECONCILE_ERROR", {"trader": _name, "error": str(_e)})
@@ -1427,6 +1425,9 @@ async def main():
             book_task.cancel()
         if conn:
             conn.close()
+        for _pool in (_TRADER_POOL, _PATTERN_BAR_POOL):
+            if _pool is not None:
+                _pool.shutdown(wait=False)
         try:
             await stream.logout()
         except Exception:
