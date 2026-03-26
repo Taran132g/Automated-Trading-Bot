@@ -9,9 +9,6 @@ import remarkGfm from 'remark-gfm'
 const AGENT_TYPES = ['all', 'post_market', 'alert_quality', 'risk_monitor', 'optimizer'] as const
 type AgentType = typeof AGENT_TYPES[number]
 
-const RUNNABLE_AGENTS = ['post_market', 'alert_quality', 'optimizer'] as const
-type RunnableAgent = typeof RUNNABLE_AGENTS[number]
-
 interface Report {
   rowid: number
   timestamp: number
@@ -26,21 +23,6 @@ export function AgentsPage() {
   const [uploadResult, setUploadResult] = useState<Record<string, unknown> | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
-
-  const [triggerAgent, setTriggerAgent] = useState<RunnableAgent>('post_market')
-  const [totpCode, setTotpCode] = useState('')
-  const [triggerMsg, setTriggerMsg] = useState<{ ok: boolean; text: string } | null>(null)
-
-  const triggerMut = useMutation({
-    mutationFn: () => agentService.runAgent(triggerAgent, totpCode).then((r) => r.data),
-    onSuccess: (data) => {
-      setTriggerMsg({ ok: true, text: data.message })
-      setTotpCode('')
-    },
-    onError: (err: { response?: { data?: { detail?: string } } }) => {
-      setTriggerMsg({ ok: false, text: err.response?.data?.detail ?? 'Request failed' })
-    },
-  })
 
   const { data, refetch } = useQuery({
     queryKey: ['agent-reports', agentFilter],
@@ -99,66 +81,6 @@ export function AgentsPage() {
         {uploadResult && (
           <div style={{ marginTop: 12, background: '#0B0E14', border: '1px solid #1F2937', borderRadius: 6, padding: '10px 14px', fontSize: '0.75rem', color: '#00FF99' }}>
             ✓ Report generated successfully
-          </div>
-        )}
-      </div>
-
-      {/* Manual trigger */}
-      <div style={{ background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
-        <SectionHeader>Run Agent Manually</SectionHeader>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap', marginTop: 10 }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <label style={{ color: '#64748B', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Agent</label>
-            <select
-              value={triggerAgent}
-              onChange={(e) => setTriggerAgent(e.target.value as RunnableAgent)}
-              style={{
-                background: '#0B0E14', border: '1px solid #1F2937', borderRadius: 6,
-                color: '#E2E8F0', fontSize: '0.8rem', padding: '7px 10px', fontFamily: 'Inter', cursor: 'pointer',
-              }}
-            >
-              {RUNNABLE_AGENTS.map((a) => (
-                <option key={a} value={a}>{a.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}</option>
-              ))}
-            </select>
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <label style={{ color: '#64748B', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>TOTP Code</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              maxLength={6}
-              placeholder="000000"
-              value={totpCode}
-              onChange={(e) => { setTotpCode(e.target.value); setTriggerMsg(null) }}
-              onKeyDown={(e) => e.key === 'Enter' && totpCode.length === 6 && triggerMut.mutate()}
-              style={{
-                background: '#0B0E14', border: '1px solid #1F2937', borderRadius: 6,
-                color: '#E2E8F0', fontSize: '0.9rem', padding: '7px 12px', width: 110,
-                fontFamily: 'Roboto Mono', letterSpacing: '0.15em', textAlign: 'center',
-              }}
-            />
-          </div>
-          <button
-            onClick={() => triggerMut.mutate()}
-            disabled={totpCode.length !== 6 || triggerMut.isPending}
-            style={{
-              padding: '8px 18px', borderRadius: 6, cursor: totpCode.length === 6 ? 'pointer' : 'not-allowed',
-              background: totpCode.length === 6 ? 'rgba(0,255,153,0.1)' : 'transparent',
-              border: `1px solid ${totpCode.length === 6 ? '#00FF9933' : '#1F2937'}`,
-              color: totpCode.length === 6 ? '#00FF99' : '#4B5563',
-              fontSize: '0.78rem', fontFamily: 'Inter',
-            }}
-          >
-            {triggerMut.isPending ? 'Starting...' : 'Run'}
-          </button>
-        </div>
-        {triggerMsg && (
-          <div style={{
-            marginTop: 10, fontSize: '0.75rem',
-            color: triggerMsg.ok ? '#00FF99' : '#EF4444',
-          }}>
-            {triggerMsg.ok ? '✓' : '✗'} {triggerMsg.text}
           </div>
         )}
       </div>
