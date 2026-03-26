@@ -105,3 +105,13 @@ export const agentService = {
     )
   },
 }
+
+export interface QuoteItem {
+  symbol: string
+  price: number
+  change_pct: number
+}
+
+export const marketService = {
+  getQuotes: () => api.get<{ top: QuoteItem[]; bottom: QuoteItem[] }>('/market/quotes'),
+}

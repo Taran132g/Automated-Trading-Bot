@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from routers import auth, terminal, analytics, paper, patterns, comparison, logs, admin, agents
 from routers.config_router import router as config_router
+from routers.market import router as market_router
 from ws_manager import terminal_broadcast_loop
 
 STATIC_DIR = Path(__file__).parent / "quant-os-ui" / "dist"
@@ -62,6 +63,7 @@ app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])
 app.include_router(config_router, prefix="/api/config", tags=["config"])
 app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
+app.include_router(market_router, prefix="/api/market", tags=["market"])
 
 # Serve React build in production
 if STATIC_DIR.exists():

@@ -5,7 +5,8 @@ import {
   GitCompare, Terminal, Bot, ShieldAlert, Cpu,
   TrendingUp, TrendingDown, Minus, Wallet,
 } from 'lucide-react'
-import { adminService, terminalService, patternService, paperService } from '@/services/api'
+import { adminService, terminalService, patternService, paperService, marketService } from '@/services/api'
+import type { QuoteItem } from '@/services/api'
 
 const CARDS = [
   {
@@ -197,19 +198,10 @@ function BackgroundChart() {
   )
 }
 
-const TICKER_TOP = [
-  'SPY +0.32%', 'QQQ +0.58%', 'AAPL +1.24%', 'NVDA +2.41%', 'TSLA -0.87%',
-  'AMD +1.63%', 'META +0.95%', 'MSFT +0.48%', 'AMZN +1.12%', 'GOOGL +0.71%',
-  'JPM +0.55%', 'GS +0.83%', 'BAC -0.22%', 'COIN +3.14%', 'HOOD +1.88%',
-  'IWM +0.41%', 'VIX -4.20%', 'DXY -0.18%', 'BTC +2.09%', 'ETH +1.76%',
-]
-
-const TICKER_BOT = [
-  'ES1! +0.28%', 'NQ1! +0.51%', 'CL1! -0.64%', 'GC1! +0.37%', 'SI1! +0.92%',
-  'ZB1! -0.15%', 'EURUSD +0.12%', 'USDJPY -0.08%', 'GBPUSD +0.19%', 'USDCAD -0.09%',
-  'XLF +0.44%', 'XLK +0.67%', 'XLE -0.33%', 'XLV +0.21%', 'ARKK +1.44%',
-  'HYG +0.11%', 'TLT -0.29%', 'GLD +0.38%', 'SLV +0.88%', 'USO -0.71%',
-]
+function fmtQuote(q: QuoteItem): string {
+  const sign = q.change_pct >= 0 ? '+' : ''
+  return `${q.symbol} ${sign}${q.change_pct.toFixed(2)}%`
+}
 
 function Ticker({ items, speed, direction, opacity = 1 }: {
   items: string[]
@@ -292,6 +284,17 @@ export function HomePage() {
     retry: false,
   })
 
+  const { data: marketData } = useQuery({
+    queryKey: ['market-quotes'],
+    queryFn: () => marketService.getQuotes().then((r) => r.data),
+    refetchInterval: 60000,
+    staleTime: 55000,
+    retry: false,
+  })
+
+  const topItems = marketData?.top?.map(fmtQuote) ?? []
+  const bottomItems = marketData?.bottom?.map(fmtQuote) ?? []
+
   const backendOnline = status?.loop_running || status?.trader_running || status?.grok_running
 
   const pnlByRoute: Record<string, number | undefined> = {
@@ -338,7 +341,10 @@ export function HomePage() {
           padding: '7px 0',
           flexShrink: 0,
         }}>
-          <Ticker items={TICKER_TOP} speed={32} direction="forward" />
+          {topItems.length > 0
+            ? <Ticker items={topItems} speed={32} direction="forward" />
+            : <div style={{ fontFamily: 'Roboto Mono', fontSize: '0.72rem', color: '#1F2937', padding: '0 20px' }}>Loading market data…</div>
+          }
         </div>
 
         {/* Main */}
@@ -547,7 +553,10 @@ export function HomePage() {
           padding: '7px 0',
           flexShrink: 0,
         }}>
-          <Ticker items={TICKER_BOT} speed={44} direction="reverse" opacity={0.55} />
+          {bottomItems.length > 0
+            ? <Ticker items={bottomItems} speed={44} direction="reverse" opacity={0.55} />
+            : <div style={{ fontFamily: 'Roboto Mono', fontSize: '0.7rem', color: '#1F2937', padding: '0 20px' }}>—</div>
+          }
         </div>
       </div>
 
