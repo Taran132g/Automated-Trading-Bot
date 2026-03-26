@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
 import { RootLayout } from '@/components/layout/RootLayout'
 import { LoginPage } from '@/pages/LoginPage'
+import { HomePage } from '@/pages/HomePage'
 import { TerminalPage } from '@/pages/TerminalPage'
 import { BacktestPage } from '@/pages/BacktestPage'
 import { PatternLabPage } from '@/pages/PatternLabPage'
@@ -22,8 +23,8 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route index element={<HomePage />} />
           <Route element={<RootLayout />}>
-            <Route index element={<Navigate to="/scalper" replace />} />
             <Route path="/scalper" element={<TerminalPage />} />
             <Route path="/backtest" element={<BacktestPage />} />
             <Route path="/pattern" element={<PatternPage />} />
@@ -37,7 +38,7 @@ export default function App() {
               </ProtectedRoute>
             } />
           </Route>
-          <Route path="*" element={<Navigate to="/scalper" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>
