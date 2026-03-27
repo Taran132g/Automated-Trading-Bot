@@ -455,6 +455,7 @@ class PatternTrader:
             and s.target_level is not None
             and s.stop_level is not None
             and s.price_level is not None
+            and s.breakout
         ]
         if not candidates:
             return
