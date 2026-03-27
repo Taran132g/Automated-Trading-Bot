@@ -183,15 +183,41 @@ class PatternTrader:
                 self._daily_date = data.get("daily_date", time.strftime("%Y-%m-%d"))
                 for sym, pnls in data.get("intraday_pnls", {}).items():
                     self._intraday_pnls[sym] = [float(v) for v in pnls]
+                for sym, p_data in data.get("positions", {}).items():
+                    try:
+                        self._positions[sym] = PatternPosition(
+                            symbol=p_data["symbol"],
+                            direction=int(p_data["direction"]),
+                            qty=int(p_data["qty"]),
+                            entry_price=float(p_data["entry_price"]),
+                            entry_time=float(p_data["entry_time"]),
+                            pattern=p_data["pattern"],
+                            target_level=float(p_data["target_level"]),
+                            stop_level=float(p_data["stop_level"]),
+                            atr_stop=float(p_data["atr_stop"]),
+                            breakout_level=float(p_data["breakout_level"]),
+                            hold_seconds=int(p_data["hold_seconds"]),
+                            trailing_active=bool(p_data.get("trailing_active", False)),
+                            trailing_stop=float(p_data.get("trailing_stop", 0.0)),
+                            partial_taken=bool(p_data.get("partial_taken", False)),
+                            best_price=float(p_data.get("best_price", 0.0)),
+                        )
+                        LOGGER.info("[PatternTrader:%s] Restored open position: %s %s %dsh @ %.4f",
+                                    self.mode, sym, "LONG" if p_data["direction"] == 1 else "SHORT",
+                                    p_data["qty"], p_data["entry_price"])
+                    except Exception as exc:
+                        LOGGER.warning("[PatternTrader:%s] Skipping bad position entry for %s: %s", self.mode, sym, exc)
         except Exception as exc:
             LOGGER.warning("[PatternTrader:%s] Failed to load state: %s", self.mode, exc)
 
     def _save_state(self) -> None:
         try:
+            from dataclasses import asdict
             state = {
                 "daily_pnl":    self._daily_pnl,
                 "daily_date":   self._daily_date,
                 "intraday_pnls": {k: v for k, v in self._intraday_pnls.items()},
+                "positions": {sym: asdict(pos) for sym, pos in self._positions.items()},
             }
             Path(self._state_file).write_text(json.dumps(state, indent=2))
         except Exception as exc:
@@ -288,6 +314,34 @@ class PatternTrader:
             except Exception as exc:
                 LOGGER.debug("[PatternTrader:%s] fetch_quote error %s: %s", self.mode, symbol, exc)
         return None
+
+    # ── Bar seeding (startup backfill) ────────────────────────────────────────
+
+    def seed_bars(self, symbol: str, df: "pd.DataFrame") -> None:
+        """Pre-populate bar history from a historical OHLCV DataFrame.
+
+        Called at grok.py startup so the detector can find patterns immediately
+        without waiting MIN_BARS_REQUIRED live bars to accumulate after each restart.
+        """
+        required = {"open", "high", "low", "close"}
+        if df is None or df.empty or not required.issubset(set(df.columns)):
+            return
+        with self._lock:
+            for _, row in df.iterrows():
+                bar = {
+                    "open":      float(row.get("open",      0) or 0),
+                    "high":      float(row.get("high",      0) or 0),
+                    "low":       float(row.get("low",       0) or 0),
+                    "close":     float(row.get("close",     0) or 0),
+                    "volume":    float(row.get("volume",    0) or 0),
+                    "timestamp": float(row.get("timestamp", 0) or 0),
+                }
+                if bar["close"] > 0:
+                    self._append_bar(symbol, bar)
+        LOGGER.info(
+            "[PatternTrader:%s] Seeded %d bars for %s (total stored: %d)",
+            self.mode, len(df), symbol, len(self._bars.get(symbol, [])),
+        )
 
     # ── Main entry point ───────────────────────────────────────────────────────
 
@@ -450,6 +504,17 @@ class PatternTrader:
         self._positions[symbol] = pos
         self._write_trade(symbol, side, qty, fill, fill, 0.0, sig.pattern, "entry")
         self._persist_position(pos)
+
+        # Live mode: fire real market order for entry
+        if self._executor is not None and not getattr(self._executor, "dry_run", True):
+            try:
+                self._executor.submit_market(symbol=symbol, qty=qty, side=side)
+                LOGGER.info(
+                    "[PatternTrader] LIVE ORDER %s %s %d  pattern=%s", side, symbol, qty, sig.pattern
+                )
+            except Exception as exc:
+                LOGGER.error("[PatternTrader] submit_market entry error %s: %s", symbol, exc)
+
         LOGGER.info(
             "[PatternTrader] ENTER %s %s %d @ $%.4f  pattern=%s  target=$%.4f  "
             "failure_stop=$%.4f  atr_stop=$%.4f",
