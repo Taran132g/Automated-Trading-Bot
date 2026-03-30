@@ -45,6 +45,7 @@ class DetectorConfig:
     trend_ema_fast: int = 20
     trend_ema_slow: int = 50
     allow_overlap: bool = False
+    min_range_width_pct: float = 0.005  # range_breakout: minimum range width as % of price (0.5%)
 
 
 class ChartPatternDetector:
@@ -851,7 +852,7 @@ class ChartPatternDetector:
             resistance = float(seg["high"].quantile(0.92))
             support = float(seg["low"].quantile(0.08))
             width = (resistance - support) / max(seg["close"].mean(), 1e-9)
-            if width > 0.04:
+            if width > 0.04 or width < self.cfg.min_range_width_pct:
                 continue
 
             pre_trend = self._prior_trend(df, start)
