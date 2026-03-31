@@ -463,12 +463,14 @@ class PatternTrader:
         sig       = max(candidates, key=lambda s: s.confidence)
         direction = +1 if sig.direction == "bullish" else -1
 
-        # Guard: skip if target is already surpassed at entry (stale breakout signal)
-        if direction == +1 and float(sig.target_level) <= close:
-            LOGGER.debug("[PatternTrader] %s stale signal — target %.4f already at/below entry %.4f", symbol, sig.target_level, close)
+        # Guard: skip stale or near-exhausted signals
+        target = float(sig.target_level)
+        min_target_dist = close * 0.003  # require at least 0.3% remaining to target
+        if direction == +1 and (target <= close or target - close < min_target_dist):
+            LOGGER.debug("[PatternTrader] %s stale/exhausted long — target %.4f too close to entry %.4f", symbol, target, close)
             return
-        if direction == -1 and float(sig.target_level) >= close:
-            LOGGER.debug("[PatternTrader] %s stale signal — target %.4f already at/above entry %.4f", symbol, sig.target_level, close)
+        if direction == -1 and (target >= close or close - target < min_target_dist):
+            LOGGER.debug("[PatternTrader] %s stale/exhausted short — target %.4f too close to entry %.4f", symbol, target, close)
             return
 
         atr_stop  = close - direction * atr_stop_multiplier * atr  # fixed at entry
