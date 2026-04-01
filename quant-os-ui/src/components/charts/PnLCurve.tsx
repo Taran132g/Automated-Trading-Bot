@@ -48,8 +48,7 @@ export function PnLCurve({ data, color = '#00FF99', height = 240 }: PnLCurveProp
   const values = data.map(d => d.value)
   const minVal = Math.min(...values)
   const maxVal = Math.max(...values)
-  const pad = (maxVal - minVal) * 0.05 || Math.abs(minVal) * 0.05 || 1
-  const yDomain: [number, number] = [minVal - pad, maxVal + pad]
+  const yDomain: [number, number] = minVal === maxVal ? [minVal - 1, maxVal + 1] : [minVal, maxVal]
 
   return (
     <ResponsiveContainer width="100%" height={height}>
