@@ -143,16 +143,25 @@ def get_equity_curve(
             conn.row_factory = sqlite3.Row
             if range == "today":
                 rows = conn.execute(
-                    "SELECT timestamp, pnl FROM live_trades WHERE timestamp >= ? ORDER BY timestamp ASC",
+                    "SELECT timestamp, pnl, side, qty, price, entry_price FROM live_trades"
+                    " WHERE side IN ('SELL','COVER') AND timestamp >= ? ORDER BY timestamp ASC",
                     (today_start,)
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT timestamp, pnl FROM live_trades ORDER BY timestamp ASC"
+                    "SELECT timestamp, pnl, side, qty, price, entry_price FROM live_trades"
+                    " WHERE side IN ('SELL','COVER') ORDER BY timestamp ASC"
                 ).fetchall()
             cumulative = 0.0
             for r in rows:
                 pnl = float(r["pnl"]) if r["pnl"] else 0.0
+                # Fallback: recompute from entry_price/price if stored pnl is 0
+                if pnl == 0.0:
+                    ep = float(r["entry_price"] or 0)
+                    ex = float(r["price"] or 0)
+                    qty = abs(int(r["qty"] or 0))
+                    if ep > 0 and ex > 0 and ep != ex:
+                        pnl = (ex - ep) * qty if r["side"] == "SELL" else (ep - ex) * qty
                 cumulative += pnl
                 ts = float(r["timestamp"])
                 points.append({
