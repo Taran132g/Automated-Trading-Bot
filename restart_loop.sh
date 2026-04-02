@@ -56,5 +56,14 @@ while true; do
         fi
     fi
 
+    # 4. Start Pattern Trader
+    if [ "$RUN_PATTERN_TRADER" = "1" ]; then
+        if ! pgrep -f "pattern_trader.py" > /dev/null; then
+            echo "Starting Pattern Trader at $(date)..." >> "$LOOP_LOG"
+            .venv/bin/python3 pattern_trader.py >> pattern_trader.log 2>&1 &
+            echo "Pattern Trader started (PID: $!)" >> "$LOOP_LOG"
+        fi
+    fi
+
     sleep 10
 done
