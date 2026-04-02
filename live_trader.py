@@ -1312,6 +1312,8 @@ class LiveTrader:
                     direction, symbol, age_secs, time_stop_secs, side, pnl,
                 )
                 self.active_limit_stops[symbol] = True
+                with self._lock:
+                    self.last_exit_time[symbol] = time.time()
                 try:
                     self._submit_order(
                         alert_id=-1, symbol=symbol, direction="time-stop",
