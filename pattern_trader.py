@@ -694,12 +694,13 @@ class PatternTrader:
             max_mult       = float(cfg.get("pattern_kelly_max_multiplier", 2.0))
             min_mult       = float(cfg.get("pattern_kelly_min_multiplier", 0.25))
             lookback_days  = int(cfg.get("pattern_kelly_lookback_days", 30))
+            min_trades     = int(cfg.get("pattern_kelly_min_trades", 3))
 
             pnls   = list(self._intraday_pnls.get(symbol, []))
             wins   = [p for p in pnls if p > 0]
             losses = [abs(p) for p in pnls if p < 0]
 
-            if not pnls:
+            if len(pnls) < min_trades:
                 kelly_mult = 1.0
             elif wins and losses:
                 W          = len(wins) / len(pnls)
