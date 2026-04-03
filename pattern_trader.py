@@ -111,6 +111,8 @@ class PatternTrader:
         self._daily_pnl: float = 0.0
         self._daily_date: str = time.strftime("%Y-%m-%d")
         self._last_price: Dict[str, float] = {}   # latest price per symbol (from stream)
+        self._consec_failures: Dict[str, int] = {}          # consecutive stop-outs per symbol
+        self._pattern_key: Dict[str, tuple] = {}            # (breakout_level, stop_level) fingerprint
         self._executor: Optional[Any] = None       # SchwabOrderExecutor, if live
         self._stop_poll = threading.Event()
         self._detector = ChartPatternDetector()
@@ -473,7 +475,36 @@ class PatternTrader:
             LOGGER.debug("[PatternTrader] %s stale/exhausted short — target %.4f too close to entry %.4f", symbol, target, close)
             return
 
-        atr_stop  = close - direction * atr_stop_multiplier * atr  # fixed at entry
+        # Guard: skip if pattern range is too narrow (likely noise / inside spread)
+        min_range_pct = float(cfg.get("pattern_min_range_pct", 0.01))
+        range_width = abs(float(sig.price_level) - float(sig.stop_level))
+        if close > 0 and range_width / close < min_range_pct:
+            LOGGER.debug(
+                "[PatternTrader] %s range too narrow: %.4f is %.3f%% of price (min %.3f%%) — skipping",
+                symbol, range_width, range_width / close * 100, min_range_pct * 100,
+            )
+            return
+
+        # Guard: consecutive failure block — same pattern geometry failed too many times
+        max_consec = int(cfg.get("pattern_max_consec_failures", 3))
+        sig_key = (round(float(sig.price_level), 2), round(float(sig.stop_level), 2))
+        if self._pattern_key.get(symbol) != sig_key:
+            # Pattern geometry changed — reset failure counter
+            self._consec_failures[symbol] = 0
+            self._pattern_key[symbol] = sig_key
+        elif self._consec_failures.get(symbol, 0) >= max_consec:
+            LOGGER.info(
+                "[PatternTrader] %s pattern (%.4f/%.4f) blocked after %d consecutive failures",
+                symbol, sig.price_level, sig.stop_level, max_consec,
+            )
+            return
+
+        # Enforce minimum stop distance — stop must be at least pattern_min_stop_pct of price
+        # to avoid being stopped out by normal spread oscillation on low-priced stocks
+        min_stop_pct = float(cfg.get("pattern_min_stop_pct", 0.005))
+        raw_stop_dist = atr_stop_multiplier * atr
+        min_stop_dist = max(raw_stop_dist, close * min_stop_pct)
+        atr_stop  = close - direction * min_stop_dist  # fixed at entry
         qty       = max(1, int(base_qty * self._kelly_size_multiplier(symbol)))
 
         # Derive hold time from pattern width: a breakout should resolve in roughly
@@ -662,6 +693,12 @@ class PatternTrader:
                 side, symbol, qty, fill, pnl, reason, remaining,
             )
         else:
+            # Update consecutive failure counter
+            if reason in ("failure_stop", "atr_stop"):
+                self._consec_failures[symbol] = self._consec_failures.get(symbol, 0) + 1
+            elif reason in ("target", "time_stop", "trailing_stop"):
+                self._consec_failures.pop(symbol, None)
+
             del self._positions[symbol]
             self._last_exit_time[symbol] = time.time()
             self._remove_db_position(symbol)
