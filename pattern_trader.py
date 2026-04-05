@@ -357,6 +357,9 @@ class PatternTrader:
         if pattern_syms and symbol not in pattern_syms:
             return
 
+        entry_params = None
+        close = 0.0
+
         with self._lock:
             self._reset_daily_if_needed()
             self._append_bar(symbol, bar)
@@ -375,7 +378,42 @@ class PatternTrader:
                 self._check_exits(symbol, close, df)
 
             if symbol not in self._positions:
-                self._check_entries(symbol, close, df)
+                entry_params = self._get_entry_params(symbol, close, df)
+
+        # ── Claude filter + entry (outside lock so price updates / exits aren't blocked) ──
+        if entry_params is not None:
+            sig, direction, qty, hold_secs, atr_stop, df_snapshot, pattern_bars = entry_params
+            use_claude = config_manager.load_config().get("pattern_claude_filter", True)
+            if use_claude:
+                try:
+                    from agents.pattern_analyst import evaluate_signal
+                    decision = evaluate_signal(
+                        symbol=symbol,
+                        pattern=sig.pattern,
+                        direction=sig.direction,
+                        confidence=sig.confidence,
+                        entry_price=close,
+                        stop_level=float(sig.stop_level),
+                        target_level=float(sig.target_level),
+                        pattern_bars=pattern_bars,
+                        recent_df=df_snapshot,
+                        intraday_pnl=self._daily_pnl,
+                        mode=self.mode,
+                    )
+                    if not decision["approved"]:
+                        LOGGER.info(
+                            "[PatternTrader:%s] Claude rejected %s %s: %s",
+                            self.mode, symbol, sig.pattern, decision["reason"],
+                        )
+                        return
+                except Exception as exc:
+                    LOGGER.warning(
+                        "[PatternTrader:%s] Claude filter error — entering anyway: %s", self.mode, exc
+                    )
+
+            with self._lock:
+                if symbol not in self._positions:  # re-check after lock gap
+                    self._enter(symbol, sig, close, direction, qty, hold_secs, atr_stop)
 
     # ── Bar store ─────────────────────────────────────────────────────────────
 
@@ -417,10 +455,18 @@ class PatternTrader:
 
     # ── Entry logic ───────────────────────────────────────────────────────────
 
-    def _check_entries(self, symbol: str, close: float, df: pd.DataFrame) -> None:
+    def _get_entry_params(
+        self, symbol: str, close: float, df: pd.DataFrame
+    ) -> Optional[Tuple[Any, int, int, int, float, pd.DataFrame, int]]:
+        """Evaluate whether a new entry is warranted.
+
+        Returns a tuple of (sig, direction, qty, hold_secs, atr_stop, df_snapshot, pattern_bars)
+        if a valid entry candidate is found, otherwise None.
+        Does NOT call _enter() — the caller handles Claude filtering and entry outside this lock.
+        """
         # Respect cooldown after last exit
         if time.time() - self._last_exit_time.get(symbol, 0.0) < COOLDOWN_AFTER_EXIT:
-            return
+            return None
 
         cfg                  = config_manager.load_config()
         min_conf             = float(cfg.get("pattern_min_confidence", 0.60))
@@ -434,19 +480,28 @@ class PatternTrader:
         # ── ATR entry filter ─────────────────────────────────────────────────
         atr = self._compute_atr(df, atr_period)
         if atr <= 0:
-            return  # Can't assess volatility yet
+            return None  # Can't assess volatility yet
         if close > 0 and (atr / close) > atr_entry_max_pct:
             LOGGER.debug(
                 "[PatternTrader] %s ATR filter: atr=%.4f is %.3f%% of price (max %.3f%%) — skipping",
                 symbol, atr, atr / close * 100, atr_entry_max_pct * 100,
             )
-            return
+            return None
+
+        # ── Pattern allowlist ─────────────────────────────────────────────────
+        # Only trade patterns with a proven positive expected value.
+        # Simulation showed range_breakout and symmetrical_triangle are net-negative.
+        allowlist_raw = cfg.get("pattern_allowlist", "")
+        allowed_patterns = (
+            {p.strip() for p in allowlist_raw.split(",") if p.strip()}
+            if allowlist_raw else None  # None = allow all (disabled)
+        )
 
         try:
             signals = self._detector.latest(df)
         except Exception as exc:
             LOGGER.debug("[PatternTrader] detect error %s: %s", symbol, exc)
-            return
+            return None
 
         candidates = [
             s for s in signals
@@ -456,9 +511,10 @@ class PatternTrader:
             and s.stop_level is not None
             and s.price_level is not None
             and s.breakout
+            and (allowed_patterns is None or s.pattern in allowed_patterns)
         ]
         if not candidates:
-            return
+            return None
 
         sig       = max(candidates, key=lambda s: s.confidence)
         direction = +1 if sig.direction == "bullish" else -1
@@ -468,10 +524,43 @@ class PatternTrader:
         min_target_dist = close * 0.003  # require at least 0.3% remaining to target
         if direction == +1 and (target <= close or target - close < min_target_dist):
             LOGGER.debug("[PatternTrader] %s stale/exhausted long — target %.4f too close to entry %.4f", symbol, target, close)
-            return
+            return None
         if direction == -1 and (target >= close or close - target < min_target_dist):
             LOGGER.debug("[PatternTrader] %s stale/exhausted short — target %.4f too close to entry %.4f", symbol, target, close)
-            return
+            return None
+
+        # ── Minimum R:R filter ────────────────────────────────────────────────
+        min_rr = float(cfg.get("pattern_min_rr", 1.5))
+        risk   = abs(close - float(sig.stop_level))
+        reward = abs(target - close)
+        rr     = reward / risk if risk > 0 else 0.0
+        if rr < min_rr:
+            LOGGER.debug(
+                "[PatternTrader] %s R:R filter: rr=%.2f < min=%.2f — skipping %s",
+                symbol, rr, min_rr, sig.pattern,
+            )
+            return None
+
+        # ── EMA trend alignment filter ────────────────────────────────────────
+        # Hard-reject signals that fight the prevailing EMA trend (fast, no API cost)
+        n_bars = len(df)
+        if n_bars >= 20:
+            ema20 = float(df["close"].ewm(span=20, adjust=False).mean().iloc[-1])
+            ema50 = float(df["close"].ewm(span=50, adjust=False).mean().iloc[-1]) if n_bars >= 50 else None
+            strong_downtrend = close < ema20 and (ema50 is None or ema20 < ema50)
+            strong_uptrend   = close > ema20 and (ema50 is None or ema20 > ema50)
+            if direction == +1 and strong_downtrend:
+                LOGGER.debug(
+                    "[PatternTrader] %s trend filter: bullish signal in DOWNTREND (price=%.4f EMA20=%.4f) — skipping",
+                    symbol, close, ema20,
+                )
+                return None
+            if direction == -1 and strong_uptrend:
+                LOGGER.debug(
+                    "[PatternTrader] %s trend filter: bearish signal in UPTREND (price=%.4f EMA20=%.4f) — skipping",
+                    symbol, close, ema20,
+                )
+                return None
 
         atr_stop  = close - direction * atr_stop_multiplier * atr  # fixed at entry
         qty       = max(1, int(base_qty * self._kelly_size_multiplier(symbol)))
@@ -484,7 +573,7 @@ class PatternTrader:
             "[PatternTrader:%s] %s pattern_bars=%d → hold=%ds (cap=%ds)",
             self.mode, symbol, pattern_bars, hold_secs, max_hold_secs,
         )
-        self._enter(symbol, sig, close, direction, qty, hold_secs, atr_stop)
+        return (sig, direction, qty, hold_secs, atr_stop, df.copy(), pattern_bars)
 
     def _enter(
         self,
