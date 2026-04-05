@@ -4,10 +4,11 @@ CLI entry point for all trading agents.
 Usage: python run_agent.py <agent_name>
 
 Agents:
-  post_market    — Daily post-market analyst (run at 4:15 PM ET weekdays)
-  alert_quality  — Weekly alert quality analyst (run Sunday 6 PM ET)
-  risk_monitor   — Live risk watchdog (run every 5 min during market hours)
-  optimizer      — Weekly strategy optimizer (run Sunday 7 PM ET)
+  post_market      — Daily post-market analyst (run at 4:15 PM ET weekdays)
+  alert_quality    — Weekly alert quality analyst (run Sunday 6 PM ET)
+  risk_monitor     — Live risk watchdog (run every 5 min during market hours)
+  optimizer        — Weekly strategy optimizer (run Sunday 7 PM ET)
+  pattern_analyst  — Daily pattern trade report + intraday Claude filter (run at 4:30 PM ET weekdays)
 """
 
 import sys
@@ -26,10 +27,11 @@ logging.basicConfig(
 )
 
 AGENTS = {
-    "post_market": "agents.post_market",
-    "alert_quality": "agents.alert_quality",
-    "risk_monitor": "agents.risk_monitor",
-    "optimizer": "agents.optimizer",
+    "post_market":     "agents.post_market",
+    "alert_quality":   "agents.alert_quality",
+    "risk_monitor":    "agents.risk_monitor",
+    "optimizer":       "agents.optimizer",
+    "pattern_analyst": "agents.pattern_analyst",
 }
 
 

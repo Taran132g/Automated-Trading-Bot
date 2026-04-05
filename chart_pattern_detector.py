@@ -31,14 +31,14 @@ class PatternSignal:
 
 @dataclass
 class DetectorConfig:
-    pivot_left: int = 3
-    pivot_right: int = 3
+    pivot_left: int = 4              # raised from 3 — stronger, less-noisy pivot points
+    pivot_right: int = 4             # raised from 3
     min_pattern_bars: int = 20
     max_pattern_bars: int = 120
-    price_tolerance_pct: float = 0.0125
+    price_tolerance_pct: float = 0.010   # tightened from 0.0125 — more symmetric double tops/bottoms
     slope_tolerance_pct: float = 0.003
-    breakout_buffer_pct: float = 0.002
-    volume_confirm_multiplier: float = 1.15
+    breakout_buffer_pct: float = 0.003   # tightened from 0.002 — require stronger breakout confirmation
+    volume_confirm_multiplier: float = 1.30  # raised from 1.15 — require 30%+ above-avg volume on breakout
     min_touches: int = 2
     lookback: int = 250
     atr_period: int = 14
