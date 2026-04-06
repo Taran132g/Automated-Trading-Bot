@@ -26,8 +26,7 @@ export function RollingLineChart({ baseline, pattern, height = 240 }: Props) {
   const allVals = data.flatMap(d => [d.baseline, d.pattern]).filter((v): v is number => v !== undefined)
   const minVal = Math.min(...allVals)
   const maxVal = Math.max(...allVals)
-  const pad = (maxVal - minVal) * 0.05 || Math.abs(minVal) * 0.05 || 0.001
-  const yDomain: [number, number] = [minVal - pad, maxVal + pad]
+  const yDomain: [number, number] = minVal === maxVal ? [minVal - 0.001, maxVal + 0.001] : [minVal, maxVal]
 
   return (
     <ResponsiveContainer width="100%" height={height}>

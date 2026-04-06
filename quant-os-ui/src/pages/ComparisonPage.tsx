@@ -106,7 +106,6 @@ export function ComparisonPage() {
     .filter((v): v is number => v !== null)
   const minCurve = allCurveVals.length ? Math.min(...allCurveVals) : 0
   const maxCurve = allCurveVals.length ? Math.max(...allCurveVals) : 1
-  const curvePad = (maxCurve - minCurve) * 0.08 || Math.abs(minCurve) * 0.05 || 1
 
   return (
     <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -196,7 +195,7 @@ export function ComparisonPage() {
                   axisLine={false}
                 />
                 <YAxis
-                  domain={[minCurve - curvePad, maxCurve + curvePad]}
+                  domain={minCurve === maxCurve ? [minCurve - 1, maxCurve + 1] : [minCurve, maxCurve]}
                   tick={{ fill: '#64748B', fontSize: 10, fontFamily: 'Roboto Mono' }}
                   tickLine={false}
                   axisLine={false}
