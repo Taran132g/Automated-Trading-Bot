@@ -442,11 +442,13 @@ def _build_claude_prompt(stats: dict, previous: list) -> str:
         "You are a pattern trading analyst. Today's results and recent history are below.\n\n"
         f"TODAY:\n{today}\n\n"
         f"RECENT HISTORY (newest first):\n{hist}\n\n"
-        "In 3-4 sentences: compare today's pattern results to recent days, "
-        "call out the best or worst performing pattern or exit reason, "
-        "and give one specific tuning recommendation. "
-        "If the Claude filter rejected setups, note whether the R:R on rejected vs approved differed meaningfully. "
-        "Be direct and data-driven. Plain text only."
+        "Answer these four points concisely:\n"
+        "1. PERFORMANCE: How does today's win rate and PnL compare to the recent average? Is the pattern strategy trending better or worse?\n"
+        "2. BEST/WORST PATTERN: Which pattern or exit reason had the biggest impact today (positive or negative)? Use the numbers.\n"
+        "3. CLAUDE FILTER VALUE: Is the filter adding value? Are approved trades outperforming rejected ones by R:R? "
+        "Is the approval rate too tight or too loose?\n"
+        "4. TOMORROW: One specific adjustment — a pattern to lean on, an exit reason to fix, or a filter threshold to reconsider.\n"
+        "Be direct and data-driven. Use actual numbers. Plain text only — no bullet points or headers."
     )
 
 
@@ -456,7 +458,7 @@ def run() -> None:
     stats    = collect_stats()
     report   = format_report(stats)
 
-    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=300)
+    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=500)
     if analysis:
         report += f"\n\n🤖 *AI Analysis:*\n{analysis}"
 

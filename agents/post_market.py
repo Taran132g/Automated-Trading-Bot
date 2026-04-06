@@ -289,12 +289,14 @@ def _build_claude_prompt(stats: dict, previous: list[dict]) -> str:
     by_sym = stats.get("trip_stats", {}).get("by_symbol", [])[:4]
     by_bucket = stats.get("trip_stats", {}).get("by_bucket", [])
 
+    sym_str = " | ".join("{} ${:+.4f} {}%WR".format(s["symbol"], s["total_pnl"], s["win_rate"]) for s in by_sym) or "none"
+    bucket_str = " | ".join("{} ${:+.4f} {}%WR".format(b["bucket"], b["total_pnl"], b["win_rate"]) for b in by_bucket) or "none"
     today = (
         f"Date: {date_str}  PnL: ${overall.get('total_pnl', 0):+.4f}  "
         f"Win rate: {overall.get('win_rate', 'N/A')}%  Trips: {trips}  "
         f"Alert conversion: {stats.get('alert_to_trip_ratio', 'N/A')}%\n"
-        f"By symbol: {' | '.join(f\"{s['symbol']} ${s['total_pnl']:+.4f} {s['win_rate']}%WR\" for s in by_sym) or 'none'}\n"
-        f"By pattern bucket: {' | '.join(f\"{b['bucket']} ${b['total_pnl']:+.4f} {b['win_rate']}%WR\" for b in by_bucket) or 'none'}"
+        f"By symbol: {sym_str}\n"
+        f"By pattern bucket: {bucket_str}"
     )
 
     hist_lines = []
@@ -313,12 +315,16 @@ def _build_claude_prompt(stats: dict, previous: list[dict]) -> str:
     hist = "\n".join(hist_lines) if hist_lines else "No prior history available."
 
     return (
-        "You are a concise trading performance analyst for a momentum/imbalance strategy.\n\n"
+        "You are a trading performance analyst for a momentum/imbalance strategy.\n\n"
         f"TODAY:\n{today}\n\n"
         f"RECENT HISTORY (newest first):\n{hist}\n\n"
-        "In 3-4 sentences: state how today compares to recent days (better/worse/average and by how much), "
-        "call out the most notable symbol or pattern bucket result, and give one specific actionable observation. "
-        "Be direct and data-driven. Plain text only — no bullet points or headers."
+        "Answer these four points concisely:\n"
+        "1. CONTEXT: Is today better/worse than recent average, and by how much in PnL and win rate?\n"
+        "2. EDGE: Which symbol or pattern bucket showed the clearest edge today and why does the data support it?\n"
+        "3. DRAG: What was the single biggest drag today — a specific symbol, bucket, or time window?\n"
+        "4. TOMORROW: One specific change to make tomorrow based purely on today's data "
+        "(e.g. skip a symbol, focus on a bucket, avoid a time window).\n"
+        "Be direct and data-driven. Use actual numbers. Plain text only — no bullet points or headers."
     )
 
 
@@ -327,7 +333,7 @@ def run():
     previous = get_previous_reports("post_market", limit=5)
     stats = collect_stats()
     report_md = format_report(stats)
-    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=300)
+    analysis = call_claude(_build_claude_prompt(stats, previous), max_tokens=500)
     if analysis:
         report_md += f"\n\n🤖 *AI Analysis:*\n{analysis}"
     save_report("post_market", report_md, stats)

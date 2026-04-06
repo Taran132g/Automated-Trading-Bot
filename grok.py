@@ -393,6 +393,8 @@ msg_count: Dict[str, int] = {}
 last_alert: Dict[str, float] = {}
 traders: List = [] # Global list of (name, trader) tuples
 last_imbalance: Dict[str, Deque[tuple[float, str, BookMetrics]]] = defaultdict(lambda: deque(maxlen=200))
+tape_ticks: Dict[str, Deque] = defaultdict(deque)   # (ts, lee_ready_dir, vol_per_min)
+_tape_prev_price: Dict[str, float] = {}              # last known price per symbol for tick rule
 _last_msg_ts: float = 0.0
 PRINT_EVERY: int = 20
 DEBUG_BOOK_RAW: bool = False
@@ -729,6 +731,23 @@ def on_book(msg: dict):
                 vol_per_min = _summarize(sym, now) if q else 0
         else:
             vol_per_min = _summarize(sym, now) if q else 0
+
+        # ── Lee-Ready tape tick (recorded every L2 update) ────────────────────
+        if price and bid_price and ask_price:
+            if price >= ask_price:
+                _tape_dir = 1
+            elif price <= bid_price:
+                _tape_dir = -1
+            else:
+                _prev = _tape_prev_price.get(sym, 0.0)
+                _tape_dir = 1 if price > _prev else (-1 if price < _prev else 0)
+            tape_ticks[sym].append((now, _tape_dir, vol_per_min))
+            while tape_ticks[sym] and tape_ticks[sym][0][0] < now - 30:
+                tape_ticks[sym].popleft()
+        if price:
+            _tape_prev_price[sym] = price
+        # ──────────────────────────────────────────────────────────────────────
+
         if DEBUG:
             log_structured("IMBALANCE_DEBUG", {
                 "symbol": sym,
@@ -840,6 +859,24 @@ def on_book(msg: dict):
             if (imbalance_duration >= curr_min_duration and
                 metrics.valid_exchanges >= curr_min_venues and
                 vol_per_min >= curr_min_volume):
+
+                # ── Buy-volume confirmation (Lee-Ready, 10s lookback) ─────────
+                _tape_window = [(d, v) for ts, d, v in tape_ticks[sym]
+                                if ts >= now - 10 and v > 0]
+                if _tape_window:
+                    _buy_vol  = sum(v for d, v in _tape_window if d ==  1)
+                    _sell_vol = sum(v for d, v in _tape_window if d == -1)
+                    _total    = _buy_vol + _sell_vol
+                    _buy_frac = _buy_vol / _total if _total > 0 else 0.5
+                    _tape_fail = (direction == "bid-heavy" and _buy_frac < 0.60) or \
+                                 (direction == "ask-heavy" and _buy_frac > 0.40)
+                    if _tape_fail:
+                        log_structured("TAPE_FILTER", {
+                            "symbol": sym, "direction": direction,
+                            "buy_frac": round(_buy_frac, 3), "action": "skipped",
+                        })
+                        continue
+                # ─────────────────────────────────────────────────────────────
 
                 heavy_venues = metrics.ask_heavy_venues if direction == "ask-heavy" else metrics.bid_heavy_venues
                 target_limit_price = bid_price if direction == "bid-heavy" else ask_price
