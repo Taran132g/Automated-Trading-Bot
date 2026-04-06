@@ -541,6 +541,23 @@ class PatternTrader:
             )
             return None
 
+        # ── Inverted-stop guard ───────────────────────────────────────────────
+        # Reject setups where the stop is on the wrong side of entry — the
+        # detector occasionally emits geometrically broken signals; catching
+        # this pre-Claude saves an API call.
+        if direction == +1 and float(sig.stop_level) >= close:
+            LOGGER.debug(
+                "[PatternTrader] %s inverted stop: stop=%.4f >= entry=%.4f for long — skipping %s",
+                symbol, float(sig.stop_level), close, sig.pattern,
+            )
+            return None
+        if direction == -1 and float(sig.stop_level) <= close:
+            LOGGER.debug(
+                "[PatternTrader] %s inverted stop: stop=%.4f <= entry=%.4f for short — skipping %s",
+                symbol, float(sig.stop_level), close, sig.pattern,
+            )
+            return None
+
         # ── EMA trend alignment filter ────────────────────────────────────────
         # Hard-reject signals that fight the prevailing EMA trend (fast, no API cost)
         n_bars = len(df)
