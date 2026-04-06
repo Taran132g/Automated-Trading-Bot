@@ -550,6 +550,7 @@ class LiveTrader:
         self.last_exit_time: Dict[str, float] = {}  # Track last exit time for cooldown
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
+        self._time_stop_extended: Dict[str, float] = {}   # symbol -> until-when to skip time-stop (after STAY)
         self.pattern_buckets: Dict[str, str] = {}  # symbol -> aligned/countertrend/neutral
         self.daily_pnl: float = 0.0
         self.daily_date: str = time.strftime("%Y-%m-%d")
@@ -1125,6 +1126,7 @@ class LiveTrader:
             self.trailing_activated.pop(symbol, None)
             self.trailing_high_water.pop(symbol, None)
             self.active_limit_stops.pop(symbol, None)
+            self._time_stop_extended.pop(symbol, None)
         else:
             self.positions[symbol] = new_qty
         LOGGER.info("Position update %s => %s", symbol, new_qty)
@@ -1273,13 +1275,59 @@ class LiveTrader:
         if price > 0:
             self.live_prices[symbol] = price
 
+    def _consult_claude_time_stop(
+        self, symbol: str, direction: str, entry_price: float,
+        current_price: float, pnl: float, hold_secs: float,
+    ) -> str:
+        """
+        Ask Claude whether to EXIT, STAY, or take PARTIAL profit on a time-stopped position.
+        Returns 'EXIT', 'STAY', or 'PARTIAL'. Falls back to 'EXIT' on any error.
+        """
+        try:
+            from agents.base import call_claude
+            pnl_pct = pnl / entry_price * 100 if entry_price > 0 else 0.0
+            prompt = (
+                f"A scalp trade has hit its time-stop (held {hold_secs:.0f}s).\n\n"
+                f"SYMBOL: {symbol}  |  DIRECTION: {direction}\n"
+                f"ENTRY: ${entry_price:.4f}  |  CURRENT: ${current_price:.4f}\n"
+                f"UNREALIZED P&L: ${pnl:+.4f} ({pnl_pct:+.3f}%)\n\n"
+                "Choose one of exactly three actions:\n"
+                "  EXIT — close the full position now at market.\n"
+                "  STAY — hold a bit longer (momentum still clearly intact).\n"
+                "  PARTIAL — close half now and trail the remainder with a stop.\n\n"
+                "Respond with exactly two lines:\n"
+                "Line 1: EXIT, STAY, or PARTIAL\n"
+                "Line 2: One sentence reason (max 20 words).\n\n"
+                "Rules:\n"
+                "- STAY only if the trade is profitable AND price is still moving in trade direction.\n"
+                "- PARTIAL only if profitable but momentum is visibly weakening.\n"
+                "- EXIT if at a loss, stalling, or direction is unclear.\n"
+                "- Default to EXIT — scalp trades should not overstay."
+            )
+            response = call_claude(prompt, max_tokens=80)
+            if not response:
+                return "EXIT"
+            first_line = response.strip().splitlines()[0].strip().upper()
+            if "STAY" in first_line:
+                LOGGER.info("[TIME-STOP] Claude says STAY for %s (pnl=%.4f)", symbol, pnl)
+                return "STAY"
+            if "PARTIAL" in first_line:
+                LOGGER.info("[TIME-STOP] Claude says PARTIAL for %s (pnl=%.4f)", symbol, pnl)
+                return "PARTIAL"
+            LOGGER.info("[TIME-STOP] Claude says EXIT for %s (pnl=%.4f)", symbol, pnl)
+            return "EXIT"
+        except Exception as exc:
+            LOGGER.warning("[TIME-STOP] Claude consult failed for %s: %s — exiting", symbol, exc)
+            return "EXIT"
+
     def _check_profit_limits(self) -> None:
-        """Time stop only — SL and TP disabled, exits otherwise on flipped signals."""
+        """Time stop (with Claude consult) + trailing stop for post-partial positions."""
         if not self.positions:
             return
 
         cfg = config_manager.load_config()
         time_stop_secs = float(cfg.get("time_stop_seconds", 180))
+        trail_pct      = float(cfg.get("time_stop_trail_pct", 0.003))  # 0.3% trailing after partial
 
         with self._lock:
             current_positions = dict(self.positions)
@@ -1302,11 +1350,96 @@ class LiveTrader:
             direction = "LONG" if qty > 0 else "SHORT"
             pnl = (current_price - entry_price) if direction == "LONG" else (entry_price - current_price)
 
-            # ── Layer 0: Time Stop ────────────────────────────────────────────────
+            # ── Trailing stop (activated after PARTIAL exit) ──────────────────
+            if self.trailing_activated.get(symbol):
+                side = "SELL" if direction == "LONG" else "COVER"
+                if direction == "LONG":
+                    self.trailing_high_water[symbol] = max(
+                        self.trailing_high_water.get(symbol, current_price), current_price
+                    )
+                    hw = self.trailing_high_water[symbol]
+                    trail_level = hw * (1 - trail_pct)
+                    if current_price <= trail_level:
+                        LOGGER.warning(
+                            "[TRAIL-STOP] %s trailing stop: price=%.4f <= trail=%.4f (HW=%.4f, trail_pct=%.2f%%)",
+                            symbol, current_price, trail_level, hw, trail_pct * 100,
+                        )
+                        self.active_limit_stops[symbol] = True
+                        with self._lock:
+                            self.last_exit_time[symbol] = time.time()
+                        try:
+                            self._submit_order(
+                                alert_id=-1, symbol=symbol, direction="trail-stop",
+                                side=side, qty=abs(qty), price=current_price, order_type="MARKET",
+                            )
+                        except Exception as exc:
+                            LOGGER.error("[TRAIL-STOP] Submit failed for %s: %s", symbol, exc)
+                            self.active_limit_stops.pop(symbol, None)
+                else:  # SHORT
+                    self.trailing_high_water[symbol] = min(
+                        self.trailing_high_water.get(symbol, current_price), current_price
+                    )
+                    hw = self.trailing_high_water[symbol]
+                    trail_level = hw * (1 + trail_pct)
+                    if current_price >= trail_level:
+                        LOGGER.warning(
+                            "[TRAIL-STOP] %s trailing stop: price=%.4f >= trail=%.4f (HW=%.4f, trail_pct=%.2f%%)",
+                            symbol, current_price, trail_level, hw, trail_pct * 100,
+                        )
+                        self.active_limit_stops[symbol] = True
+                        with self._lock:
+                            self.last_exit_time[symbol] = time.time()
+                        try:
+                            self._submit_order(
+                                alert_id=-1, symbol=symbol, direction="trail-stop",
+                                side=side, qty=abs(qty), price=current_price, order_type="MARKET",
+                            )
+                        except Exception as exc:
+                            LOGGER.error("[TRAIL-STOP] Submit failed for %s: %s", symbol, exc)
+                            self.active_limit_stops.pop(symbol, None)
+                continue  # Never apply time-stop to a trailing position
+
+            # ── Time Stop (with Claude consult) ───────────────────────────────
+            # Skip if a prior STAY already extended the hold window
+            if time.time() < self._time_stop_extended.get(symbol, 0.0):
+                continue
+
             entry_ts = self.position_entry_times.get(symbol, 0.0)
             age_secs = time.time() - entry_ts
             if entry_ts > 0 and age_secs >= time_stop_secs:
                 side = "SELL" if direction == "LONG" else "COVER"
+
+                action = self._consult_claude_time_stop(
+                    symbol, direction, entry_price, current_price, pnl, age_secs,
+                )
+
+                if action == "STAY":
+                    self._time_stop_extended[symbol] = time.time() + time_stop_secs
+                    LOGGER.info(
+                        "[TIME-STOP] %s STAY — extending hold by %.0fs (pnl=%.4f)",
+                        symbol, time_stop_secs, pnl,
+                    )
+                    continue
+
+                if action == "PARTIAL":
+                    half_qty = max(1, abs(qty) // 2)
+                    LOGGER.warning(
+                        "[TIME-STOP] %s PARTIAL — closing %d of %d shares, trailing rest (pnl=%.4f)",
+                        symbol, half_qty, abs(qty), pnl,
+                    )
+                    # Activate trailing BEFORE submitting to prevent re-entry on next cycle
+                    self.trailing_activated[symbol] = True
+                    self.trailing_high_water[symbol] = current_price
+                    try:
+                        self._submit_order(
+                            alert_id=-1, symbol=symbol, direction="time-stop-partial",
+                            side=side, qty=half_qty, price=current_price, order_type="MARKET",
+                        )
+                    except Exception as exc:
+                        LOGGER.error("[TIME-STOP] Partial submit failed for %s: %s", symbol, exc)
+                    continue
+
+                # Default: EXIT full position
                 LOGGER.warning(
                     "[TIME-STOP] %s %s held %.1fs >= %.0fs → MARKET %s (pnl=%.5f)",
                     direction, symbol, age_secs, time_stop_secs, side, pnl,
@@ -1323,14 +1456,6 @@ class LiveTrader:
                     LOGGER.error("[TIME-STOP] Submit failed for %s: %s", symbol, exc)
                     self.active_limit_stops.pop(symbol, None)
                 continue
-
-        # ── Layer 1: Hard SL (disabled) ───────────────────────────────────────
-        # if pnl <= -sl_threshold:
-        #     ...
-
-        # ── Layer 2: Trailing TP (disabled) ──────────────────────────────────
-        # if hw_pnl >= trail_activate:
-        #     ...
 
     # ------------------------------------------------------------------
     # Order + alert processing
