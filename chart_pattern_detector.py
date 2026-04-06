@@ -31,20 +31,21 @@ class PatternSignal:
 
 @dataclass
 class DetectorConfig:
-    pivot_left: int = 3
-    pivot_right: int = 3
+    pivot_left: int = 4              # raised from 3 — stronger, less-noisy pivot points
+    pivot_right: int = 4             # raised from 3
     min_pattern_bars: int = 20
     max_pattern_bars: int = 120
-    price_tolerance_pct: float = 0.0125
+    price_tolerance_pct: float = 0.010   # tightened from 0.0125 — more symmetric double tops/bottoms
     slope_tolerance_pct: float = 0.003
-    breakout_buffer_pct: float = 0.002
-    volume_confirm_multiplier: float = 1.15
+    breakout_buffer_pct: float = 0.003   # tightened from 0.002 — require stronger breakout confirmation
+    volume_confirm_multiplier: float = 1.30  # raised from 1.15 — require 30%+ above-avg volume on breakout
     min_touches: int = 2
     lookback: int = 250
     atr_period: int = 14
     trend_ema_fast: int = 20
     trend_ema_slow: int = 50
     allow_overlap: bool = False
+    min_range_width_pct: float = 0.005  # range_breakout: minimum range width as % of price (0.5%)
 
 
 class ChartPatternDetector:
@@ -79,7 +80,7 @@ class ChartPatternDetector:
         if not all_signals:
             return []
         last_idx = len(df) - 1
-        return [s for s in all_signals if s.end_idx >= last_idx - 20]
+        return [s for s in all_signals if s.end_idx >= last_idx - self.cfg.max_pattern_bars]
 
     def detect_as_dicts(self, df: pd.DataFrame) -> List[Dict[str, Any]]:
         return [s.to_dict() for s in self.detect(df)]
@@ -212,6 +213,27 @@ class ChartPatternDetector:
         score = 100.0 * confidence
         return confidence, score
 
+    def _prior_trend(self, df: pd.DataFrame, before_idx: int, lookback: int = 20) -> str:
+        """Classify the trend in `lookback` bars immediately before `before_idx`.
+        Uses EMA alignment + linear regression slope. Returns 'bullish', 'bearish', or 'neutral'."""
+        start = max(0, before_idx - lookback)
+        if before_idx - start < 5:
+            return "neutral"
+        seg = df.iloc[start:before_idx]
+        last = seg.iloc[-1]
+        ema_f = float(last["ema_fast"])
+        ema_s = float(last["ema_slow"])
+        ema_signal = "bullish" if ema_f > ema_s * 1.001 else ("bearish" if ema_f < ema_s * 0.999 else "neutral")
+        closes = seg["close"].values.astype(float)
+        x = np.arange(len(closes))
+        slope = float(np.polyfit(x, closes, 1)[0])
+        mid = float(np.mean(closes)) or 1e-9
+        norm_slope = slope / mid
+        lr_signal = "bullish" if norm_slope > 0.0001 else ("bearish" if norm_slope < -0.0001 else "neutral")
+        if ema_signal == lr_signal and ema_signal != "neutral":
+            return ema_signal
+        return "neutral"
+
     def _detect_double_top(self, df: pd.DataFrame, pivots: Dict[str, List[Tuple[int, float]]]) -> List[PatternSignal]:
         res: List[PatternSignal] = []
         highs = pivots["highs"]
@@ -246,6 +268,11 @@ class ChartPatternDetector:
             similarity = 1.0 - min(1.0, self._pct_diff(p1[1], p2[1]) / max(self.cfg.price_tolerance_pct, 1e-9))
             structure = min(1.0, depth / 0.03)
             confidence, score = self._base_score(similarity, structure, breakout_idx is not None, volume_ok)
+
+            prior_trend = self._prior_trend(df, p1[0])
+            trend_factor = 1.0 if prior_trend == "bullish" else (0.85 if prior_trend == "neutral" else 0.6)
+            confidence = max(0.0, min(1.0, confidence * trend_factor))
+            score = 100.0 * confidence
 
             res.append(
                 PatternSignal(
@@ -304,6 +331,11 @@ class ChartPatternDetector:
             similarity = 1.0 - min(1.0, self._pct_diff(p1[1], p2[1]) / max(self.cfg.price_tolerance_pct, 1e-9))
             structure = min(1.0, rebound / 0.03)
             confidence, score = self._base_score(similarity, structure, breakout_idx is not None, volume_ok)
+
+            prior_trend = self._prior_trend(df, p1[0])
+            trend_factor = 1.0 if prior_trend == "bearish" else (0.85 if prior_trend == "neutral" else 0.6)
+            confidence = max(0.0, min(1.0, confidence * trend_factor))
+            score = 100.0 * confidence
 
             res.append(
                 PatternSignal(
@@ -365,6 +397,11 @@ class ChartPatternDetector:
             symmetry = 1.0 - min(1.0, self._pct_diff(ls[1], rs[1]) / max(self.cfg.price_tolerance_pct * 1.5, 1e-9))
             volume_ok = self._volume_confirmed(df, breakout_idx) if breakout_idx is not None else False
             confidence, score = self._base_score(symmetry, structure, breakout_idx is not None, volume_ok)
+
+            prior_trend = self._prior_trend(df, ls[0])
+            trend_factor = 1.0 if prior_trend == "bullish" else (0.85 if prior_trend == "neutral" else 0.6)
+            confidence = max(0.0, min(1.0, confidence * trend_factor))
+            score = 100.0 * confidence
 
             res.append(
                 PatternSignal(
@@ -428,6 +465,11 @@ class ChartPatternDetector:
             volume_ok = self._volume_confirmed(df, breakout_idx) if breakout_idx is not None else False
             confidence, score = self._base_score(symmetry, structure, breakout_idx is not None, volume_ok)
 
+            prior_trend = self._prior_trend(df, ls[0])
+            trend_factor = 1.0 if prior_trend == "bearish" else (0.85 if prior_trend == "neutral" else 0.6)
+            confidence = max(0.0, min(1.0, confidence * trend_factor))
+            score = 100.0 * confidence
+
             res.append(
                 PatternSignal(
                     pattern="inverse_head_and_shoulders",
@@ -484,6 +526,11 @@ class ChartPatternDetector:
             volume_ok = self._volume_confirmed(df, breakout_idx) if breakout_idx is not None else False
             confidence, score = self._base_score(flatness, compression, breakout_idx is not None, volume_ok)
 
+            prior_trend = self._prior_trend(df, h1[0])
+            trend_factor = 1.0 if prior_trend == "bullish" else (0.85 if prior_trend == "neutral" else 0.65)
+            confidence = max(0.0, min(1.0, confidence * trend_factor))
+            score = 100.0 * confidence
+
             res.append(
                 PatternSignal(
                     pattern="ascending_triangle",
@@ -539,6 +586,11 @@ class ChartPatternDetector:
             flatness = 1.0 - min(1.0, self._pct_diff(l1[1], l2[1]) / max(self.cfg.price_tolerance_pct, 1e-9))
             volume_ok = self._volume_confirmed(df, breakout_idx) if breakout_idx is not None else False
             confidence, score = self._base_score(flatness, compression, breakout_idx is not None, volume_ok)
+
+            prior_trend = self._prior_trend(df, l1[0])
+            trend_factor = 1.0 if prior_trend == "bearish" else (0.85 if prior_trend == "neutral" else 0.65)
+            confidence = max(0.0, min(1.0, confidence * trend_factor))
+            score = 100.0 * confidence
 
             res.append(
                 PatternSignal(
@@ -609,6 +661,16 @@ class ChartPatternDetector:
             balance = 1.0
             volume_ok = self._volume_confirmed(df, breakout_idx) if breakout_idx is not None else False
             confidence, score = self._base_score(balance, compression, breakout_idx is not None, volume_ok)
+
+            prior_trend = self._prior_trend(df, start)
+            if breakout_dir is not None:
+                contradicts = (
+                    (breakout_dir == "bullish" and prior_trend == "bearish")
+                    or (breakout_dir == "bearish" and prior_trend == "bullish")
+                )
+                if contradicts:
+                    confidence = max(0.0, min(1.0, confidence * 0.7))
+                    score = 100.0 * confidence
 
             stop_level = l2[1] if breakout_dir == "bullish" else h2[1]
             measured_height = max(h1[1], h2[1]) - min(l1[1], l2[1])
@@ -682,6 +744,11 @@ class ChartPatternDetector:
             volume_ok = self._volume_confirmed(df, breakout_idx) if breakout_idx is not None else False
             confidence, score = self._base_score(channel_quality, structure, breakout_idx is not None, volume_ok)
 
+            prior_trend = self._prior_trend(df, pole_start)
+            trend_factor = 1.0 if prior_trend == "bullish" else (0.85 if prior_trend == "neutral" else 0.7)
+            confidence = max(0.0, min(1.0, confidence * trend_factor))
+            score = 100.0 * confidence
+
             res.append(
                 PatternSignal(
                     pattern="bull_flag",
@@ -722,7 +789,9 @@ class ChartPatternDetector:
             x = np.arange(len(seg_highs))
             high_coef = np.polyfit(x, seg_highs, 1)
             low_coef = np.polyfit(x, seg_lows, 1)
-            if not (high_coef[0] >= 0 and low_coef[0] >= 0):
+            parallel_ascending = high_coef[0] >= 0 and low_coef[0] >= 0
+            converging_wedge = high_coef[0] < 0 and low_coef[0] > 0
+            if not (parallel_ascending or converging_wedge):
                 continue
 
             lower_now = low_coef[0] * (len(seg_lows) - 1) + low_coef[1]
@@ -733,13 +802,19 @@ class ChartPatternDetector:
                     break
 
             structure = min(1.0, pole_return / 0.06)
-            channel_quality = (
-                1.0
-                if abs(high_coef[0] - low_coef[0]) < max(df.iloc[i]["close"] * self.cfg.slope_tolerance_pct, 1e-9)
-                else 0.7
-            )
+            if converging_wedge:
+                channel_quality = 0.85
+            elif abs(high_coef[0] - low_coef[0]) < max(df.iloc[i]["close"] * self.cfg.slope_tolerance_pct, 1e-9):
+                channel_quality = 1.0
+            else:
+                channel_quality = 0.7
             volume_ok = self._volume_confirmed(df, breakout_idx) if breakout_idx is not None else False
             confidence, score = self._base_score(channel_quality, structure, breakout_idx is not None, volume_ok)
+
+            prior_trend = self._prior_trend(df, pole_start)
+            trend_factor = 1.0 if prior_trend == "bearish" else (0.85 if prior_trend == "neutral" else 0.7)
+            confidence = max(0.0, min(1.0, confidence * trend_factor))
+            score = 100.0 * confidence
 
             res.append(
                 PatternSignal(
@@ -777,19 +852,22 @@ class ChartPatternDetector:
             resistance = float(seg["high"].quantile(0.92))
             support = float(seg["low"].quantile(0.08))
             width = (resistance - support) / max(seg["close"].mean(), 1e-9)
-            if width > 0.04:
+            if width > 0.04 or width < self.cfg.min_range_width_pct:
                 continue
 
+            pre_trend = self._prior_trend(df, start)
             breakout_idx = None
             direction = None
             for j in range(end + 1, len(df)):
                 if self._breakout_up(df, j, resistance):
-                    breakout_idx = j
-                    direction = "bullish"
+                    if pre_trend != "bearish":
+                        breakout_idx = j
+                        direction = "bullish"
                     break
                 if self._breakout_down(df, j, support):
-                    breakout_idx = j
-                    direction = "bearish"
+                    if pre_trend != "bullish":
+                        breakout_idx = j
+                        direction = "bearish"
                     break
 
             if breakout_idx is None:

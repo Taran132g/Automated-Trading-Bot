@@ -10,8 +10,7 @@ export function DailyPnLBars({ data, height = 220 }: { data: Bar[]; height?: num
   const pnls = data.map(d => d.daily_pnl)
   const minVal = Math.min(0, ...pnls)
   const maxVal = Math.max(0, ...pnls)
-  const pad = (maxVal - minVal) * 0.1 || 1
-  const yDomain: [number, number] = [minVal - pad, maxVal + pad]
+  const yDomain: [number, number] = [minVal, maxVal]
 
   return (
     <ResponsiveContainer width="100%" height={height}>
