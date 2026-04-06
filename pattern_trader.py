@@ -111,6 +111,7 @@ class PatternTrader:
         self._daily_pnl: float = 0.0
         self._daily_date: str = time.strftime("%Y-%m-%d")
         self._last_price: Dict[str, float] = {}   # latest price per symbol (from stream)
+        self._claude_rejection_cooldown: Dict[str, float] = {}  # "symbol:pattern:dir" → until-when
         self._executor: Optional[Any] = None       # SchwabOrderExecutor, if live
         self._stop_poll = threading.Event()
         self._detector = ChartPatternDetector()
@@ -229,6 +230,7 @@ class PatternTrader:
             self._daily_pnl  = 0.0
             self._daily_date = today
             self._intraday_pnls.clear()
+            self._claude_rejection_cooldown.clear()
 
     def _shutdown(self) -> None:
         self._stop_poll.set()
@@ -385,6 +387,16 @@ class PatternTrader:
             sig, direction, qty, hold_secs, atr_stop, df_snapshot, pattern_bars = entry_params
             use_claude = config_manager.load_config().get("pattern_claude_filter", True)
             if use_claude:
+                # ── Rejection cooldown: skip Claude if same symbol+pattern was recently rejected ──
+                cooldown_key = f"{symbol}:{sig.pattern}:{sig.direction}"
+                cooldown_secs = float(config_manager.load_config().get("pattern_claude_cooldown_secs", 600))
+                until = self._claude_rejection_cooldown.get(cooldown_key, 0.0)
+                if time.time() < until:
+                    LOGGER.debug(
+                        "[PatternTrader:%s] %s %s Claude cooldown active for %.0fs — skipping",
+                        self.mode, symbol, sig.pattern, until - time.time(),
+                    )
+                    return
                 try:
                     from agents.pattern_analyst import evaluate_signal
                     decision = evaluate_signal(
@@ -405,7 +417,10 @@ class PatternTrader:
                             "[PatternTrader:%s] Claude rejected %s %s: %s",
                             self.mode, symbol, sig.pattern, decision["reason"],
                         )
+                        self._claude_rejection_cooldown[cooldown_key] = time.time() + cooldown_secs
                         return
+                    # Approved — clear any stale cooldown for this key
+                    self._claude_rejection_cooldown.pop(cooldown_key, None)
                 except Exception as exc:
                     LOGGER.warning(
                         "[PatternTrader:%s] Claude filter error — entering anyway: %s", self.mode, exc
@@ -485,6 +500,15 @@ class PatternTrader:
             LOGGER.debug(
                 "[PatternTrader] %s ATR filter: atr=%.4f is %.3f%% of price (max %.3f%%) — skipping",
                 symbol, atr, atr / close * 100, atr_entry_max_pct * 100,
+            )
+            return None
+        # Frozen-market gate: if price has essentially stopped moving, Claude will
+        # always reject for "illiquid/identical OHLC" — skip the API call entirely.
+        atr_min_pct = float(cfg.get("pattern_atr_entry_min_pct", 0.0005))  # 0.05% of price
+        if close > 0 and (atr / close) < atr_min_pct:
+            LOGGER.debug(
+                "[PatternTrader] %s frozen-market gate: atr=%.4f is %.4f%% of price (min %.4f%%) — skipping",
+                symbol, atr, atr / close * 100, atr_min_pct * 100,
             )
             return None
 
