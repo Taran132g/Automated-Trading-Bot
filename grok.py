@@ -1202,6 +1202,9 @@ async def main():
                         hist_df = executor_for_backfill.get_price_history(sym, days=1)
                         if hist_df is not None and not hist_df.empty:
                             PIPELINE.seed_historical_data(sym, hist_df)
+                            for _pt in (PATTERN_TRADER, PATTERN_TRADER_PAPER):
+                                if _pt is not None:
+                                    _pt.seed_bars(sym, hist_df)
                             log_structured("PATTERN_BACKFILL_SUCCESS", {"symbol": sym, "bars": len(hist_df)})
                         else:
                             log_structured("PATTERN_BACKFILL_EMPTY", {"symbol": sym})
