@@ -6,20 +6,18 @@ export function LiveIndicator({ isLive }: { isLive: boolean }) {
       gap: 6,
       padding: '4px 10px',
       borderRadius: 20,
-      border: `1px solid ${isLive ? '#00FF99' : '#334155'}`,
-      background: isLive ? 'rgba(0,255,153,0.06)' : 'transparent',
+      border: `1px solid ${isLive ? 'rgba(171,255,2,0.3)' : '#0d3d3d'}`,
+      background: isLive ? 'rgba(171,255,2,0.06)' : 'transparent',
       fontSize: '0.72rem',
-      fontFamily: 'Roboto Mono',
+      fontFamily: 'JetBrains Mono, Roboto Mono, monospace',
       fontWeight: 600,
-      color: isLive ? '#00FF99' : '#64748B',
+      color: isLive ? '#abff02' : '#4a6a5a',
       letterSpacing: '0.08em',
     }}>
       <span
         style={{
-          width: 6,
-          height: 6,
-          borderRadius: '50%',
-          background: isLive ? '#00FF99' : '#64748B',
+          width: 6, height: 6, borderRadius: '50%',
+          background: isLive ? '#abff02' : '#4a6a5a',
           display: 'inline-block',
         }}
         className={isLive ? 'pulse-live' : ''}

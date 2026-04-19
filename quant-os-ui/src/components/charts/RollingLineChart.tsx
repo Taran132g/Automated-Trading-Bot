@@ -9,7 +9,6 @@ interface Props {
 }
 
 export function RollingLineChart({ baseline, pattern, height = 240 }: Props) {
-  // Merge by date
   const all: Record<string, { date: string; baseline?: number; pattern?: number }> = {}
   for (const p of baseline) {
     all[p.date] = { ...all[p.date], date: p.date, baseline: p.pnl_per_share }
@@ -20,7 +19,7 @@ export function RollingLineChart({ baseline, pattern, height = 240 }: Props) {
   const data = Object.values(all).sort((a, b) => a.date.localeCompare(b.date))
 
   if (!data.length) {
-    return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748B', fontSize: '0.8rem' }}>No data</div>
+    return <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4a6a5a', fontSize: '0.8rem' }}>No data</div>
   }
 
   const allVals = data.flatMap(d => [d.baseline, d.pattern]).filter((v): v is number => v !== undefined)
@@ -31,15 +30,15 @@ export function RollingLineChart({ baseline, pattern, height = 240 }: Props) {
   return (
     <ResponsiveContainer width="100%" height={height}>
       <LineChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-        <XAxis dataKey="date" tick={{ fill: '#64748B', fontSize: 10, fontFamily: 'Roboto Mono' }} tickLine={false} axisLine={false} />
-        <YAxis domain={yDomain} tick={{ fill: '#64748B', fontSize: 10, fontFamily: 'Roboto Mono' }} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v.toFixed(3)}`} width={70} />
+        <XAxis dataKey="date" tick={{ fill: '#4a6a5a', fontSize: 10, fontFamily: 'JetBrains Mono' }} tickLine={false} axisLine={false} />
+        <YAxis domain={yDomain} tick={{ fill: '#4a6a5a', fontSize: 10, fontFamily: 'JetBrains Mono' }} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v.toFixed(3)}`} width={70} />
         <Tooltip
-          contentStyle={{ background: '#111827', border: '1px solid #1F2937', borderRadius: 6, fontFamily: 'Roboto Mono', fontSize: '0.78rem' }}
-          labelStyle={{ color: '#94A3B8' }}
+          contentStyle={{ background: '#0a2e2e', border: '1px solid rgba(171,255,2,0.12)', borderRadius: 6, fontFamily: 'JetBrains Mono', fontSize: '0.78rem' }}
+          labelStyle={{ color: '#7a9a8a' }}
         />
-        <Legend wrapperStyle={{ fontSize: '0.75rem', fontFamily: 'Roboto Mono', color: '#94A3B8' }} />
-        <Line type="monotone" dataKey="baseline" stroke="#60A5FA" strokeWidth={2} dot={{ r: 3, fill: '#60A5FA' }} name="Baseline" />
-        <Line type="monotone" dataKey="pattern" stroke="#A855F7" strokeWidth={2} dot={{ r: 3, fill: '#A855F7' }} name="Pattern" />
+        <Legend wrapperStyle={{ fontSize: '0.75rem', fontFamily: 'JetBrains Mono', color: '#7a9a8a' }} />
+        <Line type="monotone" dataKey="baseline" stroke="#60a5fa" strokeWidth={2} dot={{ r: 3, fill: '#60a5fa' }} name="Baseline" />
+        <Line type="monotone" dataKey="pattern" stroke="#c084fc" strokeWidth={2} dot={{ r: 3, fill: '#c084fc' }} name="Pattern" />
       </LineChart>
     </ResponsiveContainer>
   )

@@ -9,6 +9,14 @@ import { useAuthStore } from '@/store/authStore'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
+const CARD = '#0a2e2e'
+const BORDER = 'rgba(171,255,2,0.08)'
+const LIME = '#abff02'
+const GREEN = '#00ff88'
+const TEXT = '#e4f0e4'
+const SEC = '#7a9a8a'
+const DIM = '#4a6a5a'
+
 const AGENT_TYPES = ['all', 'post_market', 'alert_quality', 'risk_monitor', 'optimizer'] as const
 type AgentType = typeof AGENT_TYPES[number]
 
@@ -55,30 +63,27 @@ export function AgentsPage() {
 
   return (
     <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#F8FAFC', letterSpacing: '-0.3px' }}>
+      <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: TEXT, letterSpacing: '-0.3px' }}>
         AGENT REPORTS
       </h2>
 
       {/* Upload zone */}
-      <div style={{ background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
+      <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '16px 18px' }}>
         <SectionHeader>Upload Post-Market Trade Activity</SectionHeader>
         {!authenticated ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-            gap: 12, padding: '28px', border: '2px dashed #1F2937', borderRadius: 8,
+            gap: 12, padding: '28px', border: `2px dashed ${BORDER}`, borderRadius: 8,
           }}>
-            <Lock size={20} color="#64748B" />
-            <div style={{ color: '#64748B', fontSize: '0.82rem', textAlign: 'center' }}>
+            <Lock size={20} color={DIM} />
+            <div style={{ color: DIM, fontSize: '0.82rem', textAlign: 'center' }}>
               Admin login required to upload reports
             </div>
-            <button
-              onClick={() => navigate('/login')}
-              style={{
-                padding: '7px 20px', borderRadius: 6, cursor: 'pointer',
-                background: 'rgba(0,255,153,0.08)', border: '1px solid #00FF9933',
-                color: '#00FF99', fontSize: '0.78rem', fontFamily: 'Inter',
-              }}
-            >
+            <button onClick={() => navigate('/login')} style={{
+              padding: '7px 20px', borderRadius: 6, cursor: 'pointer',
+              background: 'rgba(171,255,2,0.06)', border: `1px solid rgba(171,255,2,0.2)`,
+              color: LIME, fontSize: '0.78rem', fontFamily: 'Inter',
+            }}>
               Login
             </button>
           </div>
@@ -90,24 +95,24 @@ export function AgentsPage() {
               onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}
               onClick={() => fileRef.current?.click()}
               style={{
-                border: `2px dashed ${dragging ? '#00FF99' : '#1F2937'}`,
+                border: `2px dashed ${dragging ? LIME : BORDER}`,
                 borderRadius: 8, padding: '28px', textAlign: 'center', cursor: 'pointer',
-                background: dragging ? 'rgba(0,255,153,0.04)' : 'transparent',
+                background: dragging ? 'rgba(171,255,2,0.03)' : 'transparent',
                 transition: 'all 0.15s',
               }}
             >
-              <div style={{ color: '#64748B', fontSize: '0.82rem' }}>
+              <div style={{ color: DIM, fontSize: '0.82rem' }}>
                 Drop Schwab HTML/CSV export here, or click to browse
               </div>
-              <div style={{ color: '#94A3B8', fontSize: '0.68rem', marginTop: 6 }}>
+              <div style={{ color: SEC, fontSize: '0.68rem', marginTop: 6 }}>
                 Filename must contain date (YYYY-MM-DD)
               </div>
             </div>
             <input ref={fileRef} type="file" accept=".html,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f) }} />
-            {uploadMut.isPending && <div style={{ color: '#94A3B8', fontSize: '0.78rem', marginTop: 10 }}>Generating report...</div>}
+            {uploadMut.isPending && <div style={{ color: SEC, fontSize: '0.78rem', marginTop: 10 }}>Generating report...</div>}
             {uploadResult && (
-              <div style={{ marginTop: 12, background: '#0B0E14', border: '1px solid #1F2937', borderRadius: 6, padding: '10px 14px', fontSize: '0.75rem', color: '#00FF99' }}>
-                ✓ Report generated successfully
+              <div style={{ marginTop: 12, background: '#052424', border: `1px solid ${BORDER}`, borderRadius: 6, padding: '10px 14px', fontSize: '0.75rem', color: GREEN }}>
+                Report generated successfully
               </div>
             )}
           </>
@@ -117,16 +122,12 @@ export function AgentsPage() {
       {/* Filter tabs */}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
         {AGENT_TYPES.map((t) => (
-          <button
-            key={t}
-            onClick={() => setAgentFilter(t)}
-            style={{
-              padding: '5px 14px', borderRadius: 20, cursor: 'pointer', fontSize: '0.72rem', fontFamily: 'Inter',
-              border: `1px solid ${agentFilter === t ? '#00FF9933' : '#1F2937'}`,
-              background: agentFilter === t ? 'rgba(0,255,153,0.08)' : 'transparent',
-              color: agentFilter === t ? '#00FF99' : '#64748B',
-            }}
-          >
+          <button key={t} onClick={() => setAgentFilter(t)} style={{
+            padding: '5px 14px', borderRadius: 20, cursor: 'pointer', fontSize: '0.72rem', fontFamily: 'Inter',
+            border: `1px solid ${agentFilter === t ? 'rgba(171,255,2,0.2)' : BORDER}`,
+            background: agentFilter === t ? 'rgba(171,255,2,0.06)' : 'transparent',
+            color: agentFilter === t ? LIME : DIM,
+          }}>
             {t === 'all' ? 'All' : t.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
           </button>
         ))}
@@ -135,49 +136,38 @@ export function AgentsPage() {
       {/* Reports */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         {(!data || data.length === 0) && (
-          <div style={{ color: '#64748B', fontSize: '0.82rem', textAlign: 'center', padding: 24 }}>
+          <div style={{ color: DIM, fontSize: '0.82rem', textAlign: 'center', padding: 24 }}>
             No reports found
           </div>
         )}
         {(data as Report[] | undefined)?.map((report) => (
-          <div
-            key={report.rowid}
-            style={{ background: '#111827', border: '1px solid #1F2937', borderRadius: 8, overflow: 'hidden' }}
-          >
-            {/* Card header */}
-            <div
-              onClick={() => toggleExpand(report.rowid)}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                padding: '14px 18px', cursor: 'pointer',
-              }}
-            >
+          <div key={report.rowid} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, overflow: 'hidden' }}>
+            <div onClick={() => toggleExpand(report.rowid)} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '14px 18px', cursor: 'pointer',
+            }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Badge type={report.agent_name} label={report.agent_name.replace('_', ' ')} />
-                <span style={{ color: '#94A3B8', fontSize: '0.75rem' }}>{fmtDate(report.timestamp)}</span>
+                <span style={{ color: SEC, fontSize: '0.75rem' }}>{fmtDate(report.timestamp)}</span>
               </div>
-              <span style={{ color: '#64748B', fontSize: '0.78rem' }}>
-                {expanded.has(report.rowid) ? '▲' : '▼'}
+              <span style={{ color: DIM, fontSize: '0.78rem' }}>
+                {expanded.has(report.rowid) ? '\u25b2' : '\u25bc'}
               </span>
             </div>
 
-            {/* Expanded content */}
             {expanded.has(report.rowid) && (
-              <div style={{ borderTop: '1px solid #1F2937', padding: '16px 18px' }}>
-                <div style={{
-                  fontSize: '0.8rem', lineHeight: 1.7, color: '#E2E8F0',
-                  maxHeight: 600, overflowY: 'auto',
-                }}>
+              <div style={{ borderTop: `1px solid ${BORDER}`, padding: '16px 18px' }}>
+                <div style={{ fontSize: '0.8rem', lineHeight: 1.7, color: TEXT, maxHeight: 600, overflowY: 'auto' }}>
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
-                      h1: ({ children }) => <h1 style={{ fontSize: '1rem', color: '#F8FAFC', margin: '12px 0 6px' }}>{children}</h1>,
-                      h2: ({ children }) => <h2 style={{ fontSize: '0.9rem', color: '#F8FAFC', margin: '10px 0 5px' }}>{children}</h2>,
-                      h3: ({ children }) => <h3 style={{ fontSize: '0.85rem', color: '#94A3B8', margin: '8px 0 4px' }}>{children}</h3>,
+                      h1: ({ children }) => <h1 style={{ fontSize: '1rem', color: TEXT, margin: '12px 0 6px' }}>{children}</h1>,
+                      h2: ({ children }) => <h2 style={{ fontSize: '0.9rem', color: TEXT, margin: '10px 0 5px' }}>{children}</h2>,
+                      h3: ({ children }) => <h3 style={{ fontSize: '0.85rem', color: SEC, margin: '8px 0 4px' }}>{children}</h3>,
                       table: ({ children }) => <table style={{ margin: '8px 0' }}>{children}</table>,
-                      strong: ({ children }) => <strong style={{ color: '#F8FAFC' }}>{children}</strong>,
-                      code: ({ children }) => <code style={{ background: '#0B0E14', padding: '2px 6px', borderRadius: 4, fontFamily: 'Roboto Mono', fontSize: '0.75rem', color: '#A855F7' }}>{children}</code>,
-                      blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid #1F2937', paddingLeft: 12, color: '#94A3B8', margin: '8px 0' }}>{children}</blockquote>,
+                      strong: ({ children }) => <strong style={{ color: TEXT }}>{children}</strong>,
+                      code: ({ children }) => <code style={{ background: '#052424', padding: '2px 6px', borderRadius: 4, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem', color: '#c084fc' }}>{children}</code>,
+                      blockquote: ({ children }) => <blockquote style={{ borderLeft: `3px solid ${BORDER}`, paddingLeft: 12, color: SEC, margin: '8px 0' }}>{children}</blockquote>,
                     }}
                   >
                     {report.report_markdown ?? ''}
