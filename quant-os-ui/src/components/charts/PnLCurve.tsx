@@ -18,28 +18,28 @@ const CustomTooltip = ({ active, payload }: { active?: boolean; payload?: { payl
   const p = payload[0]
   return (
     <div style={{
-      background: '#111827',
-      border: '1px solid #1F2937',
+      background: '#0a2e2e',
+      border: '1px solid rgba(171,255,2,0.12)',
       borderRadius: 6,
       padding: '8px 12px',
-      fontFamily: 'Roboto Mono',
+      fontFamily: 'JetBrains Mono, Roboto Mono, monospace',
       fontSize: '0.78rem',
-      color: '#F8FAFC',
+      color: '#e4f0e4',
     }}>
-      <div style={{ color: '#94A3B8', fontSize: '0.68rem', marginBottom: 2 }}>
+      <div style={{ color: '#7a9a8a', fontSize: '0.68rem', marginBottom: 2 }}>
         {p.payload.datetime_est}
       </div>
-      <div style={{ color: p.value >= 0 ? '#00FF99' : '#EF4444', fontWeight: 700 }}>
+      <div style={{ color: p.value >= 0 ? '#00ff88' : '#ff4466', fontWeight: 700 }}>
         ${p.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
       </div>
     </div>
   )
 }
 
-export function PnLCurve({ data, color = '#00FF99', height = 240 }: PnLCurveProps) {
+export function PnLCurve({ data, color = '#abff02', height = 240 }: PnLCurveProps) {
   if (!data?.length) {
     return (
-      <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748B', fontSize: '0.8rem' }}>
+      <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4a6a5a', fontSize: '0.8rem' }}>
         No data available
       </div>
     )
@@ -61,14 +61,14 @@ export function PnLCurve({ data, color = '#00FF99', height = 240 }: PnLCurveProp
         </defs>
         <XAxis
           dataKey="datetime_est"
-          tick={{ fill: '#64748B', fontSize: 10, fontFamily: 'Roboto Mono' }}
+          tick={{ fill: '#4a6a5a', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}
           tickLine={false}
           axisLine={false}
           interval="preserveStartEnd"
         />
         <YAxis
           domain={yDomain}
-          tick={{ fill: '#64748B', fontSize: 10, fontFamily: 'Roboto Mono' }}
+          tick={{ fill: '#4a6a5a', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}
           tickLine={false}
           axisLine={false}
           tickFormatter={(v) => `$${v.toLocaleString()}`}
