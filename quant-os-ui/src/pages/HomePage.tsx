@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity, Search, BarChart2, FlaskConical,
   GitCompare, Terminal, Bot, ShieldAlert, Cpu,
-  TrendingUp, TrendingDown, Minus, Wallet,
+  TrendingUp, TrendingDown, Minus, Wallet, Radio,
 } from 'lucide-react'
 import { adminService, terminalService, patternService, paperService, marketService } from '@/services/api'
 import type { QuoteItem } from '@/services/api'
@@ -56,6 +56,14 @@ const CARDS = [
     description: 'Paper simulation of the pattern strategy. Track performance without real capital.',
     color: '#3B82F6',
     badge: 'PAPER',
+  },
+  {
+    to: '/signals',
+    icon: Radio,
+    label: 'Signal Advisor',
+    description: 'Live Telegram signal feed. Claude parses trades, calculates your position size and risk, and shows you exactly what to enter on Yubit.',
+    color: '#06B6D4',
+    badge: 'LIVE',
   },
   {
     to: '/agents',
