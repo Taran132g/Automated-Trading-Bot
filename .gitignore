@@ -9,3 +9,4 @@ __pycache__/
 daily_pnl.txt
 *_state.json
 kill_switch.flag
+telegram_signal_advisor/.env
