@@ -27,8 +27,8 @@ def calculate_sizing(signal: dict, config: Config) -> dict:
     Pure math — returns a sizing dict.
     `approved` is False if the signal is missing critical data.
     """
-    entry = float(signal.get("entry", 0))
-    sl = float(signal.get("sl", 0))
+    entry = float(signal.get("entry") or 0)
+    sl = float(signal.get("sl") or 0)
     balance = config.account_balance_usdt
 
     if entry <= 0:

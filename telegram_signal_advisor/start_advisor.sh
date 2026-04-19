@@ -10,9 +10,6 @@ pkill -f "telegram_signal_advisor/main.py" 2>/dev/null && echo "Stopped existing
 
 cd "$SCRIPT_DIR"
 
-# Install deps if needed
-pip install -r requirements.txt -q
-
 nohup python3 main.py >> "$LOG" 2>&1 &
 echo "Signal Advisor started (PID $!)"
 echo "Logs: $LOG"

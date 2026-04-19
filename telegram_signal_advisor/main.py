@@ -18,6 +18,9 @@ import logging
 import sys
 from pathlib import Path
 
+# Ensure imports work regardless of where the script is launched from
+sys.path.insert(0, str(Path(__file__).parent))
+
 from telethon import TelegramClient, events
 
 from config import Config
