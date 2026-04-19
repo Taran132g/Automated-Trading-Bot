@@ -12,6 +12,7 @@ import { ComparisonPage } from '@/pages/ComparisonPage'
 import { GrokPage } from '@/pages/GrokPage'
 import { AgentsPage } from '@/pages/AgentsPage'
 import { AdminPage } from '@/pages/AdminPage'
+import { SignalsPage } from '@/pages/SignalsPage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5000 } },
@@ -32,6 +33,7 @@ export default function App() {
             <Route path="/comparison" element={<ComparisonPage />} />
             <Route path="/grok" element={<GrokPage />} />
             <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/signals" element={<SignalsPage />} />
             <Route path="/admin" element={
               <ProtectedRoute>
                 <AdminPage />
