@@ -20,6 +20,44 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5000 } },
 })
 
+// ── Web Speech: "Welcome, Trader" in a deep dramatic voice ──
+function speakWelcome() {
+  try {
+    if (!window.speechSynthesis) return
+    window.speechSynthesis.cancel()
+
+    const fire = (voices: SpeechSynthesisVoice[]) => {
+      const utt = new SpeechSynthesisUtterance('Welcome, Trader.')
+      utt.pitch  = 0.6   // lower = deeper
+      utt.rate   = 0.82  // slower = more dramatic
+      utt.volume = 1.0
+      const preferred = voices.find(v =>
+        /daniel|david|google uk english male|alex|fred|microsoft david/i.test(v.name)
+      ) ?? voices.find(v => v.lang.startsWith('en')) ?? voices[0]
+      if (preferred) utt.voice = preferred
+      setTimeout(() => window.speechSynthesis.speak(utt), 120)
+    }
+
+    // getVoices() may be empty on first call — wait for voiceschanged if so
+    const voices = window.speechSynthesis.getVoices()
+    if (voices.length > 0) {
+      fire(voices)
+    } else {
+      window.speechSynthesis.addEventListener('voiceschanged', () => {
+        fire(window.speechSynthesis.getVoices())
+      }, { once: true })
+      // Fallback: speak with default voice after 300ms if event never fires
+      setTimeout(() => {
+        if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
+          fire([])
+        }
+      }, 300)
+    }
+  } catch {
+    // Speech unavailable — silent fallback
+  }
+}
+
 // ── Cinematic sound: deep bass boom + mid whoosh + high confirmation sting ──
 function playCinematicSound() {
   try {
@@ -381,6 +419,7 @@ function CircleReveal({ onDone }: { onDone: () => void }) {
     let rafId: number
 
     playCinematicSound()
+    speakWelcome()
 
     const frame = (ts: number) => {
       if (startTs === null) startTs = ts
