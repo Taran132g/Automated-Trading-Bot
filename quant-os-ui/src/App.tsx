@@ -22,7 +22,7 @@ const queryClient = new QueryClient({
 
 // ── ElevenLabs: preload "Welcome, Trader." in Arnold's cinematic voice ──
 const ELEVEN_KEY     = 'sk_4496a2282e5e190984516e5212242f2f86e72f32b242e508'
-const ELEVEN_VOICE   = 'nPczCjzI2devNBz1zQrb' // Brian — deep, resonant, Morgan Freeman-esque narrator
+const ELEVEN_VOICE   = 'JBFqnCBsd6RMkjVDRZzb' // George — warm captivating storyteller, deepest narrator tone
 
 async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
   try {
@@ -35,12 +35,12 @@ async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          text: 'Welcome, Trader.',
+          text: 'Welcome ... Trader.',   // spaced ellipsis = long deliberate pause
           model_id: 'eleven_multilingual_v2',
           voice_settings: {
-            stability: 0.38,        // lower = more expressive, less flat
-            similarity_boost: 0.82, // stay close to Brian's natural deep tone
-            style: 0.6,             // push the dramatic/authoritative quality
+            stability: 0.22,        // very low = maximum expressiveness/drama
+            similarity_boost: 0.90, // lock to George's deep warm character
+            style: 0.85,            // full cinematic authority
             use_speaker_boost: true,
           },
         }),
