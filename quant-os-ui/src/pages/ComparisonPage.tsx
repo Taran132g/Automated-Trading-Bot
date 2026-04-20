@@ -6,14 +6,14 @@ import { SectionHeader } from '@/components/ui/SectionHeader'
 import { Badge } from '@/components/ui/Badge'
 import { comparisonService } from '@/services/api'
 
-const CARD = '#0a2e2e'
-const BORDER = 'rgba(171,255,2,0.08)'
-const GREEN = '#00ff88'
-const RED = '#ff4466'
-const PURPLE = '#c084fc'
-const TEXT = '#e4f0e4'
-const SEC = '#7a9a8a'
-const DIM = '#4a6a5a'
+const CARD = '#12121c'
+const BORDER = 'rgba(255,255,255,0.06)'
+const GREEN = '#22c55e'
+const RED = '#ef4444'
+const PURPLE = '#a78bfa'
+const TEXT = '#f0f0f5'
+const SEC = '#8b8b9e'
+const DIM = '#55556a'
 
 export function ComparisonPage() {
   const [range, setRange] = useState<'all' | 'today'>('all')
@@ -57,9 +57,9 @@ export function ComparisonPage() {
   const maxCurve = allCurveVals.length ? Math.max(...allCurveVals) : 1
 
   return (
-    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: TEXT, letterSpacing: '-0.3px' }}>
+        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800, color: TEXT, letterSpacing: '-0.02em' }}>
           STRATEGY COMPARISON
         </h2>
         <Badge type="live" label="SCALP" />
@@ -71,9 +71,10 @@ export function ComparisonPage() {
         {(['today', 'all'] as const).map((r) => (
           <button key={r} onClick={() => setRange(r)} style={{
             padding: '5px 14px', borderRadius: 20, border: `1px solid ${BORDER}`,
-            background: range === r ? '#0d3838' : 'transparent',
+            background: range === r ? '#191925' : 'transparent',
             color: range === r ? TEXT : DIM,
             fontSize: '0.75rem', cursor: 'pointer', fontFamily: 'Inter',
+            transition: 'all 0.15s',
           }}>
             {r === 'today' ? 'Today' : 'All Time'}
           </button>
@@ -87,7 +88,7 @@ export function ComparisonPage() {
             <MetricCard label="Total PnL" value={`$${s?.total_pnl?.toFixed(2) ?? '0.00'}`} color={pnlColor(s?.total_pnl ?? 0)} />
             <MetricCard label="Win Rate" value={`${s?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(s?.win_rate ?? 0) >= 50 ? GREEN : RED} />
             <MetricCard label="PnL/Share" value={`$${s?.pnl_per_share?.toFixed(4) ?? '0.0000'}`} color={pnlColor(s?.pnl_per_share ?? 0)} />
-            <MetricCard label="Profit Factor" value={fmtPF(s?.profit_factor)} color={(s?.profit_factor ?? 0) >= 1.5 ? GREEN : (s?.profit_factor ?? 0) >= 1 ? '#fbbf24' : RED} />
+            <MetricCard label="Profit Factor" value={fmtPF(s?.profit_factor)} color={(s?.profit_factor ?? 0) >= 1.5 ? GREEN : (s?.profit_factor ?? 0) >= 1 ? '#f59e0b' : RED} />
           </div>
         </div>
         <div>
@@ -96,13 +97,13 @@ export function ComparisonPage() {
             <MetricCard label="Total PnL" value={`$${p?.total_pnl?.toFixed(2) ?? '0.00'}`} color={pnlColor(p?.total_pnl ?? 0)} />
             <MetricCard label="Win Rate" value={`${p?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(p?.win_rate ?? 0) >= 50 ? GREEN : RED} />
             <MetricCard label="PnL/Share" value={`$${p?.pnl_per_share?.toFixed(4) ?? '0.0000'}`} color={pnlColor(p?.pnl_per_share ?? 0)} />
-            <MetricCard label="Profit Factor" value={fmtPF(p?.profit_factor)} color={(p?.profit_factor ?? 0) >= 1.5 ? GREEN : (p?.profit_factor ?? 0) >= 1 ? '#fbbf24' : RED} />
+            <MetricCard label="Profit Factor" value={fmtPF(p?.profit_factor)} color={(p?.profit_factor ?? 0) >= 1.5 ? GREEN : (p?.profit_factor ?? 0) >= 1 ? '#f59e0b' : RED} />
           </div>
         </div>
       </div>
 
       <div style={{ display: 'flex', gap: 16 }}>
-        <div style={{ flex: 4, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '16px 18px' }}>
+        <div style={{ flex: 4, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
           <SectionHeader>Side-by-Side Metrics</SectionHeader>
           <table>
             <thead>
@@ -128,7 +129,7 @@ export function ComparisonPage() {
           </table>
         </div>
 
-        <div style={{ flex: 6, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '16px 18px' }}>
+        <div style={{ flex: 6, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
           <SectionHeader>Cumulative PnL by Trade #</SectionHeader>
           {curveData.length > 0 ? (
             <ResponsiveContainer width="100%" height={260}>
@@ -139,7 +140,7 @@ export function ComparisonPage() {
                   tickFormatter={(v) => `$${v.toFixed(0)}`} width={65} />
                 <ReferenceLine y={0} stroke={BORDER} strokeDasharray="3 3" />
                 <Tooltip
-                  contentStyle={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 6, fontFamily: 'JetBrains Mono', fontSize: '0.78rem' }}
+                  contentStyle={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, fontFamily: 'JetBrains Mono', fontSize: '0.78rem', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}
                   labelStyle={{ color: SEC }}
                   labelFormatter={(v) => `Trade #${v}`}
                   formatter={(value, name) => [`$${(value as number)?.toFixed(2)}`, (name as string) === 'scalp' ? 'Scalp' : 'Pattern']}
@@ -165,7 +166,7 @@ export function ComparisonPage() {
           { label: 'SCALP', rows: data?.scalp_symbol_breakdown, color: GREEN, type: 'live' },
           { label: 'PATTERN', rows: data?.pattern_symbol_breakdown, color: PURPLE, type: 'pattern' },
         ].map(({ label, rows, color, type }) => (
-          <div key={label} style={{ flex: 1, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '16px 18px' }}>
+          <div key={label} style={{ flex: 1, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
             <div style={{ marginBottom: 12 }}><Badge type={type} label={label} /></div>
             {rows && rows.length > 0 ? (
               <table>

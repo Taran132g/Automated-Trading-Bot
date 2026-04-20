@@ -9,14 +9,14 @@ import { useWebSocket } from '@/hooks/useWebSocket'
 import { useTerminalStore } from '@/store/terminalStore'
 import { terminalService } from '@/services/api'
 
-const CARD = '#0a2e2e'
-const BORDER = 'rgba(171,255,2,0.08)'
-const LIME = '#abff02'
-const GREEN = '#00ff88'
-const RED = '#ff4466'
-const TEXT = '#e4f0e4'
-const SEC = '#7a9a8a'
-const DIM = '#4a6a5a'
+const CARD = '#12121c'
+const BORDER = 'rgba(255,255,255,0.06)'
+const ACCENT = '#c8ff00'
+const GREEN = '#22c55e'
+const RED = '#ef4444'
+const TEXT = '#f0f0f5'
+const SEC = '#8b8b9e'
+const DIM = '#55556a'
 
 function isMarketOpen(): boolean {
   const now = new Date()
@@ -83,10 +83,10 @@ export function TerminalPage() {
   const pnlPerShare = exitShares > 0 ? exitPnl / exitShares : 0
 
   return (
-    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20, height: '100%' }}>
+    <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: 20, height: '100%' }}>
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: TEXT, letterSpacing: '-0.3px' }}>
+        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800, color: TEXT, letterSpacing: '-0.02em' }}>
           SCALPER
         </h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -99,12 +99,12 @@ export function TerminalPage() {
 
       {/* Cooldown banners */}
       {lossActive && (
-        <div style={{ background: 'rgba(255,68,102,0.08)', border: `1px solid ${RED}`, borderRadius: 8, padding: '10px 16px', fontSize: '0.82rem', color: RED }}>
+        <div style={{ background: 'rgba(239,68,68,0.06)', border: `1px solid rgba(239,68,68,0.2)`, borderRadius: 10, padding: '12px 18px', fontSize: '0.82rem', color: RED }}>
           <strong>LOSS COOLDOWN ACTIVE{cooldowns.loss_cooldown_syms.length ? ` [${cooldowns.loss_cooldown_syms.join(', ')}]` : ''}</strong> — Trading paused for {Math.round(lossCooldown - now)}s
         </div>
       )}
       {piActive && !lossActive && (
-        <div style={{ background: 'rgba(251,191,36,0.08)', border: '1px solid #fbbf24', borderRadius: 8, padding: '10px 16px', fontSize: '0.82rem', color: '#fbbf24' }}>
+        <div style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 10, padding: '12px 18px', fontSize: '0.82rem', color: '#f59e0b' }}>
           <strong>PI COOLDOWN ACTIVE</strong> — Skipping entries for {Math.round(piCooldown - now)}s
         </div>
       )}
@@ -121,16 +121,17 @@ export function TerminalPage() {
 
       {/* Equity chart + tape */}
       <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
-        <div style={{ flex: 7, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '16px 18px', minWidth: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+        <div style={{ flex: 7, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px', minWidth: 0 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
             <SectionHeader>Trade PnL</SectionHeader>
             <div style={{ display: 'flex', gap: 4 }}>
               {(['today', 'alltime'] as const).map((r) => (
                 <button key={r} onClick={() => setEquityRange(r)} style={{
-                  padding: '3px 10px', borderRadius: 20, border: `1px solid ${BORDER}`,
-                  background: equityRange === r ? '#0d3838' : 'transparent',
+                  padding: '4px 12px', borderRadius: 20, border: `1px solid ${BORDER}`,
+                  background: equityRange === r ? '#191925' : 'transparent',
                   color: equityRange === r ? TEXT : DIM,
                   fontSize: '0.7rem', cursor: 'pointer', fontFamily: 'Inter',
+                  transition: 'all 0.15s',
                 }}>
                   {r === 'today' ? 'Today' : 'All Time'}
                 </button>
@@ -140,7 +141,7 @@ export function TerminalPage() {
           <PnLCurve data={equityData ?? []} color={GREEN} height={220} />
         </div>
 
-        <div style={{ flex: 3, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, padding: '16px 18px', overflowY: 'auto', minWidth: 0 }}>
+        <div style={{ flex: 3, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px', overflowY: 'auto', minWidth: 0 }}>
           <SectionHeader>Live Execution Tape</SectionHeader>
           {trades.length === 0 ? (
             <div style={{ color: DIM, fontSize: '0.78rem', textAlign: 'center', marginTop: 20 }}>No trades today</div>
@@ -151,11 +152,11 @@ export function TerminalPage() {
               const isShortEntry = ['SHORT', 'SELL SHORT'].includes(side)
               const accentColor = isExit
                 ? (t.pnl >= 0 ? GREEN : RED)
-                : isShortEntry ? RED : '#60a5fa'
+                : isShortEntry ? RED : '#3b82f6'
               return (
                 <div key={t.id ?? i} className="animate-fade-in-down" style={{
                   display: 'flex', justifyContent: 'space-between',
-                  padding: '6px 0', borderBottom: `1px solid rgba(171,255,2,0.04)`,
+                  padding: '7px 0', borderBottom: `1px solid ${BORDER}`,
                   fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem',
                 }}>
                   <span style={{ color: DIM, width: 64 }}>{t.datetime_est}</span>
@@ -177,13 +178,13 @@ export function TerminalPage() {
             {openPositions.map(([sym, qty]) => (
               <div key={sym} style={{
                 background: CARD,
-                border: `1px solid ${qty > 0 ? 'rgba(0,255,136,0.2)' : 'rgba(255,68,102,0.2)'}`,
+                border: `1px solid ${qty > 0 ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'}`,
                 borderLeft: `3px solid ${qty > 0 ? GREEN : RED}`,
-                borderRadius: 6, padding: '10px 16px',
+                borderRadius: 8, padding: '12px 18px',
                 fontFamily: 'JetBrains Mono, monospace', fontSize: '0.82rem',
               }}>
                 <span style={{ color: TEXT, fontWeight: 700 }}>{sym}</span>
-                <span style={{ color: SEC, margin: '0 8px' }}>{Math.abs(qty).toLocaleString()} shares</span>
+                <span style={{ color: SEC, margin: '0 10px' }}>{Math.abs(qty).toLocaleString()} shares</span>
                 <span style={{ color: qty > 0 ? GREEN : RED, fontWeight: 600 }}>
                   {qty > 0 ? 'LONG' : 'SHORT'}
                 </span>

@@ -4,20 +4,21 @@ export function LiveIndicator({ isLive }: { isLive: boolean }) {
       display: 'flex',
       alignItems: 'center',
       gap: 6,
-      padding: '4px 10px',
+      padding: '4px 12px',
       borderRadius: 20,
-      border: `1px solid ${isLive ? 'rgba(171,255,2,0.3)' : '#0d3d3d'}`,
-      background: isLive ? 'rgba(171,255,2,0.06)' : 'transparent',
+      border: `1px solid ${isLive ? 'rgba(200,255,0,0.2)' : 'rgba(255,255,255,0.06)'}`,
+      background: isLive ? 'rgba(200,255,0,0.04)' : 'transparent',
       fontSize: '0.72rem',
-      fontFamily: 'JetBrains Mono, Roboto Mono, monospace',
+      fontFamily: 'JetBrains Mono, monospace',
       fontWeight: 600,
-      color: isLive ? '#abff02' : '#4a6a5a',
-      letterSpacing: '0.08em',
+      color: isLive ? '#c8ff00' : '#55556a',
+      letterSpacing: '0.06em',
     }}>
       <span
         style={{
           width: 6, height: 6, borderRadius: '50%',
-          background: isLive ? '#abff02' : '#4a6a5a',
+          background: isLive ? '#c8ff00' : '#55556a',
+          color: isLive ? '#c8ff00' : '#55556a',
           display: 'inline-block',
         }}
         className={isLive ? 'pulse-live' : ''}

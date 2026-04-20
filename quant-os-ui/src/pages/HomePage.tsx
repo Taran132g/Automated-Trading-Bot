@@ -4,21 +4,27 @@ import {
   Activity, Search, BarChart2, FlaskConical,
   GitCompare, Terminal, Bot, ShieldAlert, Radio,
   TrendingUp, TrendingDown, Minus, Wallet, ArrowRight,
+  Zap,
 } from 'lucide-react'
 import { adminService, terminalService, patternService, paperService, marketService } from '@/services/api'
 import type { QuoteItem } from '@/services/api'
 
 /* ─── palette ─── */
-const BG   = '#031818'
-const CARD = '#052424'
-const ELEV = '#0a2e2e'
-const LIME = '#abff02'
-const DIM  = '#4a6a5a'
-const TEXT = '#e4f0e4'
-const SEC  = '#7a9a8a'
-const BORDER = 'rgba(171,255,2,0.08)'
-const RED  = '#ff4466'
-const GREEN = '#00ff88'
+const BG    = '#06060b'
+const BG1   = '#0c0c14'
+const BG2   = '#12121c'
+const ACCENT = '#c8ff00'
+const GREEN = '#22c55e'
+const RED   = '#ef4444'
+const BLUE  = '#3b82f6'
+const PURPLE = '#a78bfa'
+const CYAN  = '#22d3ee'
+const AMBER = '#f59e0b'
+const TEXT  = '#f0f0f5'
+const SEC   = '#8b8b9e'
+const DIM   = '#55556a'
+const FAINT = '#33334a'
+const BORDER = 'rgba(255,255,255,0.06)'
 
 const CARDS = [
   {
@@ -34,7 +40,7 @@ const CARDS = [
     icon: BarChart2,
     label: 'Pattern',
     sub: 'Chart-pattern breakout strategy. Confirmed breakouts on 1-min bars.',
-    accent: '#c084fc',
+    accent: PURPLE,
     tag: 'LIVE',
   },
   {
@@ -42,7 +48,7 @@ const CARDS = [
     icon: Radio,
     label: 'Signal Advisor',
     sub: 'Telegram signal feed with Claude risk cards and position sizing.',
-    accent: '#22d3ee',
+    accent: CYAN,
     tag: 'LIVE',
   },
   {
@@ -58,7 +64,7 @@ const CARDS = [
     icon: Terminal,
     label: 'Grok Monitor',
     sub: 'Real-time stream logs, L2 events, and alert feed.',
-    accent: SEC,
+    accent: AMBER,
     tag: null,
   },
   {
@@ -66,16 +72,16 @@ const CARDS = [
     icon: Search,
     label: 'Scalper Backtest',
     sub: 'Historical scalping simulations and past performance review.',
-    accent: '#fbbf24',
-    tag: 'PAPER',
+    accent: BLUE,
+    tag: 'SIM',
   },
   {
     to: '/patterns',
     icon: FlaskConical,
     label: 'Pattern Lab',
     sub: 'Paper simulation of the pattern strategy without real capital.',
-    accent: '#60a5fa',
-    tag: 'PAPER',
+    accent: BLUE,
+    tag: 'SIM',
   },
   {
     to: '/agents',
@@ -135,7 +141,7 @@ function BackgroundChart() {
     <svg viewBox={`0 0 ${SW} ${SH}`} preserveAspectRatio="xMaxYMax meet"
       style={{
         position: 'fixed', right: '-2%', bottom: '8%',
-        width: '68%', height: '65%', zIndex: 0, pointerEvents: 'none', opacity: 0.06,
+        width: '68%', height: '65%', zIndex: 0, pointerEvents: 'none', opacity: 0.04,
       }}>
       <defs>
         <linearGradient id="fadeLeft" x1="0" y1="0" x2="1" y2="0">
@@ -143,8 +149,8 @@ function BackgroundChart() {
           <stop offset="35%" stopColor={BG} stopOpacity="0" />
         </linearGradient>
         <linearGradient id="volGreenGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={LIME} stopOpacity="0.7" />
-          <stop offset="100%" stopColor={LIME} stopOpacity="0.2" />
+          <stop offset="0%" stopColor={GREEN} stopOpacity="0.7" />
+          <stop offset="100%" stopColor={GREEN} stopOpacity="0.2" />
         </linearGradient>
         <linearGradient id="volRedGrad" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stopColor={RED} stopOpacity="0.7" />
@@ -153,12 +159,12 @@ function BackgroundChart() {
       </defs>
       {[0,1,2,3,4,5].map(i => (
         <line key={i} x1={padL} y1={padT + (i/5)*cH} x2={SW-10} y2={padT + (i/5)*cH}
-          stroke={LIME} strokeWidth="0.4" opacity="0.35" strokeDasharray="6 10" />
+          stroke="#fff" strokeWidth="0.4" opacity="0.15" strokeDasharray="6 10" />
       ))}
       {CANDLE_DATA.map((c, i) => {
         const x = padL + i * step
         const isGreen = c.c >= c.o
-        const color = isGreen ? LIME : RED
+        const color = isGreen ? GREEN : RED
         const bodyTop = toY(Math.max(c.o, c.c))
         const bodyBot = toY(Math.min(c.o, c.c))
         const bh = Math.max(1.5, bodyBot - bodyTop)
@@ -170,8 +176,8 @@ function BackgroundChart() {
           </g>
         )
       })}
-      <polyline points={maPoints.join(' ')} fill="none" stroke="#fbbf24" strokeWidth="2.5"
-        strokeLinecap="round" strokeLinejoin="round" opacity="0.8" />
+      <polyline points={maPoints.join(' ')} fill="none" stroke={AMBER} strokeWidth="2.5"
+        strokeLinecap="round" strokeLinejoin="round" opacity="0.6" />
       {VOLUMES.map((vol, i) => {
         const x = padL + i * step
         const bh = (vol / maxVol) * volH
@@ -200,7 +206,7 @@ function Ticker({ items, speed, direction, opacity = 1 }: {
       <div style={{
         display: 'inline-flex', gap: 48, whiteSpace: 'nowrap',
         animation: `${direction === 'forward' ? 'tickerFwd' : 'tickerRev'} ${speed}s linear infinite`,
-        fontFamily: 'JetBrains Mono, Roboto Mono, monospace', fontSize: '0.7rem', letterSpacing: '0.04em',
+        fontFamily: 'JetBrains Mono, monospace', fontSize: '0.68rem', letterSpacing: '0.04em',
       }}>
         {doubled.map((item, i) => {
           const isNeg = item.includes('-')
@@ -212,7 +218,7 @@ function Ticker({ items, speed, direction, opacity = 1 }: {
 }
 
 function PnLPill({ value }: { value: number | undefined }) {
-  if (value === undefined) return <span style={{ color: DIM, fontSize: '0.85rem' }}>—</span>
+  if (value === undefined) return <span style={{ color: DIM, fontSize: '0.85rem' }}>&mdash;</span>
   const pos = value >= 0
   const Icon = value > 0.005 ? TrendingUp : value < -0.005 ? TrendingDown : Minus
   return (
@@ -281,28 +287,16 @@ export function HomePage() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: `radial-gradient(ellipse at 50% 0%, #0a3030 0%, ${BG} 60%)`,
+      background: `radial-gradient(ellipse at 50% 0%, #14141f 0%, ${BG} 55%)`,
       position: 'relative', overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
     }}>
-      {/* Grid texture */}
+      {/* Subtle dot grid */}
       <div style={{
         position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none',
-        backgroundImage:
-          `linear-gradient(${LIME}04 1px, transparent 1px), linear-gradient(90deg, ${LIME}04 1px, transparent 1px)`,
-        backgroundSize: '80px 80px',
+        backgroundImage: 'radial-gradient(circle, rgba(255,255,255,0.03) 1px, transparent 1px)',
+        backgroundSize: '32px 32px',
       }} />
-
-      {/* Scanline effect */}
-      <div style={{
-        position: 'fixed', inset: 0, zIndex: 0, pointerEvents: 'none', overflow: 'hidden',
-      }}>
-        <div style={{
-          position: 'absolute', left: 0, right: 0, height: 200,
-          background: `linear-gradient(180deg, transparent, ${LIME}03, transparent)`,
-          animation: 'scanline 8s linear infinite',
-        }} />
-      </div>
 
       <BackgroundChart />
 
@@ -318,95 +312,94 @@ export function HomePage() {
 
         {/* Top ticker */}
         <div style={{
-          background: 'rgba(171,255,2,0.03)',
+          background: 'rgba(255,255,255,0.02)',
           borderBottom: `1px solid ${BORDER}`,
           padding: '7px 0', flexShrink: 0,
         }}>
           {topItems.length > 0
             ? <Ticker items={topItems} speed={32} direction="forward" />
-            : <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.7rem', color: DIM, padding: '0 20px' }}>Loading market data...</div>
+            : <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.7rem', color: FAINT, padding: '0 20px' }}>Loading market data...</div>
           }
         </div>
 
         {/* Main content */}
-        <div style={{ flex: 1, padding: '60px 5vw 48px', display: 'flex', flexDirection: 'column', gap: 56 }}>
+        <div style={{ flex: 1, padding: '72px 6vw 48px', display: 'flex', flexDirection: 'column', gap: 64 }}>
 
           {/* ─── Hero ─── */}
-          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 40, flexWrap: 'wrap' }}>
-
-            {/* Left: hero title */}
-            <div style={{ flex: 1, minWidth: 320 }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 48, flexWrap: 'wrap' }}>
+            {/* Left: hero text */}
+            <div style={{ flex: 1, minWidth: 340 }}>
               <div style={{
                 fontFamily: 'Inter, sans-serif',
-                fontSize: 'min(8vw, 5.5rem)',
+                fontSize: 'min(7.5vw, 5rem)',
                 fontWeight: 900,
-                color: LIME,
-                letterSpacing: '-0.04em',
-                lineHeight: 0.95,
-                marginBottom: 24,
-                textShadow: `0 0 80px ${LIME}20`,
+                color: ACCENT,
+                letterSpacing: '-0.05em',
+                lineHeight: 0.92,
+                marginBottom: 28,
+                textShadow: `0 0 120px rgba(200,255,0,0.12)`,
               }}>
-                QUANT<span style={{ color: TEXT }}>_</span>OS
+                QUANT<span style={{ color: FAINT }}>_</span><span style={{ color: TEXT }}>OS</span>
               </div>
               <p style={{
-                margin: 0, color: SEC, fontSize: '1.05rem', maxWidth: 560, lineHeight: 1.8,
+                margin: 0, color: SEC, fontSize: '1.05rem', maxWidth: 520, lineHeight: 1.8,
                 letterSpacing: '-0.01em',
               }}>
                 Algorithmic trading system running two independent intraday strategies.
                 The <span style={{ color: GREEN, fontWeight: 600 }}>Scalper</span> trades
                 L2 order-book imbalances in real time.
-                The <span style={{ color: '#c084fc', fontWeight: 600 }}>Pattern</span> strategy
+                The <span style={{ color: PURPLE, fontWeight: 600 }}>Pattern</span> strategy
                 enters confirmed chart-pattern breakouts on 1-minute bar closes.
               </p>
             </div>
 
             {/* Right: status cards */}
-            <div style={{ display: 'flex', gap: 16, flexShrink: 0, flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: 14, flexShrink: 0, flexWrap: 'wrap' }}>
               {/* Account value */}
               <div style={{
-                background: 'rgba(5,36,36,0.85)',
+                background: 'rgba(12,12,20,0.8)',
                 border: `1px solid ${BORDER}`,
-                borderRadius: 12, padding: '20px 24px',
-                backdropFilter: 'blur(16px)',
-                display: 'flex', flexDirection: 'column', gap: 8, minWidth: 180,
+                borderRadius: 14, padding: '22px 26px',
+                backdropFilter: 'blur(20px)',
+                display: 'flex', flexDirection: 'column', gap: 8, minWidth: 190,
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                   <Wallet size={13} color={DIM} />
-                  <span style={{ fontSize: '0.62rem', color: DIM, letterSpacing: '0.14em', textTransform: 'uppercase' }}>
+                  <span style={{ fontSize: '0.6rem', color: DIM, letterSpacing: '0.14em', textTransform: 'uppercase' }}>
                     Account Value
                   </span>
                 </div>
                 <div style={{
-                  fontFamily: 'JetBrains Mono, monospace', fontSize: '1.4rem', fontWeight: 700,
+                  fontFamily: 'JetBrains Mono, monospace', fontSize: '1.5rem', fontWeight: 700,
                   color: TEXT, letterSpacing: '-0.5px',
                 }}>
                   {scalperState?.account_details?.liquidation_value != null
                     ? `$${scalperState.account_details.liquidation_value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                    : <span style={{ color: DIM, fontSize: '1.1rem' }}>—</span>
+                    : <span style={{ color: DIM, fontSize: '1.1rem' }}>&mdash;</span>
                   }
                 </div>
-                <div style={{ fontSize: '0.62rem', color: DIM, letterSpacing: '0.04em' }}>
+                <div style={{ fontSize: '0.6rem', color: FAINT, letterSpacing: '0.04em' }}>
                   LIQUIDATION VALUE
                 </div>
               </div>
 
               {/* System status */}
               <div style={{
-                background: 'rgba(5,36,36,0.85)',
-                border: `1px solid ${backendOnline ? 'rgba(171,255,2,0.2)' : 'rgba(255,68,102,0.2)'}`,
-                borderRadius: 12, padding: '20px 24px',
-                backdropFilter: 'blur(16px)',
-                display: 'flex', flexDirection: 'column', gap: 12, minWidth: 200,
-                boxShadow: backendOnline ? `0 0 40px rgba(171,255,2,0.06)` : 'none',
+                background: 'rgba(12,12,20,0.8)',
+                border: `1px solid ${backendOnline ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'}`,
+                borderRadius: 14, padding: '22px 26px',
+                backdropFilter: 'blur(20px)',
+                display: 'flex', flexDirection: 'column', gap: 12, minWidth: 210,
+                boxShadow: backendOnline ? '0 0 60px rgba(34,197,94,0.04)' : 'none',
               }}>
-                <div style={{ fontSize: '0.62rem', color: DIM, letterSpacing: '0.14em', textTransform: 'uppercase' }}>
+                <div style={{ fontSize: '0.6rem', color: DIM, letterSpacing: '0.14em', textTransform: 'uppercase' }}>
                   System Status
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <span style={{
-                    width: 10, height: 10, borderRadius: '50%',
-                    background: backendOnline ? LIME : RED,
-                    boxShadow: backendOnline ? `0 0 12px ${LIME}` : `0 0 12px ${RED}`,
+                    width: 8, height: 8, borderRadius: '50%',
+                    background: backendOnline ? GREEN : RED,
+                    boxShadow: backendOnline ? `0 0 12px ${GREEN}` : `0 0 12px ${RED}`,
                     display: 'inline-block',
                   }} />
                   <span style={{
@@ -433,22 +426,28 @@ export function HomePage() {
           {/* ─── Navigation grid ─── */}
           <div>
             <div style={{
-              fontSize: '0.68rem', color: DIM, letterSpacing: '0.16em',
-              textTransform: 'uppercase', marginBottom: 20, fontWeight: 600,
+              display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24,
             }}>
-              Modules
+              <Zap size={14} color={ACCENT} style={{ opacity: 0.6 }} />
+              <span style={{
+                fontSize: '0.66rem', color: DIM, letterSpacing: '0.16em',
+                textTransform: 'uppercase', fontWeight: 600,
+              }}>
+                Modules
+              </span>
+              <div style={{ flex: 1, height: 1, background: BORDER }} />
             </div>
             <div style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))',
-              gap: 16,
+              gridTemplateColumns: 'repeat(auto-fill, minmax(290px, 1fr))',
+              gap: 14,
             }}>
               {CARDS.map(({ to, icon: Icon, label, sub, accent, tag }) => (
                 <button
                   key={to}
                   onClick={() => navigate(to)}
                   style={{
-                    background: 'rgba(5,36,36,0.7)',
+                    background: 'rgba(12,12,20,0.6)',
                     border: `1px solid ${BORDER}`,
                     borderRadius: 12,
                     padding: '24px 26px',
@@ -456,46 +455,46 @@ export function HomePage() {
                     textAlign: 'left',
                     display: 'flex', flexDirection: 'column', gap: 14,
                     position: 'relative', overflow: 'hidden',
-                    transition: 'all 0.3s cubic-bezier(.16,1,.3,1)',
+                    transition: 'all 0.35s cubic-bezier(.16,1,.3,1)',
                     backdropFilter: 'blur(8px)',
                   }}
                   onMouseEnter={(e) => {
                     const el = e.currentTarget
-                    el.style.borderColor = accent
-                    el.style.background = 'rgba(10,46,46,0.95)'
-                    el.style.boxShadow = `0 0 30px ${accent}15, 0 8px 32px rgba(0,0,0,0.4)`
+                    el.style.borderColor = `${accent}40`
+                    el.style.background = 'rgba(18,18,28,0.9)'
+                    el.style.boxShadow = `0 0 40px ${accent}08, 0 8px 32px rgba(0,0,0,0.4)`
                     el.style.transform = 'translateY(-2px)'
                   }}
                   onMouseLeave={(e) => {
                     const el = e.currentTarget
-                    el.style.borderColor = 'rgba(171,255,2,0.08)'
-                    el.style.background = 'rgba(5,36,36,0.7)'
+                    el.style.borderColor = 'rgba(255,255,255,0.06)'
+                    el.style.background = 'rgba(12,12,20,0.6)'
                     el.style.boxShadow = 'none'
                     el.style.transform = 'translateY(0)'
                   }}
                 >
                   {/* Top accent line */}
                   <div style={{
-                    position: 'absolute', top: 0, left: 0, right: 0, height: 2,
-                    background: `linear-gradient(90deg, ${accent}, transparent)`,
+                    position: 'absolute', top: 0, left: 0, right: 0, height: 1,
+                    background: `linear-gradient(90deg, ${accent}60, transparent 70%)`,
                   }} />
 
                   {/* Icon + badges row */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                     <div style={{
-                      width: 44, height: 44, borderRadius: 10,
-                      background: `${accent}12`,
-                      border: `1px solid ${accent}25`,
+                      width: 40, height: 40, borderRadius: 10,
+                      background: `${accent}0a`,
+                      border: `1px solid ${accent}18`,
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
-                      <Icon size={20} color={accent} />
+                      <Icon size={18} color={accent} />
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       {tag && (
                         <span style={{
-                          fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.1em',
-                          color: accent, background: `${accent}10`,
-                          border: `1px solid ${accent}30`,
+                          fontSize: '0.56rem', fontWeight: 700, letterSpacing: '0.1em',
+                          color: accent, background: `${accent}0c`,
+                          border: `1px solid ${accent}22`,
                           borderRadius: 4, padding: '3px 8px',
                           fontFamily: 'JetBrains Mono, monospace',
                         }}>
@@ -511,8 +510,7 @@ export function HomePage() {
                   {/* Label */}
                   <div>
                     <div style={{
-                      display: 'flex', alignItems: 'center', gap: 8,
-                      marginBottom: 6,
+                      display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6,
                     }}>
                       <span style={{
                         fontSize: '1rem', fontWeight: 700, color: TEXT,
@@ -520,9 +518,9 @@ export function HomePage() {
                       }}>
                         {label}
                       </span>
-                      <ArrowRight size={14} color={DIM} style={{ opacity: 0.5 }} />
+                      <ArrowRight size={13} color={FAINT} style={{ opacity: 0.5 }} />
                     </div>
-                    <div style={{ fontSize: '0.8rem', color: SEC, lineHeight: 1.6 }}>
+                    <div style={{ fontSize: '0.78rem', color: SEC, lineHeight: 1.6 }}>
                       {sub}
                     </div>
                   </div>
@@ -534,13 +532,13 @@ export function HomePage() {
 
         {/* Bottom ticker */}
         <div style={{
-          background: 'rgba(171,255,2,0.03)',
+          background: 'rgba(255,255,255,0.02)',
           borderTop: `1px solid ${BORDER}`,
           padding: '7px 0', flexShrink: 0,
         }}>
           {bottomItems.length > 0
             ? <Ticker items={bottomItems} speed={32} direction="reverse" />
-            : <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.7rem', color: DIM, padding: '0 20px' }}>—</div>
+            : <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.7rem', color: FAINT, padding: '0 20px' }}>&mdash;</div>
           }
         </div>
       </div>

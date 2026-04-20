@@ -18,28 +18,29 @@ const CustomTooltip = ({ active, payload }: { active?: boolean; payload?: { payl
   const p = payload[0]
   return (
     <div style={{
-      background: '#0a2e2e',
-      border: '1px solid rgba(171,255,2,0.12)',
-      borderRadius: 6,
-      padding: '8px 12px',
-      fontFamily: 'JetBrains Mono, Roboto Mono, monospace',
+      background: '#12121c',
+      border: '1px solid rgba(255,255,255,0.08)',
+      borderRadius: 8,
+      padding: '10px 14px',
+      fontFamily: 'JetBrains Mono, monospace',
       fontSize: '0.78rem',
-      color: '#e4f0e4',
+      color: '#f0f0f5',
+      boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
     }}>
-      <div style={{ color: '#7a9a8a', fontSize: '0.68rem', marginBottom: 2 }}>
+      <div style={{ color: '#55556a', fontSize: '0.68rem', marginBottom: 3 }}>
         {p.payload.datetime_est}
       </div>
-      <div style={{ color: p.value >= 0 ? '#00ff88' : '#ff4466', fontWeight: 700 }}>
+      <div style={{ color: p.value >= 0 ? '#22c55e' : '#ef4444', fontWeight: 700 }}>
         ${p.value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
       </div>
     </div>
   )
 }
 
-export function PnLCurve({ data, color = '#abff02', height = 240 }: PnLCurveProps) {
+export function PnLCurve({ data, color = '#c8ff00', height = 240 }: PnLCurveProps) {
   if (!data?.length) {
     return (
-      <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#4a6a5a', fontSize: '0.8rem' }}>
+      <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#55556a', fontSize: '0.8rem' }}>
         No data available
       </div>
     )
@@ -55,20 +56,20 @@ export function PnLCurve({ data, color = '#abff02', height = 240 }: PnLCurveProp
       <AreaChart data={data} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
         <defs>
           <linearGradient id={`grad-${color.replace('#', '')}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={color} stopOpacity={0.18} />
+            <stop offset="0%" stopColor={color} stopOpacity={0.15} />
             <stop offset="100%" stopColor={color} stopOpacity={0} />
           </linearGradient>
         </defs>
         <XAxis
           dataKey="datetime_est"
-          tick={{ fill: '#4a6a5a', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}
+          tick={{ fill: '#55556a', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}
           tickLine={false}
           axisLine={false}
           interval="preserveStartEnd"
         />
         <YAxis
           domain={yDomain}
-          tick={{ fill: '#4a6a5a', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}
+          tick={{ fill: '#55556a', fontSize: 10, fontFamily: 'JetBrains Mono, monospace' }}
           tickLine={false}
           axisLine={false}
           tickFormatter={(v) => `$${v.toLocaleString()}`}

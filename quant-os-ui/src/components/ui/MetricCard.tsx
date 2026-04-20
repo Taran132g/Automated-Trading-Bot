@@ -5,29 +5,30 @@ interface MetricCardProps {
   color?: string
 }
 
-export function MetricCard({ label, value, sub, color = '#e4f0e4' }: MetricCardProps) {
+export function MetricCard({ label, value, sub, color = '#f0f0f5' }: MetricCardProps) {
   return (
     <div style={{
-      background: 'linear-gradient(180deg, #0a2e2e 0%, #052424 100%)',
-      border: '1px solid rgba(171,255,2,0.08)',
-      borderRadius: 8,
-      padding: '16px 18px',
+      background: '#12121c',
+      border: '1px solid rgba(255,255,255,0.06)',
+      borderRadius: 10,
+      padding: '18px 20px',
       flex: 1,
+      minWidth: 0,
     }}>
       <div style={{
-        fontSize: '0.68rem', color: '#4a6a5a', textTransform: 'uppercase',
-        letterSpacing: '0.1em', fontWeight: 600, marginBottom: 8,
+        fontSize: '0.64rem', color: '#55556a', textTransform: 'uppercase',
+        letterSpacing: '0.12em', fontWeight: 600, marginBottom: 10,
       }}>
         {label}
       </div>
       <div style={{
-        fontSize: '1.7rem', fontFamily: 'JetBrains Mono, Roboto Mono, monospace',
-        fontWeight: 700, color, lineHeight: 1.1,
+        fontSize: '1.5rem', fontFamily: 'JetBrains Mono, monospace',
+        fontWeight: 700, color, lineHeight: 1.1, letterSpacing: '-0.02em',
       }}>
         {value}
       </div>
       {sub && (
-        <div style={{ fontSize: '0.65rem', color: '#4a6a5a', marginTop: 5 }}>
+        <div style={{ fontSize: '0.62rem', color: '#55556a', marginTop: 6 }}>
           {sub}
         </div>
       )}

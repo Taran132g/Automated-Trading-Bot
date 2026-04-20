@@ -6,6 +6,14 @@ import { DailyPnLBars } from '@/components/charts/DailyPnLBars'
 import { WinLossDonut } from '@/components/charts/WinLossDonut'
 import { analyticsService } from '@/services/api'
 
+const CARD = '#12121c'
+const BORDER = 'rgba(255,255,255,0.06)'
+const GREEN = '#22c55e'
+const RED = '#ef4444'
+const TEXT = '#f0f0f5'
+const SEC = '#8b8b9e'
+const DIM = '#55556a'
+
 export function AnalyticsPage() {
   const [historyText, setHistoryText] = useState('')
   const [showPaste, setShowPaste] = useState(false)
@@ -33,21 +41,21 @@ export function AnalyticsPage() {
   })
 
   const pf = summary?.profit_factor
-  const pfDisplay = pf === null || pf === undefined ? '—' : pf === Infinity ? '∞' : pf.toFixed(2)
+  const pfDisplay = pf === null || pf === undefined ? '\u2014' : pf === Infinity ? '\u221e' : pf.toFixed(2)
 
   return (
-    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <h2 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700, color: '#F8FAFC', letterSpacing: '-0.3px' }}>
+    <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800, color: TEXT, letterSpacing: '-0.02em' }}>
         RISK &amp; PERFORMANCE ANALYTICS
       </h2>
 
       {/* Paste history panel */}
-      <div style={{ background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '14px 18px' }}>
+      <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '16px 20px' }}>
         <button
           onClick={() => setShowPaste(!showPaste)}
-          style={{ background: 'none', border: 'none', color: '#94A3B8', fontSize: '0.78rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, padding: 0 }}
+          style={{ background: 'none', border: 'none', color: SEC, fontSize: '0.78rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, padding: 0 }}
         >
-          {showPaste ? '▼' : '▶'} Paste Schwab Trade History (optional)
+          {showPaste ? '\u25bc' : '\u25b6'} Paste Schwab Trade History (optional)
         </button>
         {showPaste && (
           <div style={{ marginTop: 12 }}>
@@ -57,8 +65,8 @@ export function AnalyticsPage() {
               rows={5}
               placeholder="Paste filled orders text from Schwab here..."
               style={{
-                width: '100%', background: '#0B0E14', border: '1px solid #1F2937', borderRadius: 6,
-                color: '#E2E8F0', padding: '10px 12px', fontSize: '0.78rem', fontFamily: 'Roboto Mono',
+                width: '100%', background: '#0a0a12', border: `1px solid ${BORDER}`, borderRadius: 8,
+                color: TEXT, padding: '10px 14px', fontSize: '0.78rem', fontFamily: 'JetBrains Mono, monospace',
                 resize: 'vertical', outline: 'none', boxSizing: 'border-box',
               }}
             />
@@ -66,9 +74,10 @@ export function AnalyticsPage() {
               onClick={() => parseMutation.mutate(historyText)}
               disabled={!historyText.trim() || parseMutation.isPending}
               style={{
-                marginTop: 8, padding: '8px 18px', background: historyText.trim() ? '#00FF99' : '#1F2937',
-                color: historyText.trim() ? '#0B0E14' : '#64748B', border: 'none', borderRadius: 6,
+                marginTop: 8, padding: '9px 20px', background: historyText.trim() ? '#c8ff00' : '#191925',
+                color: historyText.trim() ? '#06060b' : DIM, border: 'none', borderRadius: 8,
                 fontSize: '0.78rem', fontWeight: 600, cursor: historyText.trim() ? 'pointer' : 'not-allowed',
+                transition: 'all 0.15s',
               }}
             >
               {parseMutation.isPending ? 'Parsing...' : 'Parse & Analyze'}
@@ -79,19 +88,19 @@ export function AnalyticsPage() {
 
       {/* KPIs */}
       <div style={{ display: 'flex', gap: 12 }}>
-        <MetricCard label="Profit Factor" value={pfDisplay} color={pf && pf > 1 ? '#00FF99' : '#EF4444'} />
-        <MetricCard label="Win Rate" value={`${summary?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(summary?.win_rate ?? 0) > 50 ? '#00FF99' : '#F8FAFC'} />
+        <MetricCard label="Profit Factor" value={pfDisplay} color={pf && pf > 1 ? GREEN : RED} />
+        <MetricCard label="Win Rate" value={`${summary?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(summary?.win_rate ?? 0) > 50 ? GREEN : TEXT} />
         <MetricCard label="Risk / Reward" value={summary?.risk_reward?.toFixed(2) ?? '0.00'} />
         <MetricCard label="Round Trips" value={summary?.total_round_trips?.toLocaleString() ?? '0'} />
       </div>
 
       {/* Charts */}
       <div style={{ display: 'flex', gap: 16 }}>
-        <div style={{ flex: 6, background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
+        <div style={{ flex: 6, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
           <SectionHeader>Daily PnL</SectionHeader>
           <DailyPnLBars data={dailyPnL ?? []} />
         </div>
-        <div style={{ flex: 4, background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
+        <div style={{ flex: 4, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
           <SectionHeader>Win / Loss Distribution</SectionHeader>
           <WinLossDonut wins={winLoss?.wins ?? 0} losses={winLoss?.losses ?? 0} />
         </div>
@@ -99,7 +108,7 @@ export function AnalyticsPage() {
 
       {/* Parsed history results */}
       {parseMutation.data && !parseMutation.data.error && (
-        <div style={{ background: '#111827', border: '1px solid #1F2937', borderRadius: 8, padding: '16px 18px' }}>
+        <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
           <SectionHeader>Parsed Trade Analysis</SectionHeader>
           <div style={{ display: 'flex', gap: 12, marginBottom: 16 }}>
             <MetricCard label="Total PnL" value={`$${parseMutation.data.total_pnl?.toFixed(2) ?? '0.00'}`} />
@@ -121,11 +130,11 @@ export function AnalyticsPage() {
               <tbody>
                 {Object.entries(parseMutation.data.symbol_summaries as Record<string, Record<string, number>>).map(([sym, s]) => (
                   <tr key={sym}>
-                    <td style={{ fontWeight: 700, fontFamily: 'Roboto Mono' }}>{sym}</td>
+                    <td style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace' }}>{sym}</td>
                     <td>{s.fills}</td>
-                    <td style={{ color: s.total_pi >= 0 ? '#00FF99' : '#EF4444' }}>${s.total_pi?.toFixed(2)}</td>
-                    <td style={{ color: s.total_pnl >= 0 ? '#00FF99' : '#EF4444' }}>${s.total_pnl?.toFixed(2)}</td>
-                    <td style={{ color: s.pnl_per_share >= 0 ? '#00FF99' : '#EF4444', fontFamily: 'Roboto Mono' }}>${s.pnl_per_share?.toFixed(4)}</td>
+                    <td style={{ color: s.total_pi >= 0 ? GREEN : RED }}>${s.total_pi?.toFixed(2)}</td>
+                    <td style={{ color: s.total_pnl >= 0 ? GREEN : RED }}>${s.total_pnl?.toFixed(2)}</td>
+                    <td style={{ color: s.pnl_per_share >= 0 ? GREEN : RED, fontFamily: 'JetBrains Mono, monospace' }}>${s.pnl_per_share?.toFixed(4)}</td>
                   </tr>
                 ))}
               </tbody>
