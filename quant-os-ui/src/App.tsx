@@ -35,7 +35,7 @@ async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          text: 'Welcome ... Trader.',   // spaced ellipsis = long deliberate pause
+          text: 'Welcome, Trader.',
           model_id: 'eleven_multilingual_v2',
           voice_settings: {
             stability: 0.22,        // very low = maximum expressiveness/drama
@@ -55,6 +55,7 @@ async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
     const url   = URL.createObjectURL(blob)
     const audio = new Audio(url)
     audio.preload = 'auto'
+    audio.playbackRate = 0.8   // uniform 0.8x speed — slower without the mid-word gaps
     return audio
   } catch (e) {
     console.error('[ElevenLabs] fetch failed', e)
