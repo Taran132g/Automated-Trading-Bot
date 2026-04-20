@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from telethon import TelegramClient, events
 
 from config import Config
-from signal_parser import parse_signal
+from signal_parser import parse_signal, analyze_update
 from risk_manager import assess_risk
 from notifier import send_message, send_error
 from signals_db import save_signal, init_db
@@ -59,8 +59,15 @@ async def process_message(event, config: Config, client: TelegramClient):
     signal = await parse_signal(raw_text, config.anthropic_api_key)
 
     if not signal.get("valid"):
-        log.debug("[%s] Not a trade signal: %s", source, signal.get("reason", ""))
-        return  # silently ignore non-signal messages
+        # Not a new signal — check if it's a trade update worth alerting on
+        alert = await analyze_update(raw_text, source, config.anthropic_api_key)
+        if alert:
+            log.info("[%s] Update alert: %s", source, alert[:80])
+            await send_message(alert, client)
+            _tg_bot.send_message(alert)
+        else:
+            log.debug("[%s] Skipped (irrelevant): %s", source, signal.get("reason", ""))
+        return
 
     log.info(
         "[%s] Signal: %s %s | Entry: %s | SL: %s | TP: %s",
