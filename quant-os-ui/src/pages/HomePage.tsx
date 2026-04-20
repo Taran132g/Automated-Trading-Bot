@@ -490,7 +490,7 @@ export function HomePage() {
             flexWrap: 'wrap', gap: 10,
           }}>
             <span style={{ fontSize: '0.72rem', color: DIM }}>
-              QUANT_OS — Algorithmic Trading Infrastructure
+              TNFund — Algorithmic Trading Infrastructure
             </span>
             <span style={{ fontSize: '0.68rem', color: DIM }}>
               {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}

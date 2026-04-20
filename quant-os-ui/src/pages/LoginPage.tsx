@@ -57,7 +57,7 @@ export function LoginPage() {
             color: ACCENT, letterSpacing: '-0.05em',
             textShadow: '0 0 80px rgba(200,255,0,0.1)',
           }}>
-            QUANT<span style={{ color: FAINT }}>_</span><span style={{ color: TEXT }}>OS</span>
+            <span style={{ color: ACCENT }}>TN</span>Fund
           </div>
           <div style={{ color: DIM, fontSize: '0.75rem', marginTop: 8, letterSpacing: '0.14em', textTransform: 'uppercase' }}>
             Trading Terminal

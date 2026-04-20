@@ -211,7 +211,7 @@ function TopNav() {
             fontFamily: 'Inter, sans-serif', fontSize: '0.92rem',
             fontWeight: 900, letterSpacing: '-0.02em', color: ACCENT,
           }}>
-            QUANT<span style={{ color: '#33334a' }}>_</span><span style={{ color: TEXT }}>OS</span>
+            <span style={{ color: ACCENT }}>TN</span>Fund
           </span>
         </NavLink>
       </div>

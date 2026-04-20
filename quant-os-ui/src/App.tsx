@@ -251,7 +251,7 @@ function EntryGate({ onEnter, audioRef }: { onEnter: () => void; audioRef: React
           opacity: stage >= 2 ? 1 : 0, transition: 'opacity 0.5s ease 0.3s',
         }}>
           <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.56rem', color: 'rgba(34,197,94,0.4)', letterSpacing: '0.2em' }}>
-            QUANT_OS // SYSTEM BOOT
+            TNFund // SYSTEM BOOT
           </span>
           <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.56rem', color: 'rgba(34,197,94,0.4)', letterSpacing: '0.2em' }}>
             {new Date().toISOString().split('T')[0]}
@@ -349,7 +349,7 @@ function EntryGate({ onEnter, audioRef }: { onEnter: () => void; audioRef: React
           transition: 'width 0.8s cubic-bezier(0.4,0,0.2,1) 0.5s',
         }} />
 
-        {/* QUANT_OS sub-brand */}
+        {/* TNFund sub-brand */}
         <div style={{
           fontFamily: 'Inter, sans-serif',
           fontSize: 'clamp(1.1rem, 2.5vw, 1.6rem)',
@@ -358,9 +358,8 @@ function EntryGate({ onEnter, audioRef }: { onEnter: () => void; audioRef: React
           transform: stage >= 2 ? 'translateY(0)' : 'translateY(10px)',
           transition: 'opacity 0.7s ease 0.5s, transform 0.7s ease 0.5s',
         }}>
-          <span style={{ color: '#c8ff00' }}>QUANT</span>
-          <span style={{ color: '#33334a' }}>_</span>
-          <span style={{ color: 'rgba(240,240,245,0.5)' }}>OS</span>
+          <span style={{ color: '#c8ff00' }}>TN</span>
+          <span style={{ color: 'rgba(240,240,245,0.5)' }}>Fund</span>
         </div>
 
         {/* Tagline */}
@@ -563,7 +562,7 @@ function CircleReveal({ onDone, audioRef }: { onDone: () => void; audioRef: Reac
           fontSize: 'clamp(3rem, 8vw, 5.5rem)',
           fontWeight: 900, letterSpacing: '-0.04em', color: '#f0f0f5', lineHeight: 1,
         }}>
-          QUANT<span style={{ color: '#33334a' }}>_</span><span style={{ color: '#c8ff00' }}>OS</span>
+          <span style={{ color: '#c8ff00' }}>TN</span>Fund
         </div>
       </div>
     </div>
