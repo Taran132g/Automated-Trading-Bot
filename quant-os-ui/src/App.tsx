@@ -21,7 +21,7 @@ const queryClient = new QueryClient({
 })
 
 // ── ElevenLabs: preload "Welcome, Trader." in Arnold's cinematic voice ──
-const ELEVEN_KEY     = 'sk_3272b0dc5f86cef4914c5705b4b4f312be3b46aa4f332aed'
+const ELEVEN_KEY     = 'sk_4496a2282e5e190984516e5212242f2f86e72f32b242e508'
 const ELEVEN_VOICE   = 'VR6AewLTigWG4xSOukaG' // Arnold — deep, dramatic, cinematic
 
 async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
@@ -36,7 +36,7 @@ async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
         },
         body: JSON.stringify({
           text: 'Welcome, Trader.',
-          model_id: 'eleven_monolingual_v1',
+          model_id: 'eleven_multilingual_v2',
           voice_settings: {
             stability: 0.42,
             similarity_boost: 0.78,
