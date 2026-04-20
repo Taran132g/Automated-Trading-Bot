@@ -23,16 +23,16 @@ interface Signal {
   approved: number
 }
 
-const GREEN = '#00ff88'
-const RED = '#ff4466'
-const LIME = '#abff02'
-const DIM = '#4a6a5a'
-const BG = '#031818'
-const CARD = '#052424'
-const ELEV = '#0a2e2e'
-const BORDER = 'rgba(171,255,2,0.08)'
-const TEXT = '#e4f0e4'
-const SEC = '#7a9a8a'
+const GREEN = '#22c55e'
+const RED = '#ef4444'
+const ACCENT = '#c8ff00'
+const DIM = '#55556a'
+const BG = '#06060b'
+const CARD = '#0c0c14'
+const BORDER = 'rgba(255,255,255,0.06)'
+const TEXT = '#f0f0f5'
+const SEC = '#8b8b9e'
+const FAINT = '#33334a'
 
 function formatTime(iso: string) {
   try {
@@ -53,10 +53,10 @@ function ChannelBadge({ name }: { name: string }) {
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 5,
-      background: 'rgba(171,255,2,0.06)', border: '1px solid rgba(171,255,2,0.15)',
+      background: 'rgba(200,255,0,0.04)', border: '1px solid rgba(200,255,0,0.12)',
       borderRadius: 4, padding: '2px 8px',
       fontFamily: 'JetBrains Mono, monospace', fontSize: '0.68rem',
-      color: LIME, letterSpacing: 0.5,
+      color: ACCENT, letterSpacing: 0.5,
     }}>
       <Radio size={9} />
       {short}
@@ -65,10 +65,10 @@ function ChannelBadge({ name }: { name: string }) {
 }
 
 function RRBadge({ rr }: { rr: number }) {
-  const color = rr >= 2 ? GREEN : rr >= 1 ? '#fbbf24' : RED
+  const color = rr >= 2 ? GREEN : rr >= 1 ? '#f59e0b' : RED
   return (
     <span style={{
-      background: `${color}15`, border: `1px solid ${color}40`,
+      background: `${color}12`, border: `1px solid ${color}30`,
       borderRadius: 3, padding: '1px 6px',
       fontFamily: 'JetBrains Mono, monospace', fontSize: '0.68rem', color,
     }}>
@@ -97,17 +97,17 @@ function SignalCard({ signal, isNew }: { signal: Signal; isNew: boolean }) {
     }}>
       <div style={{
         background: CARD,
-        border: `1px solid ${isNew ? accent + '55' : BORDER}`,
+        border: `1px solid ${isNew ? accent + '40' : BORDER}`,
         borderLeft: `3px solid ${accent}`,
-        borderRadius: 10, overflow: 'hidden',
-        boxShadow: isNew ? `0 0 24px ${accent}15` : 'none',
+        borderRadius: 12, overflow: 'hidden',
+        boxShadow: isNew ? `0 0 30px ${accent}10` : 'none',
         transition: 'box-shadow 2s ease, border-color 2s ease',
       }}>
         {/* Header */}
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          padding: '10px 16px', borderBottom: `1px solid ${BORDER}`,
-          background: `${accent}06`,
+          padding: '10px 18px', borderBottom: `1px solid ${BORDER}`,
+          background: `${accent}04`,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <Icon size={16} color={accent} />
@@ -115,7 +115,7 @@ function SignalCard({ signal, isNew }: { signal: Signal; isNew: boolean }) {
               {signal.symbol}
             </span>
             <span style={{
-              background: `${accent}18`, border: `1px solid ${accent}50`,
+              background: `${accent}12`, border: `1px solid ${accent}40`,
               borderRadius: 4, padding: '1px 8px',
               fontFamily: 'JetBrains Mono, monospace', fontSize: '0.7rem',
               color: accent, fontWeight: 700, letterSpacing: 1,
@@ -124,7 +124,7 @@ function SignalCard({ signal, isNew }: { signal: Signal; isNew: boolean }) {
             </span>
             {signal.approved ? null : (
               <span style={{
-                background: `${RED}15`, border: `1px solid ${RED}40`,
+                background: `${RED}10`, border: `1px solid ${RED}30`,
                 borderRadius: 4, padding: '1px 8px',
                 fontFamily: 'JetBrains Mono, monospace', fontSize: '0.68rem', color: RED,
               }}>
@@ -142,8 +142,8 @@ function SignalCard({ signal, isNew }: { signal: Signal; isNew: boolean }) {
 
         {/* Body */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 0 }}>
-          <div style={{ padding: '12px 16px', borderRight: `1px solid ${BORDER}` }}>
-            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.65rem', color: DIM, marginBottom: 8, letterSpacing: 1 }}>
+          <div style={{ padding: '14px 18px', borderRight: `1px solid ${BORDER}` }}>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem', color: DIM, marginBottom: 8, letterSpacing: 1 }}>
               PRICE LEVELS
             </div>
             <Row label="Entry" value={`$${signal.entry.toLocaleString()}`} color={TEXT} />
@@ -164,8 +164,8 @@ function SignalCard({ signal, isNew }: { signal: Signal; isNew: boolean }) {
             )}
           </div>
 
-          <div style={{ padding: '12px 16px', borderRight: `1px solid ${BORDER}` }}>
-            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.65rem', color: DIM, marginBottom: 8, letterSpacing: 1 }}>
+          <div style={{ padding: '14px 18px', borderRight: `1px solid ${BORDER}` }}>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem', color: DIM, marginBottom: 8, letterSpacing: 1 }}>
               YOUR ORDER (YUBIT)
             </div>
             <Row label="Qty" value={`${signal.quantity} coins`} color={TEXT} highlight />
@@ -176,10 +176,10 @@ function SignalCard({ signal, isNew }: { signal: Signal; isNew: boolean }) {
               sub={`${signal.risk_pct}% of $${signal.balance_usdt.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
           </div>
 
-          <div style={{ padding: '12px 16px' }}>
+          <div style={{ padding: '14px 18px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-              <Zap size={11} color="#c084fc" />
-              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.65rem', color: '#c084fc', letterSpacing: 1 }}>
+              <Zap size={11} color="#a78bfa" />
+              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem', color: '#a78bfa', letterSpacing: 1 }}>
                 CLAUDE'S TAKE
               </span>
             </div>
@@ -231,8 +231,8 @@ function LiveDot() {
   return (
     <span style={{
       display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
-      background: on ? LIME : 'transparent',
-      border: `1px solid ${LIME}`,
+      background: on ? ACCENT : 'transparent',
+      border: `1px solid ${ACCENT}`,
       transition: 'background 0.3s', marginRight: 6,
     }} />
   )
@@ -283,16 +283,16 @@ export function SignalsPage() {
       {/* Header */}
       <div style={{
         position: 'sticky', top: 0, zIndex: 10,
-        background: 'rgba(3,24,24,0.92)',
-        backdropFilter: 'blur(12px)',
+        background: 'rgba(6,6,11,0.92)',
+        backdropFilter: 'blur(16px)',
         borderBottom: `1px solid ${BORDER}`,
         padding: '0 28px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         height: 56,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Activity size={18} color={LIME} />
-          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: '0.9rem', color: LIME, letterSpacing: 2 }}>
+          <Activity size={18} color={ACCENT} />
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: '0.9rem', color: ACCENT, letterSpacing: 2 }}>
             SIGNAL ADVISOR
           </span>
           <span style={{ width: 1, height: 18, background: BORDER, display: 'inline-block' }} />
@@ -308,7 +308,7 @@ export function SignalsPage() {
           )}
           <div style={{ display: 'flex', alignItems: 'center' }}>
             <LiveDot />
-            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.72rem', color: connected ? LIME : RED }}>
+            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.72rem', color: connected ? ACCENT : RED }}>
               {connected ? 'LIVE' : 'RECONNECTING'}
             </span>
           </div>
@@ -316,7 +316,7 @@ export function SignalsPage() {
       </div>
 
       {/* Stats bar */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: `1px solid ${BORDER}`, background: CARD }}>
+      <div style={{ display: 'flex', gap: 0, borderBottom: `1px solid ${BORDER}`, background: '#0a0a12' }}>
         {[
           { label: 'Total Signals', value: signals.length },
           { label: 'Approved', value: signals.filter(s => s.approved).length },
@@ -324,10 +324,10 @@ export function SignalsPage() {
           { label: 'Channels', value: new Set(signals.map(s => s.channel)).size },
         ].map((stat, i) => (
           <div key={i} style={{
-            flex: 1, padding: '10px 20px',
+            flex: 1, padding: '12px 22px',
             borderRight: i < 3 ? `1px solid ${BORDER}` : 'none',
           }}>
-            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.62rem', color: DIM, letterSpacing: 1 }}>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.6rem', color: DIM, letterSpacing: 1 }}>
               {stat.label.toUpperCase()}
             </div>
             <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '1.1rem', fontWeight: 700, color: TEXT }}>
@@ -338,14 +338,14 @@ export function SignalsPage() {
       </div>
 
       {/* Feed */}
-      <div style={{ padding: '20px 28px', maxWidth: 1300, margin: '0 auto' }}>
+      <div style={{ padding: '24px 28px', maxWidth: 1300, margin: '0 auto' }}>
         {signals.length === 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, paddingTop: 120 }}>
-            <Radio size={40} color={DIM} />
+            <Radio size={40} color={FAINT} />
             <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.85rem', color: DIM }}>
               Listening for signals...
             </div>
-            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.72rem', color: '#2a4a3a' }}>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.72rem', color: FAINT }}>
               Trade cards will appear here as your channels post them
             </div>
           </div>

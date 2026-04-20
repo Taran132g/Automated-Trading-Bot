@@ -1,49 +1,78 @@
-import { Outlet, useNavigate } from 'react-router-dom'
-import { ChevronLeft } from 'lucide-react'
+import { useState } from 'react'
+import { Outlet } from 'react-router-dom'
+import { Sidebar } from './Sidebar'
+import { Menu } from 'lucide-react'
 
 export function RootLayout() {
-  const navigate = useNavigate()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', background: '#031818' }}>
-      {/* Top bar */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '0 20px', height: 44,
-        borderBottom: '1px solid rgba(171,255,2,0.08)',
-        background: '#052424',
-        flexShrink: 0,
-      }}>
-        <button
-          onClick={() => navigate('/')}
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', background: '#06060b' }}>
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          onClick={() => setSidebarOpen(false)}
+          className="mobile-overlay"
           style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            background: 'none', border: 'none', cursor: 'pointer',
-            color: '#4a6a5a', padding: '4px 8px', borderRadius: 6,
-            fontSize: '0.78rem', fontFamily: 'JetBrains Mono, monospace',
-            transition: 'color 0.2s',
+            position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+            zIndex: 40, display: 'none',
           }}
-          onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#abff02' }}
-          onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = '#4a6a5a' }}
-        >
-          <ChevronLeft size={14} />
-          Home
-        </button>
+        />
+      )}
 
-        <div style={{ width: 1, height: 18, background: 'rgba(171,255,2,0.08)' }} />
-
-        <span style={{
-          fontFamily: 'Inter, sans-serif', fontSize: '0.82rem', fontWeight: 800,
-          color: '#abff02', letterSpacing: '-0.02em',
-        }}>
-          QUANT<span style={{ color: '#e4f0e4' }}>_</span>OS
-        </span>
+      {/* Sidebar */}
+      <div className={`sidebar-wrapper ${sidebarOpen ? 'open' : ''}`}>
+        <Sidebar onClose={() => setSidebarOpen(false)} />
       </div>
 
-      {/* Page content */}
-      <main style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <Outlet />
-      </main>
+      {/* Main content */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+        {/* Mobile top bar */}
+        <div className="mobile-topbar" style={{
+          display: 'none',
+          alignItems: 'center', gap: 12, padding: '0 16px', height: 48,
+          borderBottom: '1px solid rgba(255,255,255,0.06)',
+          background: '#0a0a12',
+          flexShrink: 0,
+        }}>
+          <button onClick={() => setSidebarOpen(true)} style={{
+            background: 'none', border: 'none', color: '#8b8b9e',
+            cursor: 'pointer', padding: 4,
+          }}>
+            <Menu size={20} />
+          </button>
+          <span style={{
+            fontFamily: 'Inter, sans-serif', fontSize: '0.88rem', fontWeight: 800,
+            color: '#c8ff00', letterSpacing: '-0.02em',
+          }}>
+            QUANT<span style={{ color: '#33334a' }}>_</span><span style={{ color: '#f0f0f5' }}>OS</span>
+          </span>
+        </div>
+
+        <main style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <Outlet />
+        </main>
+      </div>
+
+      <style>{`
+        .sidebar-wrapper {
+          display: flex;
+          flex-shrink: 0;
+        }
+        @media (max-width: 768px) {
+          .sidebar-wrapper {
+            position: fixed;
+            left: -260px;
+            top: 0;
+            bottom: 0;
+            z-index: 50;
+            transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          }
+          .sidebar-wrapper.open { left: 0; }
+          .mobile-overlay { display: block !important; }
+          .mobile-topbar { display: flex !important; }
+        }
+      `}</style>
     </div>
   )
 }
