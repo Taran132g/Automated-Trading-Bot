@@ -35,7 +35,7 @@ async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          text: 'Welcome, Trader.',
+          text: 'Welcome.',
           model_id: 'eleven_multilingual_v2',
           voice_settings: {
             stability: 0.22,        // very low = maximum expressiveness/drama
