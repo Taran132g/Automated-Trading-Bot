@@ -29,6 +29,11 @@ from risk_manager import assess_risk
 from notifier import send_message, send_error
 from signals_db import save_signal, init_db
 
+# Also use the existing Trading Bot Telegram notifier for alerts
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from telegram_notifier import TelegramNotifier
+_tg_bot = TelegramNotifier()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -68,11 +73,10 @@ async def process_message(event, config: Config, client: TelegramClient):
     )
 
     # ── 2. Risk calculation + trade card ─────────────────────────────────────
-    result = await assess_risk(
+    result = assess_risk(
         signal=signal,
         config=config,
         source_channel=source,
-        raw_signal_text=raw_text,
     )
 
     # ── 3. Save to DB (powers the dashboard UI) ──────────────────────────────
@@ -85,6 +89,10 @@ async def process_message(event, config: Config, client: TelegramClient):
 
     # ── 4. Send to your Saved Messages ───────────────────────────────────────
     await send_message(result["message"], client)
+
+    # ── 5. Also send via the Trading Bot Telegram notifier ───────────────────
+    _tg_bot.send_message(result["message"])
+
     log.info("[%s] Trade card sent for %s", source, signal.get("symbol"))
 
 
