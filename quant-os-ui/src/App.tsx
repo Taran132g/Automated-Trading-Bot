@@ -20,41 +20,40 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5000 } },
 })
 
-// ── Web Speech: "Welcome, Trader" in a deep dramatic voice ──
-function speakWelcome() {
+// ── ElevenLabs: preload "Welcome, Trader." in Arnold's cinematic voice ──
+const ELEVEN_KEY     = 'sk_3272b0dc5f86cef4914c5705b4b4f312be3b46aa4f332aed'
+const ELEVEN_VOICE   = 'VR6AewLTigWG4xSOukaG' // Arnold — deep, dramatic, cinematic
+
+async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
   try {
-    if (!window.speechSynthesis) return
-    window.speechSynthesis.cancel()
-
-    const fire = (voices: SpeechSynthesisVoice[]) => {
-      const utt = new SpeechSynthesisUtterance('Welcome, Trader.')
-      utt.pitch  = 0.6   // lower = deeper
-      utt.rate   = 0.82  // slower = more dramatic
-      utt.volume = 1.0
-      const preferred = voices.find(v =>
-        /daniel|david|google uk english male|alex|fred|microsoft david/i.test(v.name)
-      ) ?? voices.find(v => v.lang.startsWith('en')) ?? voices[0]
-      if (preferred) utt.voice = preferred
-      setTimeout(() => window.speechSynthesis.speak(utt), 120)
-    }
-
-    // getVoices() may be empty on first call — wait for voiceschanged if so
-    const voices = window.speechSynthesis.getVoices()
-    if (voices.length > 0) {
-      fire(voices)
-    } else {
-      window.speechSynthesis.addEventListener('voiceschanged', () => {
-        fire(window.speechSynthesis.getVoices())
-      }, { once: true })
-      // Fallback: speak with default voice after 300ms if event never fires
-      setTimeout(() => {
-        if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
-          fire([])
-        }
-      }, 300)
-    }
+    const res = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}`,
+      {
+        method: 'POST',
+        headers: {
+          'xi-api-key': ELEVEN_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: 'Welcome, Trader.',
+          model_id: 'eleven_monolingual_v1',
+          voice_settings: {
+            stability: 0.42,        // lower = more expressive/dramatic
+            similarity_boost: 0.78,
+            style: 0.55,            // style exaggeration for cinematic delivery
+            use_speaker_boost: true,
+          },
+        }),
+      },
+    )
+    if (!res.ok) return null
+    const blob = await res.blob()
+    const url  = URL.createObjectURL(blob)
+    const audio = new Audio(url)
+    audio.preload = 'auto'
+    return audio
   } catch {
-    // Speech unavailable — silent fallback
+    return null
   }
 }
 
@@ -161,15 +160,17 @@ function playCinematicSound() {
 }
 
 // ── Entry gate: cinematic Market Cipher aesthetic ──
-function EntryGate({ onEnter }: { onEnter: () => void }) {
+function EntryGate({ onEnter, audioRef }: { onEnter: () => void; audioRef: React.MutableRefObject<HTMLAudioElement | null> }) {
   const [stage, setStage] = useState(0) // 0=dark, 1=letterbox, 2=text, 3=ready
 
   useEffect(() => {
     const t1 = setTimeout(() => setStage(1), 120)
     const t2 = setTimeout(() => setStage(2), 600)
     const t3 = setTimeout(() => setStage(3), 1400)
+    // Preload ElevenLabs audio in background while user reads the gate screen
+    fetchWelcomeAudio().then(a => { audioRef.current = a })
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3) }
-  }, [])
+  }, [audioRef])
 
   return (
     <div
@@ -387,7 +388,7 @@ function EntryGate({ onEnter }: { onEnter: () => void }) {
 }
 
 // ── Circle reveal: dark overlay iris-opens to expose the site ──
-function CircleReveal({ onDone }: { onDone: () => void }) {
+function CircleReveal({ onDone, audioRef }: { onDone: () => void; audioRef: React.MutableRefObject<HTMLAudioElement | null> }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textRef   = useRef<HTMLDivElement>(null)
   const onDoneRef = useRef(onDone)
@@ -419,7 +420,8 @@ function CircleReveal({ onDone }: { onDone: () => void }) {
     let rafId: number
 
     playCinematicSound()
-    speakWelcome()
+    // Play ElevenLabs voice — 120ms delay so bass thud hits first
+    setTimeout(() => { audioRef.current?.play().catch(() => {}) }, 120)
 
     const frame = (ts: number) => {
       if (startTs === null) startTs = ts
@@ -542,14 +544,16 @@ export default function App() {
   const [phase, setPhase] = useState<'gate' | 'reveal' | 'done'>(
     firstVisit ? 'gate' : 'done',
   )
+  const audioRef = useRef<HTMLAudioElement | null>(null)
 
   return (
     <QueryClientProvider client={queryClient}>
       {phase === 'gate' && (
-        <EntryGate onEnter={() => setPhase('reveal')} />
+        <EntryGate audioRef={audioRef} onEnter={() => setPhase('reveal')} />
       )}
       {phase === 'reveal' && (
         <CircleReveal
+          audioRef={audioRef}
           onDone={() => {
             sessionStorage.setItem('qos_welcomed', '1')
             setPhase('done')
