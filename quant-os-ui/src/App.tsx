@@ -38,23 +38,48 @@ async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
           text: 'Welcome, Trader.',
           model_id: 'eleven_monolingual_v1',
           voice_settings: {
-            stability: 0.42,        // lower = more expressive/dramatic
+            stability: 0.42,
             similarity_boost: 0.78,
-            style: 0.55,            // style exaggeration for cinematic delivery
+            style: 0.55,
             use_speaker_boost: true,
           },
         }),
       },
     )
-    if (!res.ok) return null
-    const blob = await res.blob()
-    const url  = URL.createObjectURL(blob)
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      console.error('[ElevenLabs] API error', res.status, err)
+      return null
+    }
+    const blob  = await res.blob()
+    const url   = URL.createObjectURL(blob)
     const audio = new Audio(url)
     audio.preload = 'auto'
     return audio
-  } catch {
+  } catch (e) {
+    console.error('[ElevenLabs] fetch failed', e)
     return null
   }
+}
+
+// Fallback: Web Speech if ElevenLabs unavailable
+function speakFallback() {
+  try {
+    if (!window.speechSynthesis) return
+    window.speechSynthesis.cancel()
+    const fire = (voices: SpeechSynthesisVoice[]) => {
+      const utt = new SpeechSynthesisUtterance('Welcome, Trader.')
+      utt.pitch = 0.6; utt.rate = 0.82; utt.volume = 1.0
+      const v = voices.find(v => /daniel|david|google uk english male|alex|fred/i.test(v.name))
+             ?? voices.find(v => v.lang.startsWith('en'))
+             ?? voices[0]
+      if (v) utt.voice = v
+      window.speechSynthesis.speak(utt)
+    }
+    const voices = window.speechSynthesis.getVoices()
+    if (voices.length > 0) { fire(voices) }
+    else { window.speechSynthesis.addEventListener('voiceschanged', () => fire(window.speechSynthesis.getVoices()), { once: true }) }
+  } catch { /* ignore */ }
 }
 
 // ── Cinematic sound: deep bass boom + mid whoosh + high confirmation sting ──
@@ -420,8 +445,13 @@ function CircleReveal({ onDone, audioRef }: { onDone: () => void; audioRef: Reac
     let rafId: number
 
     playCinematicSound()
-    // Play ElevenLabs voice — 120ms delay so bass thud hits first
-    setTimeout(() => { audioRef.current?.play().catch(() => {}) }, 120)
+    setTimeout(() => {
+      if (audioRef.current) {
+        audioRef.current.play().catch(() => speakFallback())
+      } else {
+        speakFallback()
+      }
+    }, 120)
 
     const frame = (ts: number) => {
       if (startTs === null) startTs = ts
