@@ -161,47 +161,47 @@ def run_checks():
     else:
         _clear_alert("rate_limit", alert_state)
 
-    # --- 4. Stale alerts (grok may be down) ---
-    with closing(get_db()) as conn:
-        last_alert = pd.read_sql_query(
-            "SELECT timestamp FROM alerts ORDER BY timestamp DESC LIMIT 1",
-            conn
-        )
-    if last_alert.empty or (now - float(last_alert.iloc[0]["timestamp"])) > STALE_ALERT_MINS * 60:
-        if _should_alert("stale_alerts", alert_state):
-            last_seen = (
-                datetime.fromtimestamp(float(last_alert.iloc[0]["timestamp"]), tz=ET).strftime("%H:%M ET")
-                if not last_alert.empty else "never"
-            )
-            send_telegram(
-                f"📡 *Grok Alert Feed Stale*\n\n"
-                f"No alerts for `{STALE_ALERT_MINS}+ min` (last: `{last_seen}`)\n"
-                f"grok.py may be down — check backend."
-            )
-            _mark_alert("stale_alerts", alert_state)
-    else:
-        _clear_alert("stale_alerts", alert_state)
+    # --- 4. Stale alerts (grok may be down) --- DISABLED: too noisy
+    # with closing(get_db()) as conn:
+    #     last_alert = pd.read_sql_query(
+    #         "SELECT timestamp FROM alerts ORDER BY timestamp DESC LIMIT 1",
+    #         conn
+    #     )
+    # if last_alert.empty or (now - float(last_alert.iloc[0]["timestamp"])) > STALE_ALERT_MINS * 60:
+    #     if _should_alert("stale_alerts", alert_state):
+    #         last_seen = (
+    #             datetime.fromtimestamp(float(last_alert.iloc[0]["timestamp"]), tz=ET).strftime("%H:%M ET")
+    #             if not last_alert.empty else "never"
+    #         )
+    #         send_telegram(
+    #             f"📡 *Grok Alert Feed Stale*\n\n"
+    #             f"No alerts for `{STALE_ALERT_MINS}+ min` (last: `{last_seen}`)\n"
+    #             f"grok.py may be down — check backend."
+    #         )
+    #         _mark_alert("stale_alerts", alert_state)
+    # else:
+    #     _clear_alert("stale_alerts", alert_state)
 
-    # --- 5. Stale account history (live_trader may be down) ---
-    with closing(get_db()) as conn:
-        last_acct = pd.read_sql_query(
-            "SELECT timestamp FROM account_history ORDER BY timestamp DESC LIMIT 1",
-            conn
-        )
-    if last_acct.empty or (now - float(last_acct.iloc[0]["timestamp"])) > STALE_ACCOUNT_MINS * 60:
-        if _should_alert("stale_account", alert_state):
-            last_seen = (
-                datetime.fromtimestamp(float(last_acct.iloc[0]["timestamp"]), tz=ET).strftime("%H:%M ET")
-                if not last_acct.empty else "never"
-            )
-            send_telegram(
-                f"🔌 *live_trader May Be Down*\n\n"
-                f"Account history not updated for `{STALE_ACCOUNT_MINS}+ min` (last: `{last_seen}`)\n"
-                f"Check backend status."
-            )
-            _mark_alert("stale_account", alert_state)
-    else:
-        _clear_alert("stale_account", alert_state)
+    # --- 5. Stale account history (live_trader may be down) --- DISABLED: too noisy
+    # with closing(get_db()) as conn:
+    #     last_acct = pd.read_sql_query(
+    #         "SELECT timestamp FROM account_history ORDER BY timestamp DESC LIMIT 1",
+    #         conn
+    #     )
+    # if last_acct.empty or (now - float(last_acct.iloc[0]["timestamp"])) > STALE_ACCOUNT_MINS * 60:
+    #     if _should_alert("stale_account", alert_state):
+    #         last_seen = (
+    #             datetime.fromtimestamp(float(last_acct.iloc[0]["timestamp"]), tz=ET).strftime("%H:%M ET")
+    #             if not last_acct.empty else "never"
+    #         )
+    #         send_telegram(
+    #             f"🔌 *live_trader May Be Down*\n\n"
+    #             f"Account history not updated for `{STALE_ACCOUNT_MINS}+ min` (last: `{last_seen}`)\n"
+    #             f"Check backend status."
+    #         )
+    #         _mark_alert("stale_account", alert_state)
+    # else:
+    #     _clear_alert("stale_account", alert_state)
 
     _save_alert_state(alert_state)
 

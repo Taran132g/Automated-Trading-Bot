@@ -13,9 +13,7 @@ Risk model:
   - Leverage = min(signal suggestion, max_leverage config)
   - Margin required = position_size / leverage
 """
-import json
 import logging
-import anthropic
 
 from config import Config
 
@@ -88,91 +86,51 @@ def calculate_sizing(signal: dict, config: Config) -> dict:
     }
 
 
-CARD_SYSTEM = """You are a personal crypto risk manager and trading assistant.
+def format_trade_card(sizing: dict, source_channel: str) -> str:
+    """Build a trade card directly — no Claude API call needed."""
+    s = sizing
+    emoji = "🟢" if s["side"] == "long" else "🔴"
 
-You receive JSON with:
-- The parsed trade signal (symbol, side, entry, TP levels, SL, timeframe, notes)
-- The calculated risk parameters (position size in USDT, quantity in coins, leverage, margin, risk %, R:R ratios)
-- The trader's account balance on Yubit
-- The source group/channel and a snippet of the original raw message
+    lines = [
+        f"{emoji} *{s['symbol']} — {s['side'].upper()}*",
+        f"*Source:* _{source_channel}_",
+        "",
+    ]
 
-Write a Telegram trade card using Markdown (*bold*, `code`). Structure it exactly like this:
+    # Entry
+    if s.get("entry_low") and s.get("entry_high"):
+        lines.append(f"*📐 Entry Zone:* `{s['entry_low']}` — `{s['entry_high']}`")
+    else:
+        lines.append(f"*📐 Entry:* `{s['entry']}`")
 
-[Side emoji: 🟢 for long, 🔴 for short] *SYMBOL — SIDE*
-*Source:* _group/channel name_
+    # TP levels with R:R
+    if s["tp_levels"]:
+        lines.append("")
+        lines.append("*🎯 Targets*")
+        for i, tp in enumerate(s["tp_levels"]):
+            rr = s["rr_ratios"][i] if i < len(s["rr_ratios"]) else 0
+            lines.append(f"  TP{i+1}: `{tp}` → R:R `1:{rr}`")
 
-*📐 Entry*
-`X` *(or `Low: X  High: X` if a range is given)*
+    # SL
+    lines.append(f"\n*🛑 Stop Loss:* `{s['sl']}` ({s['sl_distance_pct']}% away)")
 
-*🎯 Targets*
-`TP1: X` → R:R `1:Y`
-`TP2: X` → R:R `1:Y`
-*(list all TPs with R:R)*
+    # Order
+    lines.append("")
+    lines.append("*💰 Your Order (Yubit)*")
+    lines.append(f"Qty: `{s['quantity']} coins`")
+    lines.append(f"Position: `${s['position_size_usdt']:,.0f} USDT`  |  Leverage: `{s['leverage']}x`")
+    lines.append(f"Margin: `${s['margin_required_usdt']:,.0f} USDT`")
+    lines.append(f"Risk: `${s['risk_amount_usdt']:,.0f}` ({s['risk_pct']:.1f}% of `${s['balance_usdt']:,.0f}`)")
 
-*🛑 Stop Loss:* `X` *(SL distance: X%)*
-
-*💰 Your Order (Yubit)*
-Qty to buy: `X coins`
-Position value: `$X USDT`  |  Leverage: `Xx`
-Margin required: `$X USDT`
-Risk: `$X` (`X%` of your $X balance)
-
-*🧠 Claude's Take*
-Write 3-5 sentences of honest, specific reasoning:
-- Summarise what the signal is saying and why the group may have posted it.
-- Is the R:R attractive or poor? Be specific about the numbers.
-- Does the SL distance make sense — is it tight (quick stop-out risk) or wide (larger loss if wrong)?
-- One concrete thing to watch that could invalidate the trade.
-Do NOT hype the trade. If the R:R is poor or the SL is dangerously tight, say so plainly.
-
-Be direct and specific. No generic advice. Only use numbers from the JSON — do not invent anything."""
-
-
-async def format_trade_card(sizing: dict, source_channel: str, raw_signal_text: str, api_key: str) -> str:
-    """Use Claude to write the trade card with genuine reasoning."""
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-
-    payload = {
-        "source_channel": source_channel,
-        "sizing": sizing,
-        "raw_signal_excerpt": raw_signal_text[:500],
-    }
-
-    try:
-        response = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=700,
-            system=CARD_SYSTEM,
-            messages=[{"role": "user", "content": json.dumps(payload, indent=2)}],
-        )
-        return response.content[0].text.strip()
-    except Exception as e:
-        log.error("Failed to format trade card: %s", e)
-        # Fallback plain card if Claude call fails
-        s = sizing
-        tp_str = "  ".join(f"`TP{i+1}: {t}`" for i, t in enumerate(s["tp_levels"])) or "Not given"
-        rr_str = " / ".join(f"1:{r}" for r in s["rr_ratios"]) or "N/A"
-        lines = [
-            f"{'🟢' if s['side'] == 'long' else '🔴'} *{s['symbol']} — {s['side'].upper()}*",
-            f"*Source:* _{source_channel}_",
-            f"Entry: `{s['entry']}`  |  SL: `{s['sl']}` ({s['sl_distance_pct']}%)",
-            tp_str,
-            f"R:R: {rr_str}",
-            f"*Qty to buy:* `{s['quantity']} coins`",
-            f"Position: `${s['position_size_usdt']:,.0f}` USDT  |  Leverage: `{s['leverage']}x`",
-            f"Margin: `${s['margin_required_usdt']:,.0f}` USDT",
-            f"Risk: `${s['risk_amount_usdt']:,.0f}` ({s['risk_pct']:.1f}% of ${s['balance_usdt']:,.0f})",
-        ]
-        return "\n".join(lines)
+    return "\n".join(lines)
 
 
-async def assess_risk(
+def assess_risk(
     signal: dict,
     config: Config,
     source_channel: str,
-    raw_signal_text: str,
 ) -> dict:
-    """Full pipeline: size the trade, then generate the trade card with reasoning."""
+    """Full pipeline: size the trade, then build the trade card."""
     sizing = calculate_sizing(signal, config)
 
     if not sizing["approved"]:
@@ -183,10 +141,5 @@ async def assess_risk(
         )
         return {"message": message, "sizing": sizing}
 
-    message = await format_trade_card(
-        sizing=sizing,
-        source_channel=source_channel,
-        raw_signal_text=raw_signal_text,
-        api_key=config.anthropic_api_key,
-    )
+    message = format_trade_card(sizing=sizing, source_channel=source_channel)
     return {"message": message, "sizing": sizing}
