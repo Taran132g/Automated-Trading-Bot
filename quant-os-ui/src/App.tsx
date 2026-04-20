@@ -90,6 +90,86 @@ function playOpeningSound() {
   }
 }
 
+function EntryGate({ onEnter }: { onEnter: () => void }) {
+  const [pulse, setPulse] = useState(false)
+
+  useEffect(() => {
+    const t = setTimeout(() => setPulse(true), 300)
+    return () => clearTimeout(t)
+  }, [])
+
+  return (
+    <div
+      onClick={onEnter}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9999,
+        background: '#06060b',
+        display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center',
+        cursor: 'pointer',
+        userSelect: 'none',
+      }}
+    >
+      {/* Outer pulsing ring */}
+      <div style={{
+        position: 'relative',
+        width: 120, height: 120,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        marginBottom: 36,
+      }}>
+        <div style={{
+          position: 'absolute', inset: 0, borderRadius: '50%',
+          border: '1px solid rgba(200,255,0,0.15)',
+          animation: pulse ? 'gatePulse 2s ease-out infinite' : 'none',
+        }} />
+        <div style={{
+          position: 'absolute', inset: 12, borderRadius: '50%',
+          border: '1px solid rgba(200,255,0,0.25)',
+          animation: pulse ? 'gatePulse 2s ease-out 0.4s infinite' : 'none',
+        }} />
+        {/* Center circle button */}
+        <div style={{
+          width: 64, height: 64, borderRadius: '50%',
+          background: 'rgba(200,255,0,0.06)',
+          border: '1px solid rgba(200,255,0,0.4)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'background 0.2s',
+        }}>
+          <div style={{
+            width: 0, height: 0,
+            borderTop: '9px solid transparent',
+            borderBottom: '9px solid transparent',
+            borderLeft: '15px solid #c8ff00',
+            marginLeft: 4,
+          }} />
+        </div>
+      </div>
+
+      <div style={{
+        fontSize: '0.6rem', letterSpacing: '0.5em',
+        color: '#55556a', textTransform: 'uppercase', marginBottom: 10,
+        opacity: pulse ? 1 : 0, transition: 'opacity 0.6s ease 0.5s',
+      }}>
+        Click to Enter
+      </div>
+      <div style={{
+        fontFamily: 'Inter, sans-serif', fontSize: '2rem',
+        fontWeight: 900, letterSpacing: '-0.04em', color: '#f0f0f5',
+        opacity: pulse ? 1 : 0, transition: 'opacity 0.6s ease 0.7s',
+      }}>
+        QUANT<span style={{ color: '#33334a' }}>_</span><span style={{ color: '#c8ff00' }}>OS</span>
+      </div>
+
+      <style>{`
+        @keyframes gatePulse {
+          0%   { transform: scale(1);    opacity: 0.7; }
+          100% { transform: scale(1.35); opacity: 0;   }
+        }
+      `}</style>
+    </div>
+  )
+}
+
 function CircleReveal({ onDone }: { onDone: () => void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const textRef   = useRef<HTMLDivElement>(null)
@@ -252,17 +332,21 @@ function CircleReveal({ onDone }: { onDone: () => void }) {
 }
 
 export default function App() {
-  const [showReveal, setShowReveal] = useState(
-    () => !sessionStorage.getItem('qos_welcomed'),
+  const firstVisit = !sessionStorage.getItem('qos_welcomed')
+  const [phase, setPhase] = useState<'gate' | 'reveal' | 'done'>(
+    firstVisit ? 'gate' : 'done',
   )
 
   return (
     <QueryClientProvider client={queryClient}>
-      {showReveal && (
+      {phase === 'gate' && (
+        <EntryGate onEnter={() => setPhase('reveal')} />
+      )}
+      {phase === 'reveal' && (
         <CircleReveal
           onDone={() => {
             sessionStorage.setItem('qos_welcomed', '1')
-            setShowReveal(false)
+            setPhase('done')
           }}
         />
       )}
