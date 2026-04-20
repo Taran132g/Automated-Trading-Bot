@@ -1,7 +1,6 @@
 import { useEffect, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { MetricCard } from '@/components/ui/MetricCard'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { LiveIndicator } from '@/components/ui/LiveIndicator'
 import { PnLCurve } from '@/components/charts/PnLCurve'
@@ -9,11 +8,11 @@ import { useWebSocket } from '@/hooks/useWebSocket'
 import { useTerminalStore } from '@/store/terminalStore'
 import { terminalService } from '@/services/api'
 
-const CARD = '#12121c'
+const CARD = '#0c0c14'
 const BORDER = 'rgba(255,255,255,0.06)'
-const ACCENT = '#c8ff00'
 const GREEN = '#22c55e'
 const RED = '#ef4444'
+const BLUE = '#3b82f6'
 const TEXT = '#f0f0f5'
 const SEC = '#8b8b9e'
 const DIM = '#55556a'
@@ -34,8 +33,29 @@ function fmt$(v: number) {
   return `${prefix}$${Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+function StatRow({ label, value, color = TEXT }: { label: string; value: string; color?: string }) {
+  return (
+    <div style={{
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      padding: '8px 0',
+      borderBottom: `1px solid ${BORDER}`,
+    }}>
+      <span style={{ fontSize: '0.72rem', color: DIM }}>{label}</span>
+      <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.82rem', fontWeight: 600, color }}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
 export function TerminalPage() {
-  const { setState, appendTrades, positions, account_details, daily_pnl, win_rate, rolling_pi_per_share, max_drawdown, cooldowns, trades } = useTerminalStore()
+  const {
+    setState, appendTrades,
+    positions, account_details, daily_pnl, win_rate,
+    rolling_pi_per_share, max_drawdown, cooldowns, trades,
+  } = useTerminalStore()
   const [equityRange, setEquityRange] = useState<'today' | 'alltime'>('today')
   const now = Date.now() / 1000
 
@@ -54,13 +74,15 @@ export function TerminalPage() {
   const { data: equityData } = useQuery({
     queryKey: ['equity-curve', equityRange],
     queryFn: () => terminalService.getEquityCurve(equityRange).then((r) => r.data.points),
-    refetchInterval: 15000, staleTime: 10000,
+    refetchInterval: 15000,
+    staleTime: 10000,
   })
 
   const { data: tradesData } = useQuery({
     queryKey: ['terminal-trades'],
     queryFn: () => terminalService.getTrades('today').then((r) => r.data.trades),
-    staleTime: 5000, refetchInterval: 10000,
+    staleTime: 5000,
+    refetchInterval: 10000,
   })
 
   useEffect(() => {
@@ -83,15 +105,21 @@ export function TerminalPage() {
   const pnlPerShare = exitShares > 0 ? exitPnl / exitShares : 0
 
   return (
-    <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: 20, height: '100%' }}>
+    <div style={{ padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16, height: '100%' }}>
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800, color: TEXT, letterSpacing: '-0.02em' }}>
-          SCALPER
-        </h2>
+        <div>
+          <div style={{ fontSize: '0.54rem', color: DIM, letterSpacing: '0.16em', textTransform: 'uppercase', marginBottom: 3 }}>
+            Live Strategy
+          </div>
+          <h2 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 800, color: TEXT, letterSpacing: '-0.02em' }}>
+            Scalper
+          </h2>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <LiveIndicator isLive={isMarketOpen()} />
-          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.72rem', color: DIM }}>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.7rem', color: DIM }}>
             {new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour12: false })} ET
           </span>
         </div>
@@ -99,100 +127,231 @@ export function TerminalPage() {
 
       {/* Cooldown banners */}
       {lossActive && (
-        <div style={{ background: 'rgba(239,68,68,0.06)', border: `1px solid rgba(239,68,68,0.2)`, borderRadius: 10, padding: '12px 18px', fontSize: '0.82rem', color: RED }}>
-          <strong>LOSS COOLDOWN ACTIVE{cooldowns.loss_cooldown_syms.length ? ` [${cooldowns.loss_cooldown_syms.join(', ')}]` : ''}</strong> — Trading paused for {Math.round(lossCooldown - now)}s
+        <div style={{
+          background: 'rgba(239,68,68,0.05)',
+          border: `1px solid rgba(239,68,68,0.18)`,
+          borderLeft: `3px solid ${RED}`,
+          borderRadius: 8,
+          padding: '10px 16px',
+          fontSize: '0.78rem',
+          color: RED,
+        }}>
+          <strong>LOSS COOLDOWN</strong>
+          {cooldowns.loss_cooldown_syms.length ? ` [${cooldowns.loss_cooldown_syms.join(', ')}]` : ''} — Trading paused for {Math.round(lossCooldown - now)}s
         </div>
       )}
       {piActive && !lossActive && (
-        <div style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 10, padding: '12px 18px', fontSize: '0.82rem', color: '#f59e0b' }}>
-          <strong>PI COOLDOWN ACTIVE</strong> — Skipping entries for {Math.round(piCooldown - now)}s
+        <div style={{
+          background: 'rgba(245,158,11,0.05)',
+          border: '1px solid rgba(245,158,11,0.18)',
+          borderLeft: '3px solid #f59e0b',
+          borderRadius: 8,
+          padding: '10px 16px',
+          fontSize: '0.78rem',
+          color: '#f59e0b',
+        }}>
+          <strong>PI COOLDOWN</strong> — Skipping entries for {Math.round(piCooldown - now)}s
         </div>
       )}
 
-      {/* KPI row */}
-      <div style={{ display: 'flex', gap: 12 }}>
-        <MetricCard label="Daily PnL (Schwab)" value={fmt$(daily_pnl)} color={pnlColor} sub="REALIZED + UNREALIZED" />
-        <MetricCard label="PnL Per Share" value={`${pnlPerShare >= 0 ? '+' : ''}$${Math.abs(pnlPerShare).toFixed(3)}`} color={pnlPerShare >= 0 ? GREEN : RED} sub="EXIT TRADES" />
-        <MetricCard label="Account Value" value={`$${liveVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
-        <MetricCard label="Max Drawdown" value={`-${max_drawdown.toFixed(2)}%`} color={max_drawdown > 2 ? RED : TEXT} sub="PEAK TO TROUGH" />
-        <MetricCard label="Win Rate" value={`${win_rate.toFixed(1)}%`} color={win_rate > 50 ? GREEN : TEXT} sub="TODAY" />
-        <MetricCard label="PI Per Share" value={`$${rolling_pi_per_share.toFixed(3)}`} color={rolling_pi_per_share >= 0 ? GREEN : TEXT} sub="ROLLING" />
-      </div>
+      {/* Main layout: chart + sidebar */}
+      <div style={{ display: 'flex', gap: 14, flex: 1, minHeight: 0 }}>
 
-      {/* Equity chart + tape */}
-      <div style={{ display: 'flex', gap: 16, flex: 1, minHeight: 0 }}>
-        <div style={{ flex: 7, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px', minWidth: 0 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-            <SectionHeader>Trade PnL</SectionHeader>
-            <div style={{ display: 'flex', gap: 4 }}>
-              {(['today', 'alltime'] as const).map((r) => (
-                <button key={r} onClick={() => setEquityRange(r)} style={{
-                  padding: '4px 12px', borderRadius: 20, border: `1px solid ${BORDER}`,
-                  background: equityRange === r ? '#191925' : 'transparent',
-                  color: equityRange === r ? TEXT : DIM,
-                  fontSize: '0.7rem', cursor: 'pointer', fontFamily: 'Inter',
-                  transition: 'all 0.15s',
+        {/* Left: chart + trade table */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+
+          {/* Equity chart */}
+          <div style={{
+            background: CARD,
+            border: `1px solid ${BORDER}`,
+            borderRadius: 10,
+            padding: '16px 18px',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+              <SectionHeader>Trade P&L Curve</SectionHeader>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {(['today', 'alltime'] as const).map((r) => (
+                  <button key={r} onClick={() => setEquityRange(r)} style={{
+                    padding: '3px 10px',
+                    borderRadius: 20,
+                    border: `1px solid ${BORDER}`,
+                    background: equityRange === r ? '#191925' : 'transparent',
+                    color: equityRange === r ? TEXT : DIM,
+                    fontSize: '0.66rem',
+                    cursor: 'pointer',
+                    fontFamily: 'Inter',
+                    transition: 'all 0.15s',
+                  }}>
+                    {r === 'today' ? 'Today' : 'All Time'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <PnLCurve data={equityData ?? []} color={GREEN} height={180} />
+          </div>
+
+          {/* Trade log */}
+          <div style={{
+            background: CARD,
+            border: `1px solid ${BORDER}`,
+            borderRadius: 10,
+            overflow: 'hidden',
+            flex: 1,
+          }}>
+            <div style={{ padding: '11px 18px', borderBottom: `1px solid ${BORDER}` }}>
+              <SectionHeader>Execution Log</SectionHeader>
+            </div>
+
+            {/* Table header */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '72px 52px 72px 80px 1fr 80px',
+              padding: '6px 18px',
+              borderBottom: `1px solid rgba(255,255,255,0.04)`,
+            }}>
+              {['Time', 'Symbol', 'Side', 'Price', 'Shares', 'P&L'].map(h => (
+                <span key={h} style={{
+                  fontSize: '0.52rem',
+                  color: DIM,
+                  letterSpacing: '0.1em',
+                  textTransform: 'uppercase',
                 }}>
-                  {r === 'today' ? 'Today' : 'All Time'}
-                </button>
+                  {h}
+                </span>
               ))}
             </div>
+
+            <div style={{ overflowY: 'auto', maxHeight: 260 }}>
+              {trades.length === 0 ? (
+                <div style={{ color: DIM, fontSize: '0.75rem', textAlign: 'center', padding: '28px 18px' }}>
+                  No trades today
+                </div>
+              ) : (
+                trades.map((t, i) => {
+                  const side = t.side?.toUpperCase() ?? ''
+                  const isExit = ['SELL', 'COVER'].includes(side)
+                  const isShortEntry = ['SHORT', 'SELL SHORT'].includes(side)
+                  const sideColor = isExit
+                    ? (t.pnl >= 0 ? GREEN : RED)
+                    : isShortEntry ? RED : BLUE
+                  return (
+                    <div
+                      key={t.id ?? i}
+                      className="animate-fade-in-down"
+                      style={{
+                        display: 'grid',
+                        gridTemplateColumns: '72px 52px 72px 80px 1fr 80px',
+                        padding: '7px 18px',
+                        borderBottom: `1px solid ${BORDER}`,
+                        fontFamily: 'JetBrains Mono, monospace',
+                        fontSize: '0.72rem',
+                        alignItems: 'center',
+                      }}
+                    >
+                      <span style={{ color: DIM }}>{t.datetime_est}</span>
+                      <span style={{ color: TEXT, fontWeight: 600 }}>{t.symbol}</span>
+                      <span style={{ color: sideColor }}>{t.side}</span>
+                      <span style={{ color: SEC }}>${t.price?.toFixed(2)}</span>
+                      <span style={{ color: SEC }}>{Math.abs(t.qty ?? 0).toLocaleString()}</span>
+                      <span style={{ color: isExit && t.pnl != null ? (t.pnl >= 0 ? GREEN : RED) : DIM, textAlign: 'right' }}>
+                        {isExit && t.pnl != null ? `${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}` : '—'}
+                      </span>
+                    </div>
+                  )
+                })
+              )}
+            </div>
           </div>
-          <PnLCurve data={equityData ?? []} color={GREEN} height={220} />
         </div>
 
-        <div style={{ flex: 3, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px', overflowY: 'auto', minWidth: 0 }}>
-          <SectionHeader>Live Execution Tape</SectionHeader>
-          {trades.length === 0 ? (
-            <div style={{ color: DIM, fontSize: '0.78rem', textAlign: 'center', marginTop: 20 }}>No trades today</div>
-          ) : (
-            trades.map((t, i) => {
-              const side = t.side?.toUpperCase() ?? ''
-              const isExit = ['SELL', 'COVER'].includes(side)
-              const isShortEntry = ['SHORT', 'SELL SHORT'].includes(side)
-              const accentColor = isExit
-                ? (t.pnl >= 0 ? GREEN : RED)
-                : isShortEntry ? RED : '#3b82f6'
-              return (
-                <div key={t.id ?? i} className="animate-fade-in-down" style={{
-                  display: 'flex', justifyContent: 'space-between',
-                  padding: '7px 0', borderBottom: `1px solid ${BORDER}`,
-                  fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem',
+        {/* Right sidebar: metrics + positions */}
+        <div style={{ width: 220, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 14 }}>
+
+          {/* Key metrics */}
+          <div style={{
+            background: CARD,
+            border: `1px solid ${BORDER}`,
+            borderRadius: 10,
+            padding: '14px 16px',
+          }}>
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: '0.54rem', color: DIM, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 4 }}>
+                Day P&L
+              </div>
+              <div style={{
+                fontFamily: 'JetBrains Mono, monospace',
+                fontSize: '1.6rem',
+                fontWeight: 800,
+                color: pnlColor,
+                letterSpacing: '-0.5px',
+              }}>
+                {fmt$(daily_pnl)}
+              </div>
+            </div>
+            <div style={{ borderTop: `1px solid ${BORDER}`, paddingTop: 10 }}>
+              <StatRow label="Account Value" value={`$${liveVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
+              <StatRow label="Win Rate" value={`${win_rate.toFixed(1)}%`} color={win_rate > 50 ? GREEN : TEXT} />
+              <StatRow label="P&L / Share" value={`${pnlPerShare >= 0 ? '+' : ''}$${Math.abs(pnlPerShare).toFixed(3)}`} color={pnlPerShare >= 0 ? GREEN : RED} />
+              <StatRow label="PI / Share" value={`$${rolling_pi_per_share.toFixed(3)}`} color={rolling_pi_per_share >= 0 ? GREEN : TEXT} />
+              <StatRow label="Max Drawdown" value={`-${max_drawdown.toFixed(2)}%`} color={max_drawdown > 2 ? RED : TEXT} />
+            </div>
+          </div>
+
+          {/* Open positions */}
+          <div style={{
+            background: CARD,
+            border: `1px solid ${BORDER}`,
+            borderRadius: 10,
+            padding: '14px 16px',
+            flex: 1,
+          }}>
+            <div style={{ marginBottom: 10 }}>
+              <SectionHeader>Open Positions</SectionHeader>
+            </div>
+            {openPositions.length === 0 ? (
+              <div style={{ color: DIM, fontSize: '0.72rem', textAlign: 'center', paddingTop: 20 }}>
+                No open positions
+              </div>
+            ) : (
+              openPositions.map(([sym, qty]) => (
+                <div key={sym} style={{
+                  padding: '10px 0',
+                  borderBottom: `1px solid ${BORDER}`,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
                 }}>
-                  <span style={{ color: DIM, width: 64 }}>{t.datetime_est}</span>
-                  <span style={{ color: TEXT, fontWeight: 700, width: 48 }}>{t.symbol}</span>
-                  <span style={{ color: accentColor, width: 52 }}>{t.side}</span>
-                  <span style={{ color: TEXT, textAlign: 'right' }}>${t.price?.toFixed(2)}</span>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{
+                      fontFamily: 'JetBrains Mono, monospace',
+                      fontSize: '0.88rem',
+                      fontWeight: 700,
+                      color: TEXT,
+                    }}>
+                      {sym}
+                    </span>
+                    <span style={{
+                      fontSize: '0.6rem',
+                      fontWeight: 700,
+                      color: qty > 0 ? GREEN : RED,
+                      background: qty > 0 ? 'rgba(34,197,94,0.08)' : 'rgba(239,68,68,0.08)',
+                      border: `1px solid ${qty > 0 ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)'}`,
+                      borderRadius: 4,
+                      padding: '2px 7px',
+                      fontFamily: 'JetBrains Mono',
+                    }}>
+                      {qty > 0 ? 'LONG' : 'SHORT'}
+                    </span>
+                  </div>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: '0.72rem', color: SEC }}>
+                    {Math.abs(qty).toLocaleString()} shares
+                  </span>
                 </div>
-              )
-            })
-          )}
+              ))
+            )}
+          </div>
         </div>
       </div>
-
-      {/* Open positions */}
-      {openPositions.length > 0 && (
-        <div>
-          <SectionHeader>Open Positions</SectionHeader>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            {openPositions.map(([sym, qty]) => (
-              <div key={sym} style={{
-                background: CARD,
-                border: `1px solid ${qty > 0 ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'}`,
-                borderLeft: `3px solid ${qty > 0 ? GREEN : RED}`,
-                borderRadius: 8, padding: '12px 18px',
-                fontFamily: 'JetBrains Mono, monospace', fontSize: '0.82rem',
-              }}>
-                <span style={{ color: TEXT, fontWeight: 700 }}>{sym}</span>
-                <span style={{ color: SEC, margin: '0 10px' }}>{Math.abs(qty).toLocaleString()} shares</span>
-                <span style={{ color: qty > 0 ? GREEN : RED, fontWeight: 600 }}>
-                  {qty > 0 ? 'LONG' : 'SHORT'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
