@@ -55,6 +55,14 @@ async def process_message(event, config: Config, client: TelegramClient):
 
     log.info("[%s] Message (%d chars, photo=%s)", source, len(raw_text), has_photo)
 
+    # ── Download photo first (needed before DB save) ──────────────────────────
+    photo_bytes = None
+    if has_photo:
+        try:
+            photo_bytes = await client.download_media(event.message, bytes)
+        except Exception as e:
+            log.error("[%s] Failed to download photo: %s", source, e)
+
     # ── Try to extract entry/SL and compute bet size ──────────────────────────
     sizing = extract_sizing(
         raw_text,
@@ -62,52 +70,28 @@ async def process_message(event, config: Config, client: TelegramClient):
         risk_pct=config.max_risk_per_trade_pct,
     ) if raw_text else None
 
+    if sizing:
+        log.info("[%s] Sizing: entry=%s sl=%s qty=%s", source, sizing['entry'], sizing['sl'], sizing['quantity'])
+    else:
+        log.info("[%s] Forwarding as-is", source)
+
+    # ── Save to DB for dashboard ──────────────────────────────────────────────
+    save_signal(channel=source, raw_text=raw_text, sizing=sizing, image_bytes=photo_bytes)
+
     # ── Build caption: exact channel text + optional sizing footer ────────────
     header = f"📡 *{source}*\n\n"
     body = raw_text or ""
     if sizing:
         body += build_sizing_footer(sizing)
-        log.info("[%s] Sizing: entry=%s sl=%s qty=%s", source, sizing['entry'], sizing['sl'], sizing['quantity'])
-    else:
-        log.info("[%s] Forwarding as-is", source)
-
     message = header + body
-
-    # ── Save to DB for dashboard ──────────────────────────────────────────────
-    if sizing:
-        save_signal(
-            channel=source,
-            sizing={
-                "approved": True,
-                "symbol": "",
-                "side": "",
-                "entry": sizing["entry"],
-                "entry_low": None,
-                "entry_high": None,
-                "sl": sizing["sl"],
-                "sl_distance_pct": sizing["sl_distance_pct"],
-                "tp_levels": sizing["tps"],
-                "rr_ratios": [],
-                "leverage": 1,
-                "quantity": sizing["quantity"],
-                "position_size_usdt": sizing["position_size_usdt"],
-                "margin_required_usdt": sizing["position_size_usdt"],
-                "risk_amount_usdt": sizing["risk_amount"],
-                "risk_pct": sizing["risk_pct"],
-                "balance_usdt": sizing["balance"],
-            },
-            trade_card=message,
-            approved=True,
-        )
 
     # ── Send via Trading Bot (text) ───────────────────────────────────────────
     _tg_bot.send_message(message)
 
-    # ── If there's a photo, download it and send via bot separately ───────────
-    if has_photo:
+    # ── If there's a photo, send via bot separately ───────────────────────────
+    if photo_bytes:
         try:
-            import os, tempfile, requests as req
-            photo_bytes = await client.download_media(event.message, bytes)
+            import requests as req
             bot_token = _tg_bot.bot_token
             chat_id = _tg_bot.chat_id
             url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
