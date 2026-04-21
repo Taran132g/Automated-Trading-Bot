@@ -1,111 +1,100 @@
 """
 signal_parser.py
 
-Two Claude calls:
-  1. parse_signal()   — is this a new trade signal? Extract structured data.
-  2. analyze_update() — for everything else: what does this message mean and
-                        what should the trader do right now?
+No Claude. Pure regex to extract entry and SL from signal channel messages.
+If found, calculate bet size. Otherwise just forward the message as-is.
 """
-import json
+import re
 import logging
-import anthropic
 
 log = logging.getLogger("signal_parser")
 
-# ── 1. Signal parser ──────────────────────────────────────────────────────────
+# Patterns for entry price
+ENTRY_PATTERNS = [
+    r'(?:entry|buy|long|short|open|price)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
+    r'(?:enter|entering)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
+]
 
-SIGNAL_PROMPT = """You are a trade signal parser for crypto trading channels.
+# Patterns for stop loss
+SL_PATTERNS = [
+    r'(?:sl|stop[\s\-]?loss|stop)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
+    r'(?:stoploss|s\.l\.)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
+]
 
-Return ONLY valid JSON — no markdown, no explanation.
-
-If the message IS a new trade signal (entry + direction posted for the first time),
-extract it into this schema:
-{
-  "valid": true,
-  "symbol": "BTCUSDT",
-  "side": "long",
-  "entry": 65000.0,
-  "entry_low": 64800.0,
-  "entry_high": 65200.0,
-  "tp": [66000.0, 67000.0],
-  "sl": 63000.0,
-  "leverage_suggested": 10,
-  "timeframe": "4h",
-  "notes": "..."
-}
-
-If it is NOT a new signal (update, close, cancel, move SL, TP hit, news, commentary,
-motivational post, or anything else), return:
-{
-  "valid": false,
-  "reason": "one line"
-}"""
+# Patterns for take profit (optional, for display only)
+TP_PATTERNS = [
+    r'(?:tp\s*\d*|target\s*\d*|take[\s\-]?profit\s*\d*)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
+]
 
 
-async def parse_signal(raw_text: str, api_key: str) -> dict:
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-    try:
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=512,
-            system=SIGNAL_PROMPT,
-            messages=[{"role": "user", "content": raw_text}],
-        )
-        raw_json = resp.content[0].text.strip()
-        if raw_json.startswith("```"):
-            raw_json = raw_json.split("```")[1]
-            if raw_json.startswith("json"):
-                raw_json = raw_json[4:]
-        return json.loads(raw_json)
-    except json.JSONDecodeError as e:
-        log.error("parse_signal JSON error: %s", e)
-        return {"valid": False, "reason": "JSON parse error"}
-    except Exception as e:
-        log.error("parse_signal failed: %s", e)
-        return {"valid": False, "reason": str(e)}
+def _find_first(text: str, patterns: list[str]) -> float | None:
+    t = text.lower()
+    for pat in patterns:
+        m = re.search(pat, t)
+        if m:
+            try:
+                return float(m.group(1).replace(',', ''))
+            except ValueError:
+                continue
+    return None
 
 
-# ── 2. Update analyzer ────────────────────────────────────────────────────────
-
-UPDATE_PROMPT = """You are a personal trading assistant watching signal channels on behalf of a crypto trader.
-
-The trader follows these channels and acts on their calls. When a channel posts any message
-(update, close alert, TP hit, SL move, cancel, market commentary, warning, or anything),
-you must read it and tell the trader what to do RIGHT NOW with any active position.
-
-Reply in plain Telegram Markdown (*bold*, `code`). Keep it short — 3-5 lines max.
-
-Format:
-📢 *[Channel Name] — [one-line summary of what the message says]*
-
-[1-2 sentences: what action the trader should take right now, if any.
-If no action needed, say "No action needed — monitor." Be direct.]
-
-If the message is totally irrelevant (meme, joke, off-topic chat with no trading content),
-reply with exactly: SKIP
-
-Do not invent prices. Only use what is in the message."""
+def _find_all(text: str, patterns: list[str]) -> list[float]:
+    t = text.lower()
+    results = []
+    for pat in patterns:
+        for m in re.finditer(pat, t):
+            try:
+                results.append(float(m.group(1).replace(',', '')))
+            except ValueError:
+                continue
+    return results
 
 
-async def analyze_update(raw_text: str, source_channel: str, api_key: str) -> str | None:
+def extract_sizing(text: str, balance: float = 10000.0, risk_pct: float = 2.0) -> dict | None:
     """
-    Analyze a non-signal message and return an action alert, or None if it should be skipped.
+    Try to extract entry + SL and compute bet sizing.
+    Returns a sizing dict or None if entry/SL not found.
     """
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-    try:
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=250,
-            system=UPDATE_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": f"Channel: {source_channel}\n\nMessage:\n{raw_text}"
-            }],
-        )
-        text = resp.content[0].text.strip()
-        if text == "SKIP":
-            return None
-        return text
-    except Exception as e:
-        log.error("analyze_update failed: %s", e)
+    entry = _find_first(text, ENTRY_PATTERNS)
+    sl = _find_first(text, SL_PATTERNS)
+    tps = _find_all(text, TP_PATTERNS)
+
+    if not entry or not sl or entry == sl:
         return None
+
+    sl_distance_pct = abs(entry - sl) / entry
+    if sl_distance_pct == 0:
+        return None
+
+    risk_amount = balance * risk_pct / 100       # $200
+    position_size = risk_amount / sl_distance_pct
+    quantity = position_size / entry
+
+    return {
+        "entry": entry,
+        "sl": sl,
+        "sl_distance_pct": round(sl_distance_pct * 100, 2),
+        "tps": tps,
+        "risk_amount": round(risk_amount, 2),
+        "position_size_usdt": round(position_size, 2),
+        "quantity": round(quantity, 4),
+        "balance": balance,
+        "risk_pct": risk_pct,
+    }
+
+
+def build_sizing_footer(sizing: dict) -> str:
+    """Build the bet size block appended to the forwarded message."""
+    lines = [
+        "",
+        "─────────────────",
+        "💰 *Your Bet (Yubit)*",
+        f"Entry: `{sizing['entry']}` | SL: `{sizing['sl']}` ({sizing['sl_distance_pct']}% away)",
+        f"Qty: `{sizing['quantity']} coins`",
+        f"Position: `${sizing['position_size_usdt']:,.0f} USDT`",
+        f"Risk: `${sizing['risk_amount']:,.0f}` ({sizing['risk_pct']}% of ${sizing['balance']:,.0f})",
+    ]
+    if sizing['tps']:
+        lines.append("TPs: " + "  ".join(f"`{tp}`" for tp in sizing['tps']))
+    return "\n".join(lines)
