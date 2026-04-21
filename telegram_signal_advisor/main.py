@@ -1,17 +1,15 @@
 """
-main.py — Telegram Signal Advisor
+main.py — Telegram Signal Advisor (no Claude, pure forward + sizing)
 
-Listens to configured Telegram groups/channels, parses each message with Claude,
-calculates personalized risk parameters, and sends trade cards to your own
-Telegram Saved Messages — no bot required.
+Every message from monitored channels is forwarded to you exactly as-is.
+If the message contains an entry price and stop loss, your bet size is
+appended automatically (2% risk on $10,000 = $200 risked per trade).
 
-First-time setup:
-    1. Copy .env.example → .env and fill in your credentials
+Setup:
+    1. Fill in .env
     2. pip install -r requirements.txt
-    3. python setup_channels.py    ← find your trading group's ID
-    4. python main.py              ← enter SMS code once, then it runs forever
-
-When your Yubit balance changes, update ACCOUNT_BALANCE_USDT in .env and restart.
+    3. python setup_channels.py  ← find channel IDs
+    4. python main.py            ← enter SMS code once, then runs forever
 """
 import asyncio
 import logging
@@ -24,12 +22,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from telethon import TelegramClient, events
 
 from config import Config
-from signal_parser import parse_signal, analyze_update
-from risk_manager import assess_risk
-from notifier import send_message, send_error
+from signal_parser import extract_sizing, build_sizing_footer
+from notifier import send_message
 from signals_db import save_signal, init_db
 
-# Also use the existing Trading Bot Telegram notifier for alerts
+# Existing Trading Bot notifier (sends to the same bot as your trading alerts)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from telegram_notifier import TelegramNotifier
 _tg_bot = TelegramNotifier()
@@ -48,59 +45,61 @@ SESSION_FILE = Path(__file__).parent / "session.telethon"
 
 
 async def process_message(event, config: Config, client: TelegramClient):
-    raw_text = event.raw_text or ""
-    if not raw_text.strip():
+    raw_text = (event.raw_text or "").strip()
+    if not raw_text:
         return
 
     source = getattr(event.chat, "title", None) or str(event.chat_id)
-    log.info("[%s] New message (%d chars)", source, len(raw_text))
+    log.info("[%s] Message (%d chars)", source, len(raw_text))
 
-    # ── 1. Parse with Claude ──────────────────────────────────────────────────
-    signal = await parse_signal(raw_text, config.anthropic_api_key)
-
-    if not signal.get("valid"):
-        # Not a new signal — check if it's a trade update worth alerting on
-        alert = await analyze_update(raw_text, source, config.anthropic_api_key)
-        if alert:
-            log.info("[%s] Update alert: %s", source, alert[:80])
-            await send_message(alert, client)
-            _tg_bot.send_message(alert)
-        else:
-            log.debug("[%s] Skipped (irrelevant): %s", source, signal.get("reason", ""))
-        return
-
-    log.info(
-        "[%s] Signal: %s %s | Entry: %s | SL: %s | TP: %s",
-        source,
-        signal.get("side", "?").upper(),
-        signal.get("symbol", "?"),
-        signal.get("entry"),
-        signal.get("sl"),
-        signal.get("tp"),
+    # ── Try to extract entry/SL and compute bet size ──────────────────────────
+    sizing = extract_sizing(
+        raw_text,
+        balance=config.account_balance_usdt,
+        risk_pct=config.max_risk_per_trade_pct,
     )
 
-    # ── 2. Risk calculation + trade card ─────────────────────────────────────
-    result = assess_risk(
-        signal=signal,
-        config=config,
-        source_channel=source,
-    )
+    # ── Build the message: exact channel text + optional sizing footer ────────
+    header = f"📡 *{source}*\n\n"
+    body = raw_text
+    if sizing:
+        body += build_sizing_footer(sizing)
+        log.info("[%s] Sizing found: entry=%s sl=%s qty=%s", source, sizing['entry'], sizing['sl'], sizing['quantity'])
+    else:
+        log.info("[%s] No entry/SL found — forwarding as-is", source)
 
-    # ── 3. Save to DB (powers the dashboard UI) ──────────────────────────────
-    save_signal(
-        channel=source,
-        sizing=result["sizing"],
-        trade_card=result["message"],
-        approved=result["sizing"].get("approved", False),
-    )
+    message = header + body
 
-    # ── 4. Send to your Saved Messages ───────────────────────────────────────
-    await send_message(result["message"], client)
+    # ── Save to DB for dashboard ──────────────────────────────────────────────
+    if sizing:
+        save_signal(
+            channel=source,
+            sizing={
+                "approved": True,
+                "symbol": "",
+                "side": "",
+                "entry": sizing["entry"],
+                "entry_low": None,
+                "entry_high": None,
+                "sl": sizing["sl"],
+                "sl_distance_pct": sizing["sl_distance_pct"],
+                "tp_levels": sizing["tps"],
+                "rr_ratios": [],
+                "leverage": 1,
+                "quantity": sizing["quantity"],
+                "position_size_usdt": sizing["position_size_usdt"],
+                "margin_required_usdt": sizing["position_size_usdt"],
+                "risk_amount_usdt": sizing["risk_amount"],
+                "risk_pct": sizing["risk_pct"],
+                "balance_usdt": sizing["balance"],
+            },
+            trade_card=message,
+            approved=True,
+        )
 
-    # ── 5. Also send via the Trading Bot Telegram notifier ───────────────────
-    _tg_bot.send_message(result["message"])
-
-    log.info("[%s] Trade card sent for %s", source, signal.get("symbol"))
+    # ── Send to Saved Messages + Trading Bot ──────────────────────────────────
+    await send_message(message, client)
+    _tg_bot.send_message(message)
 
 
 async def main():
@@ -108,33 +107,23 @@ async def main():
 
     missing = config.validate()
     if missing:
-        print(f"\nERROR: Missing required config: {', '.join(missing)}")
-        print("Copy .env.example → .env and fill in all values.\n")
+        print(f"\nERROR: Missing config: {', '.join(missing)}")
         sys.exit(1)
 
     init_db()
-    log.info(
-        "Balance: $%.2f USDT | Max risk: %.1f%% per trade | Max leverage: %dx",
-        config.account_balance_usdt,
-        config.max_risk_per_trade_pct,
-        config.max_leverage,
-    )
+    log.info("Balance: $%.2f | Risk: %.1f%% ($%.2f) per trade",
+             config.account_balance_usdt,
+             config.max_risk_per_trade_pct,
+             config.account_balance_usdt * config.max_risk_per_trade_pct / 100)
 
-    # Connect as your Telegram user account
-    client = TelegramClient(
-        str(SESSION_FILE),
-        config.telegram_api_id,
-        config.telegram_api_hash,
-    )
+    client = TelegramClient(str(SESSION_FILE), config.telegram_api_id, config.telegram_api_hash)
     await client.start(phone=config.telegram_phone)
     me = await client.get_me()
-    log.info("Connected as: %s (@%s)", me.first_name, me.username)
+    log.info("Connected as: %s", me.first_name)
 
-    # Resolve channels by iterating your dialogs — works for private channels too
-    # Config can contain usernames (@foo) or numeric IDs (1228412803 or -1001228412803)
+    # Resolve channels by scanning dialogs
     def normalize_id(val: str) -> int | None:
         val = val.strip().lstrip("-")
-        # Strip the -100 supergroup prefix if present
         if val.startswith("100") and len(val) > 10:
             val = val[3:]
         try:
@@ -142,8 +131,7 @@ async def main():
         except ValueError:
             return None
 
-    wanted_ids = set()
-    wanted_usernames = set()
+    wanted_ids, wanted_usernames = set(), set()
     for ch in config.channel_names:
         ch = ch.strip()
         if ch.startswith("@"):
@@ -154,18 +142,16 @@ async def main():
                 wanted_ids.add(nid)
 
     channel_entities = []
-    log.info("Scanning your dialogs to find the configured channels...")
+    log.info("Scanning dialogs...")
     async for dialog in client.iter_dialogs():
         entity = dialog.entity
-        eid = entity.id
         username = getattr(entity, "username", None)
-        title = getattr(entity, "title", "")
-        if eid in wanted_ids or (username and username.lower() in wanted_usernames):
+        if entity.id in wanted_ids or (username and username.lower() in wanted_usernames):
             channel_entities.append(entity)
-            log.info("Monitoring: %s (id=%s)", title, eid)
+            log.info("Monitoring: %s", getattr(entity, "title", entity.id))
 
     if not channel_entities:
-        log.error("No channels matched. Check TELEGRAM_CHANNELS in .env — use the raw IDs from setup_channels.py without the -100 prefix.")
+        log.error("No channels resolved. Run setup_channels.py.")
         sys.exit(1)
 
     @client.on(events.NewMessage(chats=channel_entities))
@@ -173,21 +159,19 @@ async def main():
         try:
             await process_message(event, config, client)
         except Exception as e:
-            log.exception("Unhandled error: %s", e)
-            await send_error("Message processing", str(e), client)
+            log.exception("Error processing message: %s", e)
 
-    # Startup confirmation in Saved Messages
     titles = [getattr(e, "title", str(e)) for e in channel_entities]
-    await send_message(
+    startup = (
         f"✅ *Signal Advisor started*\n"
-        f"Balance: `${config.account_balance_usdt:,.2f} USDT`\n"
-        f"Risk per trade: `{config.max_risk_per_trade_pct}%`  |  Max leverage: `{config.max_leverage}x`\n"
-        f"Monitoring {len(channel_entities)} group(s):\n"
-        + "\n".join(f"• _{t}_" for t in titles),
-        client,
+        f"Balance: `${config.account_balance_usdt:,.0f}` | Risk/trade: `${config.account_balance_usdt * config.max_risk_per_trade_pct / 100:,.0f}`\n"
+        f"Monitoring {len(channel_entities)} channel(s):\n"
+        + "\n".join(f"• _{t}_" for t in titles)
     )
+    await send_message(startup, client)
+    _tg_bot.send_message(startup)
 
-    log.info("Listening on %d group(s)... (Ctrl+C to stop)", len(channel_entities))
+    log.info("Listening on %d channel(s)...", len(channel_entities))
     await client.run_until_disconnected()
 
 
@@ -195,4 +179,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log.info("Stopped by user")
+        log.info("Stopped")
