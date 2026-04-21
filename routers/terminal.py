@@ -134,6 +134,14 @@ def get_trades(
 def get_equity_curve(
     range: str = Query("today", description="'today' or 'alltime'"),
 ):
+    """
+    Today: reads account_history snapshots, converts to intraday P&L
+    relative to the first snapshot of the day (opening account value).
+    This avoids relying on stored per-trade pnl which can be unreliable.
+
+    Alltime: reads daily first/last account_history values per day and
+    chains the daily P&L together.
+    """
     points = []
     if not DB_PATH.exists():
         return {"points": points}
@@ -141,34 +149,50 @@ def get_equity_curve(
     try:
         with closing(sqlite3.connect(str(DB_PATH))) as conn:
             conn.row_factory = sqlite3.Row
+
             if range == "today":
                 rows = conn.execute(
-                    "SELECT timestamp, pnl, side, qty, price, entry_price FROM live_trades"
-                    " WHERE side IN ('SELL','COVER') AND timestamp >= ? ORDER BY timestamp ASC",
+                    "SELECT timestamp, liquidation_value FROM account_history"
+                    " WHERE timestamp >= ? ORDER BY timestamp ASC",
                     (today_start,)
                 ).fetchall()
+                if not rows:
+                    return {"points": points}
+                baseline = float(rows[0]["liquidation_value"])
+                for r in rows:
+                    ts  = float(r["timestamp"])
+                    val = float(r["liquidation_value"])
+                    points.append({
+                        "timestamp": ts,
+                        "value": round(val - baseline, 2),
+                        "datetime_est": datetime.utcfromtimestamp(ts).strftime("%H:%M"),
+                    })
+
             else:
+                # All-time: one point per day — day's last acct value minus first
                 rows = conn.execute(
-                    "SELECT timestamp, pnl, side, qty, price, entry_price FROM live_trades"
-                    " WHERE side IN ('SELL','COVER') ORDER BY timestamp ASC"
+                    "SELECT timestamp, liquidation_value FROM account_history"
+                    " ORDER BY timestamp ASC"
                 ).fetchall()
-            cumulative = 0.0
-            for r in rows:
-                pnl = float(r["pnl"]) if r["pnl"] else 0.0
-                # Fallback: recompute from entry_price/price if stored pnl is 0
-                if pnl == 0.0:
-                    ep = float(r["entry_price"] or 0)
-                    ex = float(r["price"] or 0)
-                    qty = abs(int(r["qty"] or 0))
-                    if ep > 0 and ex > 0 and ep != ex:
-                        pnl = (ex - ep) * qty if r["side"] == "SELL" else (ep - ex) * qty
-                cumulative += pnl
-                ts = float(r["timestamp"])
-                points.append({
-                    "timestamp": ts,
-                    "value": round(cumulative, 2),
-                    "datetime_est": datetime.utcfromtimestamp(ts).strftime("%m/%d %H:%M")
-                })
+                # Group by calendar date (ET)
+                from collections import defaultdict
+                by_day: dict = defaultdict(list)
+                for r in rows:
+                    day_key = datetime.utcfromtimestamp(float(r["timestamp"])).strftime("%Y-%m-%d")
+                    by_day[day_key].append(float(r["liquidation_value"]))
+                cumulative = 0.0
+                for day in sorted(by_day):
+                    vals = by_day[day]
+                    day_pnl = vals[-1] - vals[0]
+                    cumulative += day_pnl
+                    # Use noon timestamp for the day as the x-axis point
+                    from datetime import datetime as dt
+                    ts = dt.strptime(day, "%Y-%m-%d").timestamp() + 43200
+                    points.append({
+                        "timestamp": ts,
+                        "value": round(cumulative, 2),
+                        "datetime_est": day,
+                    })
     except Exception:
         pass
     return {"points": points}
