@@ -11,11 +11,13 @@ from contextlib import closing
 from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from typing import Set
 
 router = APIRouter(prefix="/api/signals", tags=["signals"])
 
 DB_PATH = Path(__file__).parent.parent / "signals.db"
+IMAGES_DIR = Path(__file__).parent.parent / "signal_images"
 
 # WebSocket connections for live push
 _signal_connections: Set[WebSocket] = set()
@@ -34,7 +36,6 @@ def _db_get_signals(limit: int = 50, after_id: int = 0) -> list[dict]:
         for r in rows:
             d = dict(r)
             d["tp_levels"] = json.loads(d.get("tp_levels") or "[]")
-            d["rr_ratios"] = json.loads(d.get("rr_ratios") or "[]")
             result.append(d)
         return result
 
@@ -50,6 +51,15 @@ def _db_max_id() -> int:
 @router.get("")
 def get_signals(limit: int = 50):
     return _db_get_signals(limit=limit)
+
+
+@router.get("/image/{filename}")
+def get_signal_image(filename: str):
+    path = IMAGES_DIR / filename
+    if not path.exists():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(str(path), media_type="image/jpeg")
 
 
 @router.websocket("/ws")
