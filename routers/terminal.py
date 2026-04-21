@@ -130,17 +130,26 @@ def get_trades(
     return {"trades": trades}
 
 
+@router.get("/positions")
+def get_positions():
+    """Return live open positions directly from state file — no caching."""
+    state = _load_live_state()
+    raw = state.get("positions", {})
+    # Only non-zero quantities
+    positions = {sym: qty for sym, qty in raw.items() if qty != 0}
+    return {"positions": positions}
+
+
 @router.get("/equity-curve")
 def get_equity_curve(
     range: str = Query("today", description="'today' or 'alltime'"),
 ):
     """
-    Today: reads account_history snapshots, converts to intraday P&L
-    relative to the first snapshot of the day (opening account value).
-    This avoids relying on stored per-trade pnl which can be unreliable.
+    Today: reads account_history snapshots only during windows when the
+    trader had an open position (entry → exit). Flat idle periods are
+    excluded so the chart only shows meaningful trade activity.
 
-    Alltime: reads daily first/last account_history values per day and
-    chains the daily P&L together.
+    Alltime: chains daily (last - first) liquidation_value per day.
     """
     points = []
     if not DB_PATH.exists():
@@ -151,42 +160,72 @@ def get_equity_curve(
             conn.row_factory = sqlite3.Row
 
             if range == "today":
-                rows = conn.execute(
+                # Build trade windows: (entry_ts, exit_ts) for each closed trade today
+                trade_rows = conn.execute(
+                    """
+                    SELECT e.timestamp AS entry_ts, x.timestamp AS exit_ts
+                    FROM live_trades e
+                    JOIN live_trades x ON x.symbol = e.symbol
+                    WHERE e.side IN ('BUY','SHORT','SELL SHORT')
+                      AND x.side IN ('SELL','COVER')
+                      AND x.timestamp >= e.timestamp
+                      AND e.timestamp >= ?
+                    GROUP BY x.rowid
+                    ORDER BY entry_ts ASC
+                    """,
+                    (today_start,)
+                ).fetchall()
+
+                if not trade_rows:
+                    # No closed trades yet — show nothing
+                    return {"points": points}
+
+                # Build set of active windows
+                windows = [(float(r["entry_ts"]), float(r["exit_ts"])) for r in trade_rows]
+
+                # Fetch all account_history for today
+                hist = conn.execute(
                     "SELECT timestamp, liquidation_value FROM account_history"
                     " WHERE timestamp >= ? ORDER BY timestamp ASC",
                     (today_start,)
                 ).fetchall()
-                if not rows:
+                if not hist:
                     return {"points": points}
-                baseline = float(rows[0]["liquidation_value"])
-                for r in rows:
-                    ts  = float(r["timestamp"])
-                    val = float(r["liquidation_value"])
-                    points.append({
-                        "timestamp": ts,
-                        "value": round(val - baseline, 2),
-                        "datetime_est": datetime.utcfromtimestamp(ts).strftime("%H:%M"),
-                    })
+
+                baseline = float(hist[0]["liquidation_value"])
+
+                def in_trade_window(ts: float) -> bool:
+                    for entry_ts, exit_ts in windows:
+                        if entry_ts <= ts <= exit_ts + 5:  # 5s grace
+                            return True
+                    return False
+
+                for r in hist:
+                    ts = float(r["timestamp"])
+                    if in_trade_window(ts):
+                        val = float(r["liquidation_value"])
+                        points.append({
+                            "timestamp": ts,
+                            "value": round(val - baseline, 2),
+                            "datetime_est": datetime.utcfromtimestamp(ts).strftime("%H:%M"),
+                        })
 
             else:
-                # All-time: one point per day — day's last acct value minus first
                 rows = conn.execute(
                     "SELECT timestamp, liquidation_value FROM account_history"
                     " ORDER BY timestamp ASC"
                 ).fetchall()
-                # Group by calendar date (ET)
                 from collections import defaultdict
                 by_day: dict = defaultdict(list)
                 for r in rows:
                     day_key = datetime.utcfromtimestamp(float(r["timestamp"])).strftime("%Y-%m-%d")
                     by_day[day_key].append(float(r["liquidation_value"]))
                 cumulative = 0.0
+                from datetime import datetime as dt
                 for day in sorted(by_day):
                     vals = by_day[day]
                     day_pnl = vals[-1] - vals[0]
                     cumulative += day_pnl
-                    # Use noon timestamp for the day as the x-axis point
-                    from datetime import datetime as dt
                     ts = dt.strptime(day, "%Y-%m-%d").timestamp() + 43200
                     points.append({
                         "timestamp": ts,

@@ -1,6 +1,5 @@
-import { useEffect, useCallback } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useCallback, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { SectionHeader } from '@/components/ui/SectionHeader'
 import { LiveIndicator } from '@/components/ui/LiveIndicator'
 import { PnLCurve } from '@/components/charts/PnLCurve'
@@ -52,24 +51,45 @@ function StatRow({ label, value, color = TEXT }: { label: string; value: string;
 
 export function TerminalPage() {
   const {
-    setState, appendTrades,
+    setState, appendTrades, setPositions,
     positions, account_details, daily_pnl, win_rate,
     rolling_pi_per_share, max_drawdown, cooldowns, trades,
   } = useTerminalStore()
   const [equityRange, setEquityRange] = useState<'today' | 'alltime'>('today')
+  const queryClient = useQueryClient()
   const now = Date.now() / 1000
 
   const onWsMessage = useCallback((data: unknown) => {
     const msg = data as { type: string; data: Record<string, unknown>; _cursor?: unknown }
     if (msg.type === 'state_update') {
       setState(msg.data as Parameters<typeof setState>[0])
-      if (Array.isArray((msg.data as { new_trades?: unknown[] }).new_trades)) {
-        appendTrades((msg.data as { new_trades: Parameters<typeof appendTrades>[0] }).new_trades)
+      const newTrades = (msg.data as { new_trades?: unknown[] }).new_trades
+      if (Array.isArray(newTrades)) {
+        appendTrades(newTrades as Parameters<typeof appendTrades>[0])
+        // Any closing fill → immediately refetch positions from the server
+        const hasClose = (newTrades as { side?: string }[]).some(
+          t => ['SELL', 'COVER'].includes((t.side ?? '').toUpperCase())
+        )
+        if (hasClose) {
+          queryClient.invalidateQueries({ queryKey: ['terminal-positions'] })
+        }
       }
     }
-  }, [setState, appendTrades])
+  }, [setState, appendTrades, queryClient])
 
   useWebSocket({ url: '/api/terminal/ws', onMessage: onWsMessage })
+
+  // Poll positions every 5s; also invalidated immediately on any SELL/COVER via WS
+  const { data: positionsData } = useQuery({
+    queryKey: ['terminal-positions'],
+    queryFn: () => terminalService.getPositions().then((r) => r.data.positions as Record<string, number>),
+    refetchInterval: 5000,
+    staleTime: 2000,
+  })
+
+  useEffect(() => {
+    if (positionsData) setPositions(positionsData)
+  }, [positionsData, setPositions])
 
   const { data: equityData } = useQuery({
     queryKey: ['equity-curve', equityRange],

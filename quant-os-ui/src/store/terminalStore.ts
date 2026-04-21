@@ -35,6 +35,7 @@ export interface TerminalState {
 interface TerminalStoreState extends TerminalState {
   setState: (data: Partial<TerminalState>) => void
   appendTrades: (trades: Trade[]) => void
+  setPositions: (positions: Record<string, number>) => void
   reset: () => void
 }
 
@@ -60,5 +61,6 @@ export const useTerminalStore = create<TerminalStoreState>((set) => ({
       if (!fresh.length) return s
       return { trades: [...fresh, ...s.trades].slice(0, 500) }
     }),
+  setPositions: (positions) => set({ positions }),
   reset: () => set(defaultState),
 }))
