@@ -34,6 +34,7 @@ export const terminalService = {
   getTrades: (date = 'today') => api.get(`/terminal/trades?date=${date}`),
   getEquityCurve: (range = 'today') => api.get(`/terminal/equity-curve?range=${range}`),
   getAlerts: (limit = 50) => api.get(`/terminal/alerts?limit=${limit}`),
+  getPositions: () => api.get('/terminal/positions'),
 }
 
 export const analyticsService = {
