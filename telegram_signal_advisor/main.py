@@ -23,7 +23,6 @@ from telethon import TelegramClient, events
 
 from config import Config
 from signal_parser import extract_sizing, build_sizing_footer
-from notifier import send_message
 from signals_db import save_signal, init_db
 
 # Existing Trading Bot notifier (sends to the same bot as your trading alerts)
@@ -46,27 +45,31 @@ SESSION_FILE = Path(__file__).parent / "session.telethon"
 
 async def process_message(event, config: Config, client: TelegramClient):
     raw_text = (event.raw_text or "").strip()
-    if not raw_text:
+    source = getattr(event.chat, "title", None) or str(event.chat_id)
+
+    # Check if this message has a photo attached
+    has_photo = bool(getattr(event.message, "photo", None))
+
+    if not raw_text and not has_photo:
         return
 
-    source = getattr(event.chat, "title", None) or str(event.chat_id)
-    log.info("[%s] Message (%d chars)", source, len(raw_text))
+    log.info("[%s] Message (%d chars, photo=%s)", source, len(raw_text), has_photo)
 
     # ── Try to extract entry/SL and compute bet size ──────────────────────────
     sizing = extract_sizing(
         raw_text,
         balance=config.account_balance_usdt,
         risk_pct=config.max_risk_per_trade_pct,
-    )
+    ) if raw_text else None
 
-    # ── Build the message: exact channel text + optional sizing footer ────────
+    # ── Build caption: exact channel text + optional sizing footer ────────────
     header = f"📡 *{source}*\n\n"
-    body = raw_text
+    body = raw_text or ""
     if sizing:
         body += build_sizing_footer(sizing)
-        log.info("[%s] Sizing found: entry=%s sl=%s qty=%s", source, sizing['entry'], sizing['sl'], sizing['quantity'])
+        log.info("[%s] Sizing: entry=%s sl=%s qty=%s", source, sizing['entry'], sizing['sl'], sizing['quantity'])
     else:
-        log.info("[%s] No entry/SL found — forwarding as-is", source)
+        log.info("[%s] Forwarding as-is", source)
 
     message = header + body
 
@@ -97,9 +100,23 @@ async def process_message(event, config: Config, client: TelegramClient):
             approved=True,
         )
 
-    # ── Send to Saved Messages + Trading Bot ──────────────────────────────────
-    await send_message(message, client)
+    # ── Send via Trading Bot (text) ───────────────────────────────────────────
     _tg_bot.send_message(message)
+
+    # ── If there's a photo, download it and send via bot separately ───────────
+    if has_photo:
+        try:
+            import os, tempfile, requests as req
+            photo_bytes = await client.download_media(event.message, bytes)
+            bot_token = _tg_bot.bot_token
+            chat_id = _tg_bot.chat_id
+            url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+            caption = f"📡 *{source}* — chart/image"
+            req.post(url, data={"chat_id": chat_id, "caption": caption, "parse_mode": "Markdown"},
+                     files={"photo": ("signal.jpg", photo_bytes, "image/jpeg")}, timeout=15)
+            log.info("[%s] Photo sent", source)
+        except Exception as e:
+            log.error("[%s] Failed to send photo: %s", source, e)
 
 
 async def main():
@@ -168,7 +185,6 @@ async def main():
         f"Monitoring {len(channel_entities)} channel(s):\n"
         + "\n".join(f"• _{t}_" for t in titles)
     )
-    await send_message(startup, client)
     _tg_bot.send_message(startup)
 
     log.info("Listening on %d channel(s)...", len(channel_entities))
