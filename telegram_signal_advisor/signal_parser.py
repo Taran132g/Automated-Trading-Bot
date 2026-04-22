@@ -9,22 +9,26 @@ import logging
 
 log = logging.getLogger("signal_parser")
 
-# Patterns for entry price
+# Patterns for entry price — order matters: most specific first
 ENTRY_PATTERNS = [
-    r'(?:entry|buy|long|short|open|price)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
-    r'(?:enter|entering)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
+    # "Entry Point: 0.9757" / "Entry Zone: 1.23"
+    r'entry\s+(?:point|zone|price)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
+    # "Entry: 1.23" / "Buy: 1.23" / "Open: 1.23" / "Price: 1.23"
+    r'(?:entry|buy|open|price)[:\s@]+([0-9]+(?:[.,][0-9]+)?)',
+    # "Enter at 1.23" / "Entering 1.23"
+    r'(?:enter(?:ing)?)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
 ]
 
 # Patterns for stop loss
 SL_PATTERNS = [
-    r'(?:sl|stop[\s\-]?loss|stop)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
-    r'(?:stoploss|s\.l\.)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
+    r'(?:sl|stop[\s\-]?loss|stoploss|s\.l\.)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
 ]
 
-# Patterns for take profit (optional, for display only)
-TP_PATTERNS = [
-    r'(?:tp\s*\d*|target\s*\d*|take[\s\-]?profit\s*\d*)[:\s@]*([0-9]+(?:[.,][0-9]+)?)',
-]
+# Patterns for take profit on the SAME line as the keyword
+_TP_INLINE = r'(?:tp\s*\d*|take[\s\-]?profit\s*\d*)[:\s@]*([0-9]+(?:[.,][0-9]+)?)'
+
+# "Targets:" / "Target:" followed by numbers on subsequent lines
+_TP_TARGETS_LABEL = r'(?:targets?)[:\s]*'
 
 
 def _find_first(text: str, patterns: list[str]) -> float | None:
@@ -51,6 +55,43 @@ def _find_all(text: str, patterns: list[str]) -> list[float]:
     return results
 
 
+def _find_tps(text: str) -> list[float]:
+    """Extract TP levels from both inline and multi-line Targets: blocks."""
+    t = text.lower()
+    results = []
+
+    # Inline: "TP1: 1.23" / "Take Profit: 1.23"
+    for m in re.finditer(_TP_INLINE, t):
+        try:
+            results.append(float(m.group(1).replace(',', '')))
+        except ValueError:
+            pass
+
+    # Multi-line targets block: "Targets:\n0.96\n0.95\n..."
+    for block_m in re.finditer(_TP_TARGETS_LABEL, t):
+        # Grab everything after the label until a non-number line
+        rest = t[block_m.end():]
+        for line in rest.split('\n'):
+            line = line.strip()
+            m = re.fullmatch(r'([0-9]+(?:[.,][0-9]+)?)', line)
+            if m:
+                try:
+                    results.append(float(m.group(1).replace(',', '')))
+                except ValueError:
+                    pass
+            elif line:  # non-empty non-number line ends the block
+                break
+
+    # Deduplicate preserving order
+    seen: set[float] = set()
+    deduped = []
+    for v in results:
+        if v not in seen:
+            seen.add(v)
+            deduped.append(v)
+    return deduped
+
+
 def extract_sizing(text: str, balance: float = 10000.0, risk_pct: float = 2.0) -> dict | None:
     """
     Try to extract entry + SL and compute bet sizing.
@@ -58,7 +99,7 @@ def extract_sizing(text: str, balance: float = 10000.0, risk_pct: float = 2.0) -
     """
     entry = _find_first(text, ENTRY_PATTERNS)
     sl = _find_first(text, SL_PATTERNS)
-    tps = _find_all(text, TP_PATTERNS)
+    tps = _find_tps(text)
 
     if not entry or not sl or entry == sl:
         return None
