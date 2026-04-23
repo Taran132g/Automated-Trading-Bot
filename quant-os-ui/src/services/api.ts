@@ -116,3 +116,19 @@ export interface QuoteItem {
 export const marketService = {
   getQuotes: () => api.get<{ top: QuoteItem[]; bottom: QuoteItem[] }>('/market/quotes'),
 }
+
+export const telegramService = {
+  getChannels: () => api.get('/telegram/channels'),
+  getMessages: (limit = 100, channel = 'all', afterId = 0) =>
+    api.get(`/telegram/messages?limit=${limit}&channel=${encodeURIComponent(channel)}&after_id=${afterId}`),
+}
+
+export const screenerService = {
+  getStatus: () => api.get('/screener/status'),
+  getWatchlist: (minScore = 0, minPrice = 0.80, maxPrice = 1.15) =>
+    api.get(`/screener/watchlist?min_score=${minScore}&min_price=${minPrice}&max_price=${maxPrice}&limit=100`),
+  getAlerts: (alertType = 'all', limit = 50) =>
+    api.get(`/screener/alerts?alert_type=${alertType}&limit=${limit}`),
+  getHistory: (symbol: string, minutes = 30) =>
+    api.get(`/screener/history/${symbol}?minutes=${minutes}`),
+}

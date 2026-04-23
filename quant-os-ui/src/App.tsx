@@ -15,6 +15,8 @@ import { AgentsPage } from '@/pages/AgentsPage'
 import { AdminPage } from '@/pages/AdminPage'
 import { SignalsPage } from '@/pages/SignalsPage'
 import { AnalyticsPage } from '@/pages/AnalyticsPage'
+import { ScreenerPage } from '@/pages/ScreenerPage'
+import { TelegramPage } from '@/pages/TelegramPage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 5000 } },
@@ -604,6 +606,8 @@ export default function App() {
             <Route path="/grok" element={<GrokPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/signals" element={<SignalsPage />} />
+            <Route path="/screener" element={<ScreenerPage />} />
+            <Route path="/telegram" element={<TelegramPage />} />
             <Route path="/admin" element={
               <ProtectedRoute>
                 <AdminPage />

@@ -1,0 +1,8 @@
+.env
+data/screener.db
+data/*.db
+data/schwab_token.json
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
