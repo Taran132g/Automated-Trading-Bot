@@ -88,6 +88,30 @@ async def process_message(event, config: Config, client: TelegramClient):
     # ── Send via Trading Bot (text) ───────────────────────────────────────────
     _tg_bot.send_message(message)
 
+    # ── SMS alert for buy orders ──────────────────────────────────────────────
+    if sizing:
+        try:
+            import requests as req
+            sms_body = (
+                f"BUY ORDER — {source}\n"
+                f"Entry: {sizing['entry']} | SL: {sizing['sl']} ({sizing['sl_distance_pct']}% away)\n"
+                f"Qty: {sizing['quantity']} coins | Position: ${sizing['position_size_usdt']:,.0f}\n"
+                f"Risk: $200"
+            )
+            req.post(
+                f"https://api.twilio.com/2010-04-01/Accounts/{config.twilio_account_sid}/Messages.json",
+                auth=(config.twilio_account_sid, config.twilio_auth_token),
+                data={
+                    "From": config.twilio_from_number,
+                    "To": config.twilio_to_number,
+                    "Body": sms_body,
+                },
+                timeout=10,
+            )
+            log.info("[%s] SMS sent to %s", source, config.twilio_to_number)
+        except Exception as e:
+            log.error("[%s] SMS failed: %s", source, e)
+
     # ── If there's a photo, send via bot separately ───────────────────────────
     if photo_bytes:
         try:
