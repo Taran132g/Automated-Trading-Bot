@@ -3,7 +3,7 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   Activity, BarChart2, Radio, Search, FlaskConical,
   GitCompare, Terminal, Bot, ShieldAlert, LogOut,
-  LineChart, LayoutDashboard, ChevronDown,
+  LineChart, LayoutDashboard, ChevronDown, TrendingDown, MessageSquare,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { authService, adminService, terminalService } from '@/services/api'
@@ -239,6 +239,8 @@ function TopNav() {
           { to: '/scalper', icon: Activity, label: 'Scalper', tag: 'LIVE' },
           { to: '/pattern', icon: BarChart2, label: 'Pattern', tag: 'LIVE' },
           { to: '/signals', icon: Radio, label: 'Signals', tag: 'LIVE' },
+          { to: '/screener', icon: TrendingDown, label: 'Dollar Break', tag: 'LIVE' },
+          { to: '/telegram', icon: MessageSquare, label: 'Telegram Feed', tag: 'LIVE' },
         ]} />
         <NavDropdown label="Simulation" items={[
           { to: '/backtest', icon: Search, label: 'Backtest', tag: 'SIM' },
