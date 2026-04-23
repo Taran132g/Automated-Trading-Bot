@@ -21,6 +21,12 @@ class Config:
     # ── Anthropic ────────────────────────────────────────────────────────────
     anthropic_api_key: str = ""
 
+    # ── Twilio SMS ───────────────────────────────────────────────────────────
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_from_number: str = ""
+    twilio_to_number: str = ""
+
     # ── Groups/channels to monitor ───────────────────────────────────────────
     channel_names: List[str] = field(default_factory=list)
 
@@ -36,6 +42,10 @@ class Config:
         self.telegram_api_hash = os.getenv("TELEGRAM_API_HASH", "")
         self.telegram_phone = os.getenv("TELEGRAM_PHONE", "")
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        self.twilio_account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+        self.twilio_auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+        self.twilio_from_number = os.getenv("TWILIO_FROM_NUMBER", "")
+        self.twilio_to_number = os.getenv("TWILIO_TO_NUMBER", "")
         self.account_balance_usdt = float(os.getenv("ACCOUNT_BALANCE_USDT", 1000.0))
         self.max_risk_per_trade_pct = float(os.getenv("MAX_RISK_PCT", 2.0))
         self.max_leverage = int(os.getenv("MAX_LEVERAGE", 20))
