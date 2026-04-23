@@ -37,7 +37,8 @@ US_EXCHANGES = {"NASDAQ", "NYSE", "AMEX", "BATS"}
 
 
 def _get_client() -> schwab.client.Client:
-    app_key = os.environ["SCHWAB_APP_KEY"]
+    # Support both naming conventions (SCHWAB_CLIENT_ID used on server)
+    app_key = os.environ.get("SCHWAB_APP_KEY") or os.environ["SCHWAB_CLIENT_ID"]
     app_secret = os.environ["SCHWAB_APP_SECRET"]
 
     # Resolve token path — env var wins, then check sibling repo root (server layout),
