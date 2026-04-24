@@ -146,7 +146,8 @@ class PriceStream:
         self._stream_client.add_level_one_equity_handler(self._handle_quote)
         log.info("Subscribed to %d symbols", len(self._symbols))
 
-        await self._stream_client.handle_message()  # blocks until disconnect
+        while True:
+            await self._stream_client.handle_message()
 
     # ── Entry point ───────────────────────────────────────────────────────────
 
