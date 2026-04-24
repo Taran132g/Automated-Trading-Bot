@@ -139,7 +139,7 @@ class PriceStream:
                     schwab.streaming.StreamClient.LevelOneEquityFields.ASK_PRICE,
                     schwab.streaming.StreamClient.LevelOneEquityFields.LAST_PRICE,
                     schwab.streaming.StreamClient.LevelOneEquityFields.TOTAL_VOLUME,
-                    schwab.streaming.StreamClient.LevelOneEquityFields.TRADE_TIME,
+                    schwab.streaming.StreamClient.LevelOneEquityFields.TRADE_TIME_MILLIS,
                 ],
             )
 
