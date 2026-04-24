@@ -73,7 +73,7 @@ def upsert_universe(rows: list[dict]) -> None:
         with conn:
             conn.execute("DELETE FROM universe")
             conn.executemany(
-                "INSERT INTO universe (symbol, last_close, avg_vol_10d, updated_at) VALUES (?,?,?,?)",
+                "INSERT OR REPLACE INTO universe (symbol, last_close, avg_vol_10d, updated_at) VALUES (?,?,?,?)",
                 [(r["symbol"], r["last_close"], r.get("avg_vol_10d"), r["updated_at"]) for r in rows],
             )
         conn.close()
