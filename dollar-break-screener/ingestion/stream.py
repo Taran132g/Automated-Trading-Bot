@@ -52,14 +52,13 @@ class PriceStream:
     #   1=bid, 2=ask, 3=last, 8=total volume, 52=trade time (epoch ms)
 
     def _handle_quote(self, msg: dict) -> None:
-        F = schwab.streaming.StreamClient.LevelOneEquityFields
         content = msg.get("content", [])
         rows = []
         for item in content:
             symbol = item.get("key")
-            price = item.get(F.LAST_PRICE)
-            volume = item.get(F.TOTAL_VOLUME)
-            ts_ms = item.get(F.TRADE_TIME_MILLIS)
+            price = item.get("LAST_PRICE")
+            volume = item.get("TOTAL_VOLUME")
+            ts_ms = item.get("TRADE_TIME_MILLIS")
 
             if symbol is None or price is None:
                 continue
