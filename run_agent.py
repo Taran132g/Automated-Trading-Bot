@@ -4,9 +4,9 @@ CLI entry point for all trading agents.
 Usage: python run_agent.py <agent_name>
 
 Agents:
-  post_market      — Daily post-market analyst (run at 4:15 PM ET weekdays)
+  scalper_analyst  — Daily scalper/imbalance strategy report (run at 4:15 PM ET weekdays)
   pattern_analyst  — Daily pattern trade report + intraday Claude filter (run at 4:30 PM ET weekdays)
-  weekly_review    — Comprehensive end-of-week review (run Sunday 6 PM ET)
+  weekly_review    — Comprehensive end-of-week review (run Friday 5 PM ET)
   risk_monitor     — Live risk watchdog (run every 5 min during market hours)
 """
 
@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 
 AGENTS = {
-    "post_market":     "agents.post_market",
+    "scalper_analyst": "agents.scalper_analyst",
     "pattern_analyst": "agents.pattern_analyst",
     "weekly_review":   "agents.weekly_review",
     "risk_monitor":    "agents.risk_monitor",

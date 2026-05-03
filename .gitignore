@@ -10,3 +10,23 @@ daily_pnl.txt
 *_state.json
 kill_switch.flag
 telegram_signal_advisor/.env
+telegram_signal_advisor/*.session
+
+# Simulation / backtest output
+*.csv
+*.html
+*.png
+
+# Exported data
+export_for_claude.json
+funding_results.json
+validate_filters.json
+funding_cache/
+
+# Analysis / scratch docs
+CODE_AUDIT_REPORT.md
+STRATEGY_ANALYSIS.md
+codextakeover.md
+patternstrat.md
+sweep_results.csv
+tape_confirm_results.csv

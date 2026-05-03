@@ -19,7 +19,7 @@ DB_PATH = BASE_DIR / "penny_basing.db"
 sys.path.insert(0, str(BASE_DIR))
 
 # Agents that can be manually triggered (risk_monitor is excluded — live watchdog only)
-_RUNNABLE_AGENTS = {"post_market", "pattern_analyst", "weekly_review"}
+_RUNNABLE_AGENTS = {"scalper_analyst", "pattern_analyst", "weekly_review"}
 
 
 @router.get("/reports")

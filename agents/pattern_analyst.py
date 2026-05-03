@@ -29,6 +29,7 @@ LOGGER = logging.getLogger("agents.pattern_analyst")
 ET = pytz.timezone("America/New_York")
 
 DB_PATH = Path(__file__).parent.parent / "penny_basing.db"
+TRADING_RULES_PATH = Path(__file__).parent.parent / "trading_rules.md"
 
 
 # ── Claude log table ────────────────────────────────────────────────────────
@@ -161,6 +162,68 @@ def _build_market_context(df) -> str:
     )
 
 
+_REVERSAL_PATTERNS = {"inverse_head_and_shoulders", "double_bottom", "head_and_shoulders", "double_top"}
+
+
+def _load_trading_rules() -> str:
+    """Read the user's trading_rules.md file. Returns empty string if not found."""
+    try:
+        return TRADING_RULES_PATH.read_text().strip()
+    except FileNotFoundError:
+        return ""
+
+
+def _load_recent_trades(symbol: str, limit: int = 10) -> str:
+    """
+    Return the last `limit` closed trades for `symbol` (both live and paper tables).
+    Falls back to the last `limit` trades across all symbols if none found for this one.
+    """
+    rows = []
+    query_symbol = (
+        "SELECT timestamp, symbol, side, price, entry_price, pnl, pattern, exit_reason "
+        "FROM {table} WHERE symbol = ? AND side IN ('SELL', 'COVER') "
+        "ORDER BY timestamp DESC LIMIT ?"
+    )
+    query_all = (
+        "SELECT timestamp, symbol, side, price, entry_price, pnl, pattern, exit_reason "
+        "FROM {table} WHERE side IN ('SELL', 'COVER') "
+        "ORDER BY timestamp DESC LIMIT ?"
+    )
+    for table in ("pattern_trades", "pattern_trades_paper"):
+        try:
+            with closing(sqlite3.connect(str(DB_PATH))) as conn:
+                result = conn.execute(query_symbol.format(table=table), (symbol, limit)).fetchall()
+                rows.extend(result)
+        except Exception:
+            pass
+
+    if not rows:
+        for table in ("pattern_trades", "pattern_trades_paper"):
+            try:
+                with closing(sqlite3.connect(str(DB_PATH))) as conn:
+                    result = conn.execute(query_all.format(table=table), (limit,)).fetchall()
+                    rows.extend(result)
+            except Exception:
+                pass
+
+    if not rows:
+        return "No previous trades on record."
+
+    rows.sort(key=lambda r: r[0], reverse=True)
+    rows = rows[:limit]
+
+    lines = []
+    for ts, sym, side, price, entry_price, pnl, pattern, exit_reason in rows:
+        dt = datetime.fromtimestamp(ts, tz=ET).strftime("%Y-%m-%d %H:%M")
+        pnl_str = f"${pnl:+.4f}" if pnl is not None else "N/A"
+        outcome = "WIN" if (pnl or 0) > 0 else "LOSS"
+        lines.append(
+            f"{dt} | {sym} | {pattern} | entry=${entry_price:.4f} exit=${price:.4f} | "
+            f"pnl={pnl_str} [{outcome}] | exit={exit_reason or 'N/A'}"
+        )
+    return "\n".join(lines)
+
+
 def _build_signal_prompt(
     symbol: str,
     pattern: str,
@@ -173,25 +236,59 @@ def _build_signal_prompt(
     pattern_bars: int,
     market_context: str,
     intraday_pnl: float,
+    trading_rules: str = "",
+    recent_trades: str = "",
 ) -> str:
-    dir_label = "LONG" if direction == "bullish" else "SHORT"
+    dir_label  = "LONG" if direction == "bullish" else "SHORT"
+    is_reversal = pattern in _REVERSAL_PATTERNS
+    pat_type   = "REVERSAL" if is_reversal else "CONTINUATION/BREAKOUT"
+
+    if is_reversal:
+        criteria = (
+            "This is a REVERSAL pattern — it trades AGAINST the prior trend by design. "
+            "Do NOT penalize for trend opposition.\n\n"
+            "Set your STOP just beyond the pattern's invalidation level (e.g., below the lowest "
+            "trough for an iH&S or double_bottom). Set your TARGET at the next key resistance level "
+            "visible in the price data, or use the measured move (pattern height from breakout).\n\n"
+            "Approve (YES) ONLY if ALL of these hold: your R:R >= 2.0, the prior directional move "
+            "shows clear exhaustion (slowing closes, wicks, base/consolidation), the pattern "
+            "structure is clean over enough bars, and price is stabilizing (not in free-fall for longs).\n"
+            "Reject (NO) if: your R:R < 1.5, price is still trending hard with no stabilization, "
+            "pattern structure is weak, your stop is wider than 2x ATR, or no reversal structure exists."
+        )
+    else:
+        criteria = (
+            "Set your STOP just below the consolidation low / breakout level (for longs) or "
+            "just above (for shorts). Set your TARGET at the next resistance/support level or "
+            "use the measured move (pattern height projected from the breakout point).\n\n"
+            "Approve (YES) ONLY if ALL of these hold: your R:R >= 2.0, trend clearly aligns with "
+            "trade direction (price on correct side of EMA20 and EMA50), pattern formed over enough "
+            "bars, and price is not already within 20% of your target.\n"
+            "Reject (NO) if: your R:R < 1.5, trend opposes direction, price at a range extreme, "
+            "your stop is wider than 1.5x ATR, or closes show erratic choppy action. Be strict."
+        )
+
+    rules_section = f"TRADER'S RULES (follow these strictly):\n{trading_rules}\n\n" if trading_rules else ""
+    trades_section = f"RECENT TRADE HISTORY (use to assess symbol performance and trader risk tolerance):\n{recent_trades}\n\n" if recent_trades else ""
+
     return (
-        "You are a breakout pattern filter. Evaluate this setup using the full price context below.\n\n"
-        f"SYMBOL: {symbol}  |  DIRECTION: {dir_label}\n"
+        f"You are a pattern filter and trade planner. "
+        f"Evaluate this {'reversal' if is_reversal else 'breakout'} setup "
+        f"using the full price context below, then set your own stop and target.\n\n"
+        f"{rules_section}"
+        f"SYMBOL: {symbol}  |  DIRECTION: {dir_label}  |  PATTERN TYPE: {pat_type}\n"
         f"PATTERN: {pattern}  |  CONFIDENCE: {confidence:.0%}  |  BARS FORMED: {pattern_bars}\n"
-        f"ENTRY: ${entry_price:.4f}  |  STOP: ${stop_level:.4f}  |  TARGET: ${target_level:.4f}\n"
-        f"R:R RATIO: {rr_ratio:.2f}  (reward / risk)\n"
+        f"ENTRY: ${entry_price:.4f}\n"
+        f"DETECTOR SUGGESTED: stop=${stop_level:.4f}  target=${target_level:.4f}  R:R={rr_ratio:.2f}\n"
         f"INTRADAY P&L SO FAR: ${intraday_pnl:+.2f}\n\n"
+        f"{trades_section}"
         f"MARKET CONTEXT:\n{market_context}\n\n"
-        "Respond with exactly two lines:\n"
+        "Respond with exactly four lines:\n"
         "Line 1: YES or NO\n"
-        "Line 2: One sentence reason (max 25 words). Reference trend direction and R:R. Be direct.\n\n"
-        "Approve (YES) ONLY if ALL of these hold: R:R >= 2.0, trend clearly aligns with trade "
-        "direction (price on correct side of EMA20 and EMA50), pattern formed over enough bars "
-        "to be credible, price is not already within 20% of the target.\n"
-        "Reject (NO) if ANY of: R:R < 1.5, trend opposes direction, price at a range extreme "
-        "with no room left to run, stop is wider than 1.5x ATR, or the closes show erratic "
-        "choppy action with no clear directional structure. Be strict — only the cleanest setups."
+        "Line 2: STOP: $X.XXXX\n"
+        "Line 3: TARGET: $X.XXXX\n"
+        "Line 4: One sentence reason (max 25 words). Reference pattern structure and R:R.\n\n"
+        f"{criteria}"
     )
 
 
@@ -234,31 +331,60 @@ def evaluate_signal(
                 for _, r in last20.iterrows()
             )
 
+    trading_rules = _load_trading_rules()
+    recent_trades = _load_recent_trades(symbol)
+
     prompt = _build_signal_prompt(
         symbol=symbol, pattern=pattern, direction=direction,
         confidence=confidence, entry_price=entry_price,
         stop_level=stop_level, target_level=target_level,
         rr_ratio=rr, pattern_bars=pattern_bars,
         market_context=market_context, intraday_pnl=intraday_pnl,
+        trading_rules=trading_rules, recent_trades=recent_trades,
     )
 
-    response = call_claude(prompt, max_tokens=120)
+    response = call_claude(prompt, max_tokens=220)
     if not response:
         LOGGER.warning("[pattern_analyst] Claude unavailable — approving %s %s by default.", symbol, pattern)
         _log_decision(symbol, pattern, direction, confidence, rr, True, "claude_unavailable", mode)
-        return {"approved": True, "reason": "claude_unavailable"}
+        return {"approved": True, "reason": "claude_unavailable", "stop": stop_level, "target": target_level}
 
     lines = [ln.strip() for ln in response.strip().splitlines() if ln.strip()]
     approved = lines[0].upper().startswith("YES") if lines else True
-    reason   = lines[1] if len(lines) > 1 else response[:120].strip()
+
+    # Parse STOP / TARGET from lines 2 and 3; fall back to detector values if Claude omits them
+    claude_stop   = stop_level
+    claude_target = target_level
+    reason        = response[:120].strip()
+
+    for line in lines[1:]:
+        lu = line.upper()
+        if lu.startswith("STOP:"):
+            try:
+                val = line.split("$")[-1].strip().split()[0].rstrip(".,)")
+                claude_stop = float(val)
+            except (ValueError, IndexError):
+                pass
+        elif lu.startswith("TARGET:"):
+            try:
+                val = line.split("$")[-1].strip().split()[0].rstrip(".,)")
+                claude_target = float(val)
+            except (ValueError, IndexError):
+                pass
+        else:
+            reason = line
+
+    claude_rr = round(abs(claude_target - entry_price) / abs(entry_price - claude_stop), 2) \
+        if abs(entry_price - claude_stop) > 0 else rr
 
     LOGGER.info(
-        "[pattern_analyst] %s %s %s → %s  R:R=%.2f  %s",
+        "[pattern_analyst] %s %s %s → %s  stop=$%.4f  target=$%.4f  R:R=%.2f  %s",
         symbol, pattern, direction.upper(),
-        "APPROVED" if approved else "REJECTED", rr, reason,
+        "APPROVED" if approved else "REJECTED",
+        claude_stop, claude_target, claude_rr, reason,
     )
-    _log_decision(symbol, pattern, direction, confidence, rr, approved, reason, mode)
-    return {"approved": approved, "reason": reason}
+    _log_decision(symbol, pattern, direction, confidence, claude_rr, approved, reason, mode)
+    return {"approved": approved, "reason": reason, "stop": claude_stop, "target": claude_target}
 
 
 # ── Post-market pattern report ───────────────────────────────────────────────
