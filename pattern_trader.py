@@ -419,16 +419,24 @@ class PatternTrader:
                         )
                         self._claude_rejection_cooldown[cooldown_key] = time.time() + cooldown_secs
                         return
-                    # Approved — clear any stale cooldown for this key
+                    # Approved — clear any stale cooldown and use Claude's stop/target
                     self._claude_rejection_cooldown.pop(cooldown_key, None)
+                    claude_stop   = decision.get("stop",   float(sig.stop_level))
+                    claude_target = decision.get("target", float(sig.target_level))
                 except Exception as exc:
                     LOGGER.warning(
                         "[PatternTrader:%s] Claude filter error — entering anyway: %s", self.mode, exc
                     )
+                    claude_stop   = float(sig.stop_level)
+                    claude_target = float(sig.target_level)
+            else:
+                claude_stop   = float(sig.stop_level)
+                claude_target = float(sig.target_level)
 
             with self._lock:
                 if symbol not in self._positions:  # re-check after lock gap
-                    self._enter(symbol, sig, close, direction, qty, hold_secs, atr_stop)
+                    self._enter(symbol, sig, close, direction, qty, hold_secs, atr_stop,
+                                stop_override=claude_stop, target_override=claude_target)
 
     # ── Bar store ─────────────────────────────────────────────────────────────
 
@@ -583,9 +591,12 @@ class PatternTrader:
             return None
 
         # ── EMA trend alignment filter ────────────────────────────────────────
-        # Hard-reject signals that fight the prevailing EMA trend (fast, no API cost)
+        # Hard-reject continuation signals that fight the prevailing EMA trend (fast, no API cost).
+        # Reversal patterns (iH&S, double_bottom, H&S, double_top) are exempt — they are
+        # specifically designed to trade against the prior trend.
+        _REVERSAL_PATTERNS = {"inverse_head_and_shoulders", "double_bottom", "head_and_shoulders", "double_top"}
         n_bars = len(df)
-        if n_bars >= 20:
+        if n_bars >= 20 and sig.pattern not in _REVERSAL_PATTERNS:
             ema20 = float(df["close"].ewm(span=20, adjust=False).mean().iloc[-1])
             ema50 = float(df["close"].ewm(span=50, adjust=False).mean().iloc[-1]) if n_bars >= 50 else None
             strong_downtrend = close < ema20 and (ema50 is None or ema20 < ema50)
@@ -625,9 +636,25 @@ class PatternTrader:
         qty: int,
         hold_seconds: int,
         atr_stop: float = 0.0,
+        stop_override: Optional[float] = None,
+        target_override: Optional[float] = None,
     ) -> None:
         fill = price + SLIPPAGE * direction
         side = "BUY" if direction == +1 else "SHORT"
+
+        # Use Claude's stop/target if provided; fall back to detector values
+        stop_level   = stop_override   if stop_override   is not None else float(sig.stop_level)
+        target_level = target_override if target_override is not None else float(sig.target_level)
+
+        # Safety: if the overridden stop is geometrically wrong, revert to detector value
+        if direction == +1 and stop_level >= fill:
+            LOGGER.warning("[PatternTrader] %s stop_override=%.4f >= fill=%.4f — reverting to detector stop=%.4f",
+                           symbol, stop_level, fill, float(sig.stop_level))
+            stop_level = float(sig.stop_level)
+        if direction == -1 and stop_level <= fill:
+            LOGGER.warning("[PatternTrader] %s stop_override=%.4f <= fill=%.4f — reverting to detector stop=%.4f",
+                           symbol, stop_level, fill, float(sig.stop_level))
+            stop_level = float(sig.stop_level)
 
         pos = PatternPosition(
             symbol=symbol,
@@ -636,8 +663,8 @@ class PatternTrader:
             entry_price=fill,
             entry_time=time.time(),
             pattern=sig.pattern,
-            target_level=float(sig.target_level),
-            stop_level=float(sig.stop_level),
+            target_level=target_level,
+            stop_level=stop_level,
             atr_stop=float(atr_stop),
             breakout_level=float(sig.price_level),
             hold_seconds=hold_seconds,
@@ -659,9 +686,9 @@ class PatternTrader:
 
         LOGGER.info(
             "[PatternTrader] ENTER %s %s %d @ $%.4f  pattern=%s  target=$%.4f  "
-            "failure_stop=$%.4f  atr_stop=$%.4f",
-            side, symbol, qty, fill, sig.pattern, sig.target_level,
-            sig.stop_level, atr_stop,
+            "stop=$%.4f  atr_stop=$%.4f",
+            side, symbol, qty, fill, sig.pattern, target_level,
+            stop_level, atr_stop,
         )
 
     # ── Exit logic ────────────────────────────────────────────────────────────
