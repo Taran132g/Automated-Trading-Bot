@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from routers import auth, terminal, analytics, paper, patterns, comparison, logs, admin, agents
+from routers import auth, terminal, analytics, paper, comparison, logs, admin, agents
 from routers.config_router import router as config_router
 from routers.market import router as market_router
 from routers.signals import router as signals_router
@@ -60,7 +60,6 @@ app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(terminal.router, prefix="/api/terminal", tags=["terminal"])
 app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
 app.include_router(paper.router, prefix="/api/paper", tags=["paper"])
-app.include_router(patterns.router, prefix="/api/patterns", tags=["patterns"])
 app.include_router(comparison.router, prefix="/api/comparison", tags=["comparison"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(admin.router, prefix="/api/admin", tags=["admin"])

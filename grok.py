@@ -144,12 +144,10 @@ def _get_float_env(name: str, default: float, minimum: float = 0.0) -> float:
     return max(val, minimum)
 def _get_symbols() -> List[str]:
     config = config_manager.load_config()
-    # Combine live, paper, and pattern symbols for monitoring
-    live    = config.get("live_symbols",    "").split(",")
-    paper   = config.get("paper_symbols",   "").split(",")
-    pattern = config.get("pattern_symbols", "").split(",")
+    live  = config.get("live_symbols",  "").split(",")
+    paper = config.get("paper_symbols", "").split(",")
     all_syms = set()
-    for s in live + paper + pattern:
+    for s in live + paper:
         s = s.strip().upper()
         if s:
             all_syms.add(s)
@@ -410,15 +408,11 @@ _l1_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _chart_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _timesale_debug_remaining: Dict[str, int] = defaultdict(lambda: 10)
 _last_chart_or_timesale_ts: Dict[str, float] = defaultdict(float)
-PIPELINE = None
-PATTERN_TRADER = None       # live instance (real orders when executor attached)
-PATTERN_TRADER_PAPER = None # paper instance (simulation only)
 last_bar_minute: Dict[str, int] = {}
 current_bar: Dict[str, dict] = {}
 _last_volume_fallback_ts: Dict[str, float] = defaultdict(float)
 # Persistent thread pools — created once in run_stream() to avoid per-alert overhead
 _TRADER_POOL: Optional[concurrent.futures.ThreadPoolExecutor] = None
-_PATTERN_BAR_POOL: Optional[concurrent.futures.ThreadPoolExecutor] = None
 # Pre-built ET timezone — avoids reconstructing it on every L2 imbalance check
 ET_TZ = pytz.timezone("America/New_York")
 # Inline live trader hook
@@ -542,10 +536,6 @@ def on_level1(msg: dict):
                     for name, trader in traders:
                         if hasattr(trader, "update_live_price"):
                             trader.update_live_price(sym, price)
-                # Feed stream price to both pattern traders (eliminates HTTP fetch_quote in poll)
-                for _pt in (PATTERN_TRADER, PATTERN_TRADER_PAPER):
-                    if _pt is not None:
-                        _pt.update_live_price(sym, price)
             except (TypeError, ValueError):
                 log_structured("L1_WARNING", {"symbol": sym, "message": "Invalid price", "value": price})
                 continue
@@ -602,34 +592,6 @@ def on_chart_equity(msg: dict):
             if msg_count[sym] % PRINT_EVERY == 0:
                 _summarize(sym, now)
                 
-        # --- BAR AGGREGATOR (For Chart Patterns) ---
-        if 'PIPELINE' in globals() and PIPELINE:
-            dt = datetime.fromtimestamp(ts)
-            curr_min = dt.minute
-
-            # If minute changed, finalize the previous bar
-            if sym in last_bar_minute and curr_min != last_bar_minute[sym]:
-                PIPELINE.on_new_bar(sym, current_bar[sym])
-                # Dispatch to both pattern traders in persistent pool — fire and forget.
-                # Bar processing is fully independent; next bar won't arrive for ~60s.
-                _bar_snap = current_bar[sym].copy()
-                if _PATTERN_BAR_POOL is not None:
-                    for _pt in (PATTERN_TRADER, PATTERN_TRADER_PAPER):
-                        if _pt is not None:
-                            _PATTERN_BAR_POOL.submit(_pt.on_new_bar, sym, _bar_snap)
-                # Reset for new minute
-                current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta, "timestamp": ts}
-            else:
-                # Accumulate into current minute bar
-                if sym not in last_bar_minute:
-                    current_bar[sym] = {"open": px, "high": px, "low": px, "close": px, "volume": delta, "timestamp": ts}
-                else:
-                    cb = current_bar[sym]
-                    cb["high"] = max(cb["high"], px)
-                    cb["low"] = min(cb["low"], px)
-                    cb["close"] = px
-                    cb["volume"] += delta
-            last_bar_minute[sym] = curr_min
 
 def on_timesale(msg: dict):
     now = time()
@@ -1147,77 +1109,14 @@ async def main():
         else:
             log_structured("STARTUP", {"message": "In-process (inline) traders disabled via ENABLE_INLINE_DISPATCH=0"})
         
-        # Persistent thread pools — created once, reused for every alert and bar dispatch
-        global _TRADER_POOL, _PATTERN_BAR_POOL
+        # Persistent thread pool — created once, reused for every alert dispatch
+        global _TRADER_POOL
         _TRADER_POOL = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(4, len(traders) * 2),
             thread_name_prefix="trader-dispatch",
         )
-        _PATTERN_BAR_POOL = concurrent.futures.ThreadPoolExecutor(
-            max_workers=2,
-            thread_name_prefix="pattern-bar",
-        )
 
-        # --- PATTERN TRADER (independent breakout strategy — live + paper) ---
-        global PATTERN_TRADER, PATTERN_TRADER_PAPER
-        try:
-            from pattern_trader import PatternTrader as _PT
-            PATTERN_TRADER       = _PT(mode="live")
-            PATTERN_TRADER_PAPER = _PT(mode="paper")
-            log_structured("PATTERN_TRADER", {"status": "initialized", "modes": "live+paper"})
-        except Exception as _pt_err:
-            log_structured("PATTERN_TRADER_ERROR", {"error": str(_pt_err)})
-            PATTERN_TRADER = None
-            PATTERN_TRADER_PAPER = None
-        
-        # Pattern Engine Integration
-        try:
-            from data import PatternIntegrationConfig, IntegratedSignalPipeline
-            pattern_cfg = PatternIntegrationConfig(min_confidence=0.60)
-            global PIPELINE
-            PIPELINE = IntegratedSignalPipeline(pattern_cfg)
-            
-            # --- HISTORICAL BACKFILL ---
-            live_symbols = _get_symbols()  # reads from trading_config.json
-            
-            # Find an executor to use for historical fetching
-            executor_for_backfill = None
-            for name, trader in traders:
-                if name == "primary" and hasattr(trader, "executor"):
-                    executor_for_backfill = trader.executor
-                    break
-            
-            # Wire executor into live PatternTrader only (paper runs without it)
-            if executor_for_backfill and PATTERN_TRADER is not None:
-                try:
-                    PATTERN_TRADER.set_executor(executor_for_backfill)
-                    log_structured("PATTERN_TRADER_EXECUTOR", {"status": "attached", "mode": "live"})
-                except Exception as _pe:
-                    log_structured("PATTERN_TRADER_EXECUTOR_ERROR", {"error": str(_pe)})
 
-            if executor_for_backfill:
-                log_structured("PATTERN_BACKFILL_START", {"symbols": live_symbols})
-                for sym in live_symbols:
-                    try:
-                        hist_df = executor_for_backfill.get_price_history(sym, days=1)
-                        if hist_df is not None and not hist_df.empty:
-                            PIPELINE.seed_historical_data(sym, hist_df)
-                            for _pt in (PATTERN_TRADER, PATTERN_TRADER_PAPER):
-                                if _pt is not None:
-                                    _pt.seed_bars(sym, hist_df)
-                            log_structured("PATTERN_BACKFILL_SUCCESS", {"symbol": sym, "bars": len(hist_df)})
-                        else:
-                            log_structured("PATTERN_BACKFILL_EMPTY", {"symbol": sym})
-                    except Exception as e:
-                        log_structured("PATTERN_BACKFILL_SYMBOL_ERROR", {"symbol": sym, "error": str(e)})
-            else:
-                log_structured("PATTERN_BACKFILL_SKIP", {"reason": "No primary executor found"})
-                
-            log_structured("PATTERN_ENGINE", {"status": "initialized"})
-        except Exception as e:
-            log_structured("PATTERN_ENGINE_ERROR", {"error": str(e)})
-            PIPELINE = None
-        
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue(maxsize=_get_int_env("INLINE_TRADER_QUEUE", 100, 10))
         worker_count = _get_int_env("INLINE_TRADER_WORKERS", 1, 1)
@@ -1236,11 +1135,6 @@ async def main():
                         log_structured("INLINE_DISPATCH", {"alert_id": alert_id, "message": "No in-process traders to notify"})
                         continue
 
-                    # 1. Pattern Enrichment (Now before dispatch)
-                    enriched = None
-                    if 'PIPELINE' in globals() and PIPELINE:
-                        enriched = PIPELINE.on_l2_alert(alert, base_qty=_inline_base_qty)
-
                     pool = _TRADER_POOL
                     if pool is not None:
                         futs = [
@@ -1251,7 +1145,6 @@ async def main():
                                 alert["direction"],
                                 float(alert["price"]),
                                 range_cents=float(alert.get("range_cents", 0.0)),
-                                pattern_info=enriched,
                             )
                             for name, trader in traders
                         ]
@@ -1465,9 +1358,8 @@ async def main():
             book_task.cancel()
         if conn:
             conn.close()
-        for _pool in (_TRADER_POOL, _PATTERN_BAR_POOL):
-            if _pool is not None:
-                _pool.shutdown(wait=False)
+        if _TRADER_POOL is not None:
+            _TRADER_POOL.shutdown(wait=False)
         try:
             await stream.logout()
         except Exception:
