@@ -7,8 +7,6 @@ import { LoginPage } from '@/pages/LoginPage'
 import { HomePage } from '@/pages/HomePage'
 import { TerminalPage } from '@/pages/TerminalPage'
 import { BacktestPage } from '@/pages/BacktestPage'
-import { PatternLabPage } from '@/pages/PatternLabPage'
-import { PatternPage } from '@/pages/PatternPage'
 import { ComparisonPage } from '@/pages/ComparisonPage'
 import { GrokPage } from '@/pages/GrokPage'
 import { AgentsPage } from '@/pages/AgentsPage'
@@ -599,8 +597,6 @@ export default function App() {
             <Route index element={<HomePage />} />
             <Route path="/scalper" element={<TerminalPage />} />
             <Route path="/backtest" element={<BacktestPage />} />
-            <Route path="/pattern" element={<PatternPage />} />
-            <Route path="/patterns" element={<PatternLabPage />} />
             <Route path="/comparison" element={<ComparisonPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/grok" element={<GrokPage />} />
