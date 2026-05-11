@@ -10,7 +10,6 @@ const CARD = '#12121c'
 const BORDER = 'rgba(255,255,255,0.06)'
 const GREEN = '#22c55e'
 const RED = '#ef4444'
-const PURPLE = '#a78bfa'
 const TEXT = '#f0f0f5'
 const SEC = '#8b8b9e'
 const DIM = '#55556a'
@@ -25,46 +24,41 @@ export function ComparisonPage() {
   })
 
   const s = data?.scalp_stats
-  const p = data?.pattern_stats
-
   const pnlColor = (v: number) => v > 0 ? GREEN : v < 0 ? RED : TEXT
-  const liftColor = (v: number) => v > 0 ? GREEN : v < 0 ? RED : SEC
   const fmtPF = (v: number | null | undefined) =>
-    v === null || v === undefined || v === Infinity ? '\u221e' : v.toFixed(2)
+    v === null || v === undefined || v === Infinity ? '∞' : v.toFixed(2)
 
-  const compRows = [
-    { metric: 'Total PnL', scalp: `$${s?.total_pnl?.toFixed(2) ?? '0.00'}`, pat: `$${p?.total_pnl?.toFixed(2) ?? '0.00'}`, deltaVal: (p?.total_pnl ?? 0) - (s?.total_pnl ?? 0), fmt: (v: number) => `${v >= 0 ? '+' : ''}$${v.toFixed(2)}` },
-    { metric: 'Win Rate', scalp: `${s?.win_rate?.toFixed(1) ?? '0.0'}%`, pat: `${p?.win_rate?.toFixed(1) ?? '0.0'}%`, deltaVal: (p?.win_rate ?? 0) - (s?.win_rate ?? 0), fmt: (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(1)}%` },
-    { metric: 'PnL / Share', scalp: `$${s?.pnl_per_share?.toFixed(4) ?? '0.0000'}`, pat: `$${p?.pnl_per_share?.toFixed(4) ?? '0.0000'}`, deltaVal: (p?.pnl_per_share ?? 0) - (s?.pnl_per_share ?? 0), fmt: (v: number) => `${v >= 0 ? '+' : ''}$${v.toFixed(4)}` },
-    { metric: 'Avg PnL / Trade', scalp: `$${s?.avg_pnl_per_trade?.toFixed(2) ?? '0.00'}`, pat: `$${p?.avg_pnl_per_trade?.toFixed(2) ?? '0.00'}`, deltaVal: (p?.avg_pnl_per_trade ?? 0) - (s?.avg_pnl_per_trade ?? 0), fmt: (v: number) => `${v >= 0 ? '+' : ''}$${v.toFixed(2)}` },
-    { metric: 'Profit Factor', scalp: fmtPF(s?.profit_factor), pat: fmtPF(p?.profit_factor), deltaVal: 0, fmt: () => '\u2014', noColor: true },
-    { metric: 'Avg Win', scalp: `$${s?.avg_win?.toFixed(2) ?? '0.00'}`, pat: `$${p?.avg_win?.toFixed(2) ?? '0.00'}`, deltaVal: (p?.avg_win ?? 0) - (s?.avg_win ?? 0), fmt: (v: number) => `${v >= 0 ? '+' : ''}$${v.toFixed(2)}` },
-    { metric: 'Avg Loss', scalp: `$${s?.avg_loss?.toFixed(2) ?? '0.00'}`, pat: `$${p?.avg_loss?.toFixed(2) ?? '0.00'}`, deltaVal: -((p?.avg_loss ?? 0) - (s?.avg_loss ?? 0)), fmt: (v: number) => `${v >= 0 ? '+' : ''}$${Math.abs(v).toFixed(2)}` },
-    { metric: 'Max Consec. Losses', scalp: String(s?.max_consec_loss ?? 0), pat: String(p?.max_consec_loss ?? 0), deltaVal: -((p?.max_consec_loss ?? 0) - (s?.max_consec_loss ?? 0)), fmt: (v: number) => `${v >= 0 ? '+' : ''}${Math.round(v)}` },
-    { metric: 'Total Trades', scalp: String(s?.total_trades ?? 0), pat: String(p?.total_trades ?? 0), deltaVal: 0, fmt: () => '\u2014', noColor: true },
+  const statRows = [
+    { metric: 'Total PnL',           value: `$${s?.total_pnl?.toFixed(2) ?? '0.00'}`,           color: pnlColor(s?.total_pnl ?? 0) },
+    { metric: 'Win Rate',             value: `${s?.win_rate?.toFixed(1) ?? '0.0'}%`,              color: (s?.win_rate ?? 0) >= 50 ? GREEN : RED },
+    { metric: 'PnL / Share',          value: `$${s?.pnl_per_share?.toFixed(4) ?? '0.0000'}`,     color: pnlColor(s?.pnl_per_share ?? 0) },
+    { metric: 'Avg PnL / Trade',      value: `$${s?.avg_pnl_per_trade?.toFixed(2) ?? '0.00'}`,   color: pnlColor(s?.avg_pnl_per_trade ?? 0) },
+    { metric: 'Profit Factor',        value: fmtPF(s?.profit_factor),                             color: (s?.profit_factor ?? 0) >= 1.5 ? GREEN : (s?.profit_factor ?? 0) >= 1 ? '#f59e0b' : RED },
+    { metric: 'Avg Win',              value: `$${s?.avg_win?.toFixed(2) ?? '0.00'}`,              color: GREEN },
+    { metric: 'Avg Loss',             value: `$${s?.avg_loss?.toFixed(2) ?? '0.00'}`,             color: RED },
+    { metric: 'Max Consec. Losses',   value: String(s?.max_consec_loss ?? 0),                     color: (s?.max_consec_loss ?? 0) <= 3 ? SEC : RED },
+    { metric: 'Total Trades',         value: String(s?.total_trades ?? 0),                        color: SEC },
   ]
 
-  const scalpCurve = data?.scalp_curve ?? []
-  const patternCurve = data?.pattern_curve ?? []
-  const maxLen = Math.max(scalpCurve.length, patternCurve.length)
-  const curveData = Array.from({ length: maxLen }, (_, i) => ({
+  const curve = data?.scalp_curve ?? []
+  const curveData = curve.map((pt: { label: string; value: number }, i: number) => ({
     trade: i + 1,
-    scalp: scalpCurve[i]?.value ?? null,
-    pattern: patternCurve[i]?.value ?? null,
+    label: pt.label,
+    value: pt.value,
   }))
-  const allCurveVals = curveData.flatMap((d) => [d.scalp, d.pattern]).filter((v): v is number => v !== null)
-  const minCurve = allCurveVals.length ? Math.min(...allCurveVals) : 0
-  const maxCurve = allCurveVals.length ? Math.max(...allCurveVals) : 1
+  const vals = curveData.map((d: { value: number }) => d.value).filter((v: number) => v !== null)
+  const minCurve = vals.length ? Math.min(...vals) : 0
+  const maxCurve = vals.length ? Math.max(...vals) : 1
+
+  const symRows = data?.scalp_symbol_breakdown ?? []
 
   return (
     <div style={{ padding: '24px 28px', display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800, color: TEXT, letterSpacing: '-0.02em' }}>
-          STRATEGY COMPARISON
+          SCALPER PERFORMANCE
         </h2>
         <Badge type="live" label="SCALP" />
-        <span style={{ color: DIM, fontSize: '0.8rem' }}>vs</span>
-        <Badge type="pattern" label="PATTERN" />
       </div>
 
       <div style={{ display: 'flex', gap: 4 }}>
@@ -81,72 +75,36 @@ export function ComparisonPage() {
         ))}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-        <div>
-          <div style={{ marginBottom: 8 }}><Badge type="live" label="SCALP" /></div>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <MetricCard label="Total PnL" value={`$${s?.total_pnl?.toFixed(2) ?? '0.00'}`} color={pnlColor(s?.total_pnl ?? 0)} />
-            <MetricCard label="Win Rate" value={`${s?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(s?.win_rate ?? 0) >= 50 ? GREEN : RED} />
-            <MetricCard label="PnL/Share" value={`$${s?.pnl_per_share?.toFixed(4) ?? '0.0000'}`} color={pnlColor(s?.pnl_per_share ?? 0)} />
-            <MetricCard label="Profit Factor" value={fmtPF(s?.profit_factor)} color={(s?.profit_factor ?? 0) >= 1.5 ? GREEN : (s?.profit_factor ?? 0) >= 1 ? '#f59e0b' : RED} />
-          </div>
-        </div>
-        <div>
-          <div style={{ marginBottom: 8 }}><Badge type="pattern" label="PATTERN" /></div>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <MetricCard label="Total PnL" value={`$${p?.total_pnl?.toFixed(2) ?? '0.00'}`} color={pnlColor(p?.total_pnl ?? 0)} />
-            <MetricCard label="Win Rate" value={`${p?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(p?.win_rate ?? 0) >= 50 ? GREEN : RED} />
-            <MetricCard label="PnL/Share" value={`$${p?.pnl_per_share?.toFixed(4) ?? '0.0000'}`} color={pnlColor(p?.pnl_per_share ?? 0)} />
-            <MetricCard label="Profit Factor" value={fmtPF(p?.profit_factor)} color={(p?.profit_factor ?? 0) >= 1.5 ? GREEN : (p?.profit_factor ?? 0) >= 1 ? '#f59e0b' : RED} />
-          </div>
-        </div>
+      {/* Top metric cards */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <MetricCard label="Total PnL" value={`$${s?.total_pnl?.toFixed(2) ?? '0.00'}`} color={pnlColor(s?.total_pnl ?? 0)} />
+        <MetricCard label="Win Rate" value={`${s?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(s?.win_rate ?? 0) >= 50 ? GREEN : RED} />
+        <MetricCard label="PnL / Share" value={`$${s?.pnl_per_share?.toFixed(4) ?? '0.0000'}`} color={pnlColor(s?.pnl_per_share ?? 0)} />
+        <MetricCard label="Profit Factor" value={fmtPF(s?.profit_factor)} color={(s?.profit_factor ?? 0) >= 1.5 ? GREEN : (s?.profit_factor ?? 0) >= 1 ? '#f59e0b' : RED} />
+        <MetricCard label="Total Trades" value={String(s?.total_trades ?? 0)} color={SEC} />
       </div>
 
+      {/* Equity curve + stats table */}
       <div style={{ display: 'flex', gap: 16 }}>
-        <div style={{ flex: 4, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
-          <SectionHeader>Side-by-Side Metrics</SectionHeader>
-          <table>
-            <thead>
-              <tr>
-                <th>Metric</th>
-                <th style={{ color: GREEN }}>Scalp</th>
-                <th style={{ color: PURPLE }}>Pattern</th>
-                <th>Delta</th>
-              </tr>
-            </thead>
-            <tbody>
-              {compRows.map((row) => (
-                <tr key={row.metric}>
-                  <td style={{ color: SEC }}>{row.metric}</td>
-                  <td style={{ fontFamily: 'JetBrains Mono, monospace', color: GREEN }}>{row.scalp}</td>
-                  <td style={{ fontFamily: 'JetBrains Mono, monospace', color: PURPLE }}>{row.pat}</td>
-                  <td style={{ fontFamily: 'JetBrains Mono, monospace', color: row.noColor ? SEC : liftColor(row.deltaVal), fontWeight: 600 }}>
-                    {row.noColor ? '\u2014' : row.fmt(row.deltaVal)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
         <div style={{ flex: 6, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
-          <SectionHeader>Cumulative PnL by Trade #</SectionHeader>
+          <SectionHeader>Cumulative PnL by Trade</SectionHeader>
           {curveData.length > 0 ? (
             <ResponsiveContainer width="100%" height={260}>
               <LineChart data={curveData} margin={{ top: 4, right: 8, left: 0, bottom: 0 }}>
                 <XAxis dataKey="trade" tick={{ fill: DIM, fontSize: 10, fontFamily: 'JetBrains Mono' }} tickLine={false} axisLine={false} />
-                <YAxis domain={minCurve === maxCurve ? [minCurve - 1, maxCurve + 1] : [minCurve, maxCurve]}
+                <YAxis
+                  domain={minCurve === maxCurve ? [minCurve - 1, maxCurve + 1] : [minCurve, maxCurve]}
                   tick={{ fill: DIM, fontSize: 10, fontFamily: 'JetBrains Mono' }} tickLine={false} axisLine={false}
-                  tickFormatter={(v) => `$${v.toFixed(0)}`} width={65} />
+                  tickFormatter={(v) => `$${v.toFixed(0)}`} width={65}
+                />
                 <ReferenceLine y={0} stroke={BORDER} strokeDasharray="3 3" />
                 <Tooltip
                   contentStyle={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 8, fontFamily: 'JetBrains Mono', fontSize: '0.78rem', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}
                   labelStyle={{ color: SEC }}
                   labelFormatter={(v) => `Trade #${v}`}
-                  formatter={(value, name) => [`$${(value as number)?.toFixed(2)}`, (name as string) === 'scalp' ? 'Scalp' : 'Pattern']}
+                  formatter={(value) => [`$${(value as number)?.toFixed(2)}`, 'Cumulative PnL']}
                 />
-                <Line type="monotone" dataKey="scalp" stroke={GREEN} strokeWidth={2} dot={false} connectNulls name="scalp" />
-                <Line type="monotone" dataKey="pattern" stroke={PURPLE} strokeWidth={2} dot={false} connectNulls name="pattern" />
+                <Line type="monotone" dataKey="value" stroke={GREEN} strokeWidth={2} dot={false} connectNulls />
               </LineChart>
             </ResponsiveContainer>
           ) : (
@@ -154,52 +112,59 @@ export function ComparisonPage() {
               No data
             </div>
           )}
-          <div style={{ display: 'flex', gap: 20, marginTop: 10, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem' }}>
-            <span style={{ color: GREEN }}>&mdash; Scalp ({scalpCurve.length} trades)</span>
-            <span style={{ color: PURPLE }}>&mdash; Pattern ({patternCurve.length} trades)</span>
+          <div style={{ marginTop: 10, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.75rem', color: GREEN }}>
+            &mdash; Scalper ({curve.length} trades)
           </div>
+        </div>
+
+        <div style={{ flex: 4, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
+          <SectionHeader>Full Stats</SectionHeader>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <tbody>
+              {statRows.map((row) => (
+                <tr key={row.metric} style={{ borderBottom: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: '8px 0', color: SEC, fontSize: '0.78rem' }}>{row.metric}</td>
+                  <td style={{ padding: '8px 0', fontFamily: 'JetBrains Mono, monospace', color: row.color, textAlign: 'right', fontSize: '0.82rem', fontWeight: 600 }}>
+                    {row.value}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 16 }}>
-        {[
-          { label: 'SCALP', rows: data?.scalp_symbol_breakdown, color: GREEN, type: 'live' },
-          { label: 'PATTERN', rows: data?.pattern_symbol_breakdown, color: PURPLE, type: 'pattern' },
-        ].map(({ label, rows, color, type }) => (
-          <div key={label} style={{ flex: 1, background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
-            <div style={{ marginBottom: 12 }}><Badge type={type} label={label} /></div>
-            {rows && rows.length > 0 ? (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Symbol</th>
-                    <th>Win%</th>
-                    <th>Total PnL</th>
-                    <th>PnL/Sh</th>
-                    <th>Trades</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(rows as { symbol: string; win_rate: number; total_pnl: number; trades: number; pnl_per_share: number }[]).map((r) => (
-                    <tr key={r.symbol}>
-                      <td style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color }}>{r.symbol}</td>
-                      <td style={{ color: SEC }}>{r.win_rate.toFixed(1)}%</td>
-                      <td style={{ color: r.total_pnl >= 0 ? GREEN : RED, fontFamily: 'JetBrains Mono, monospace' }}>
-                        {r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(2)}
-                      </td>
-                      <td style={{ color: r.pnl_per_share >= 0 ? GREEN : RED, fontFamily: 'JetBrains Mono, monospace' }}>
-                        {r.pnl_per_share >= 0 ? '+' : ''}${r.pnl_per_share.toFixed(4)}
-                      </td>
-                      <td style={{ color: DIM }}>{r.trades}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <div style={{ color: DIM, fontSize: '0.78rem' }}>No data</div>
-            )}
-          </div>
-        ))}
+      {/* Symbol breakdown */}
+      <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
+        <SectionHeader>By Symbol</SectionHeader>
+        {symRows.length > 0 ? (
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                {['Symbol', 'Win %', 'Total PnL', 'PnL / Share', 'Trades'].map((h) => (
+                  <th key={h} style={{ padding: '6px 0', textAlign: h === 'Symbol' ? 'left' : 'right', fontSize: '0.7rem', color: DIM, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', borderBottom: `1px solid ${BORDER}` }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {(symRows as { symbol: string; win_rate: number; total_pnl: number; trades: number; pnl_per_share: number }[]).map((r) => (
+                <tr key={r.symbol} style={{ borderBottom: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: '9px 0', fontWeight: 700, fontFamily: 'JetBrains Mono, monospace', color: GREEN }}>{r.symbol}</td>
+                  <td style={{ padding: '9px 0', textAlign: 'right', color: r.win_rate >= 50 ? GREEN : RED, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.82rem' }}>{r.win_rate.toFixed(1)}%</td>
+                  <td style={{ padding: '9px 0', textAlign: 'right', color: r.total_pnl >= 0 ? GREEN : RED, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.82rem' }}>
+                    {r.total_pnl >= 0 ? '+' : ''}${r.total_pnl.toFixed(2)}
+                  </td>
+                  <td style={{ padding: '9px 0', textAlign: 'right', color: r.pnl_per_share >= 0 ? GREEN : RED, fontFamily: 'JetBrains Mono, monospace', fontSize: '0.82rem' }}>
+                    {r.pnl_per_share >= 0 ? '+' : ''}${r.pnl_per_share.toFixed(4)}
+                  </td>
+                  <td style={{ padding: '9px 0', textAlign: 'right', color: DIM, fontSize: '0.82rem' }}>{r.trades}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div style={{ color: DIM, fontSize: '0.78rem' }}>No data</div>
+        )}
       </div>
     </div>
   )

@@ -1,7 +1,7 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
-  Activity, FlaskConical, Search, GitCompare,
-  Terminal, Bot, ShieldAlert, LogOut, X, BarChart2, Radio,
+  Activity, Search, GitCompare,
+  Terminal, Bot, ShieldAlert, LogOut, X, Radio,
   LayoutDashboard, LineChart,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
@@ -28,7 +28,6 @@ const NAV_GROUPS = [
     label: 'Live Trading',
     items: [
       { to: '/scalper', icon: Activity, label: 'Scalper', tag: 'LIVE', end: false },
-      { to: '/pattern', icon: BarChart2, label: 'Pattern', tag: 'LIVE', end: false },
       { to: '/signals', icon: Radio, label: 'Signals', tag: 'LIVE', end: false },
     ],
   },
@@ -36,7 +35,6 @@ const NAV_GROUPS = [
     label: 'Simulation',
     items: [
       { to: '/backtest', icon: Search, label: 'Backtest', tag: 'SIM', end: false },
-      { to: '/patterns', icon: FlaskConical, label: 'Pattern Lab', tag: 'SIM', end: false },
     ],
   },
   {

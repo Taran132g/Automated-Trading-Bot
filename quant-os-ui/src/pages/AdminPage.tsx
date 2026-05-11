@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { SectionHeader } from '@/components/ui/SectionHeader'
-import { adminService, configService, patternConfigService } from '@/services/api'
+import { adminService, configService } from '@/services/api'
 
 const CARD = '#12121c'
 const BORDER = 'rgba(255,255,255,0.06)'
@@ -70,7 +70,6 @@ export function AdminPage() {
   const [authUrlData, setAuthUrlData] = useState<string | null>(null)
   const [callbackUrl, setCallbackUrl] = useState('')
   const [configForm, setConfigForm] = useState<ConfigForm | null>(null)
-  const [patternForm, setPatternForm] = useState<ConfigForm | null>(null)
   const [actionResult, setActionResult] = useState<string | null>(null)
 
   const { data: status, refetch: refetchStatus } = useQuery({
@@ -80,10 +79,8 @@ export function AdminPage() {
   })
 
   const { data: cfg } = useQuery({ queryKey: ['config'], queryFn: () => configService.get().then((r) => r.data) })
-  const { data: patternCfg } = useQuery({ queryKey: ['config-pattern'], queryFn: () => patternConfigService.get().then((r) => r.data) })
 
   useEffect(() => { if (cfg && !configForm) setConfigForm(cfg as Record<string, string | number>) }, [cfg, configForm])
-  useEffect(() => { if (patternCfg && !patternForm) setPatternForm(patternCfg as Record<string, string | number>) }, [patternCfg, patternForm])
 
   const startMut = useMutation({ mutationFn: adminService.start, onSuccess: () => { refetchStatus(); setActionResult('Backend started') } })
   const stopMut = useMutation({ mutationFn: adminService.stop, onSuccess: () => { refetchStatus(); setActionResult('Backend stopped') } })
@@ -92,7 +89,6 @@ export function AdminPage() {
   const authUrlMut = useMutation({ mutationFn: adminService.getSchwabAuthUrl, onSuccess: (r) => setAuthUrlData(r.data.authorization_url) })
   const saveTokensMut = useMutation({ mutationFn: (url: string) => adminService.saveSchwabTokens(url), onSuccess: () => { qc.invalidateQueries({ queryKey: ['admin-status-page'] }); setActionResult('Tokens saved') } })
   const configMut = useMutation({ mutationFn: (d: ConfigForm) => configService.update(d), onSuccess: () => setActionResult('Config saved') })
-  const patternConfigMut = useMutation({ mutationFn: (d: ConfigForm) => patternConfigService.update(d), onSuccess: () => setActionResult('Pattern config saved') })
 
   const backendOnline = status?.loop_running || status?.trader_running
 
@@ -290,72 +286,6 @@ export function AdminPage() {
         )}
       </div>
 
-      {/* Pattern config */}
-      <div style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 10, padding: '18px 20px' }}>
-        <SectionHeader>Pattern Strategy</SectionHeader>
-        {patternForm && (
-          <>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-              {[
-                { key: 'pattern_symbols', label: 'Pattern Symbols', type: 'text' },
-                { key: 'pattern_live_position_size', label: 'Live Position Size', type: 'number' },
-                { key: 'pattern_paper_position_size', label: 'Paper Position Size', type: 'number' },
-              ].map(({ key, label, type }) => (
-                <div key={key}>
-                  <label style={{ fontSize: '0.7rem', color: SEC, display: 'block', marginBottom: 6 }}>{label}</label>
-                  <input type={type} value={patternForm[key] as string ?? ''} onChange={(e) => setPatternForm({ ...patternForm, [key]: type === 'number' ? Number(e.target.value) : e.target.value })}
-                    style={inputStyle} />
-                </div>
-              ))}
-            </div>
-
-            <div style={{ marginTop: 24, paddingTop: 18, borderTop: `1px solid ${BORDER}` }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
-                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: SEC, textTransform: 'uppercase', letterSpacing: '1px' }}>
-                  Kelly Criterion Sizing
-                </span>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                  <div onClick={() => setPatternForm({ ...patternForm, pattern_kelly_enabled: !patternForm.pattern_kelly_enabled })}
-                    style={{ width: 36, height: 20, borderRadius: 10, position: 'relative', cursor: 'pointer', background: patternForm.pattern_kelly_enabled ? ACCENT : '#191925', transition: 'background 0.2s' }}>
-                    <div style={{ position: 'absolute', top: 3, left: patternForm.pattern_kelly_enabled ? 18 : 3, width: 14, height: 14, borderRadius: '50%', background: patternForm.pattern_kelly_enabled ? '#06060b' : '#33334a', transition: 'left 0.2s' }} />
-                  </div>
-                  <span style={{ fontSize: '0.72rem', color: patternForm.pattern_kelly_enabled ? ACCENT : DIM }}>
-                    {patternForm.pattern_kelly_enabled ? 'Enabled' : 'Disabled'}
-                  </span>
-                </label>
-              </div>
-              <div style={{ fontSize: '0.7rem', color: DIM, marginBottom: 14 }}>
-                Scales entry size by historical win rate and reward/risk. Optimized independently from scalping.
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 14 }}>
-                {[
-                  { key: 'pattern_kelly_fraction', label: 'Kelly Fraction', min: 0.1, max: 1.0, step: 0.05, hint: '0.5 = half-Kelly' },
-                  { key: 'pattern_kelly_min_trades', label: 'Min Trades', min: 5, max: 200, step: 5, hint: 'Per-symbol trades needed' },
-                  { key: 'pattern_kelly_lookback_days', label: 'Lookback Days', min: 1, max: 365, step: 1, hint: 'Days of history' },
-                  { key: 'pattern_kelly_min_multiplier', label: 'Min Multiplier', min: 0.05, max: 1.0, step: 0.05, hint: 'Floor size multiplier' },
-                  { key: 'pattern_kelly_max_multiplier', label: 'Max Multiplier', min: 1.0, max: 5.0, step: 0.25, hint: 'Cap size multiplier' },
-                ].map(({ key, label, min, max, step, hint }) => (
-                  <div key={key}>
-                    <label style={{ fontSize: '0.7rem', color: SEC, display: 'block', marginBottom: 6 }} title={hint}>{label}</label>
-                    <input type="number" min={min} max={max} step={step} value={patternForm[key] as number ?? ''} onChange={(e) => setPatternForm({ ...patternForm, [key]: Number(e.target.value) })}
-                      style={inputStyle} />
-                    <div style={{ fontSize: '0.6rem', color: DIM, marginTop: 4 }}>{hint}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </>
-        )}
-        {patternForm && (
-          <button onClick={() => patternConfigMut.mutate(patternForm)} style={{
-            marginTop: 18, padding: '10px 22px', background: ACCENT, border: 'none', borderRadius: 8,
-            color: '#06060b', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700,
-            transition: 'all 0.15s',
-          }}>
-            Save Pattern Config
-          </button>
-        )}
-      </div>
     </div>
   )
 }

@@ -51,12 +51,6 @@ export const paperService = {
   getPerformance: () => api.get('/paper/performance'),
 }
 
-export const patternService = {
-  getState: (mode = 'live') => api.get(`/patterns/state?mode=${mode}`),
-  getEquityCurve: (range = 'today', mode = 'live') => api.get(`/patterns/equity-curve?range=${range}&mode=${mode}`),
-  getPerformance: (mode = 'live') => api.get(`/patterns/performance?mode=${mode}`),
-}
-
 export const comparisonService = {
   getStats: (range = 'all') => api.get(`/comparison/stats?range=${range}`),
 }
@@ -80,11 +74,6 @@ export const adminService = {
 export const configService = {
   get: () => api.get('/config'),
   update: (cfg: Record<string, unknown>) => api.put('/config', cfg),
-}
-
-export const patternConfigService = {
-  get: () => api.get('/config/pattern'),
-  update: (cfg: Record<string, unknown>) => api.put('/config/pattern', cfg),
 }
 
 export const agentService = {

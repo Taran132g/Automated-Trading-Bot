@@ -126,22 +126,10 @@ def get_comparison_stats(
     since = _get_today_start() if range == "today" else 0.0
 
     scalp_exits = _load_exits("live_trades", since)
-    pattern_exits = _load_exits("pattern_trades", since)
-
-    s_stats = _compute_stats(scalp_exits)
-    p_stats = _compute_stats(pattern_exits)
-
-    # Curves always use all-time data for full context
     scalp_all = _load_exits("live_trades") if since > 0 else scalp_exits
-    pattern_all = _load_exits("pattern_trades") if since > 0 else pattern_exits
-    s_curve = _cumulative_curve(scalp_all)
-    p_curve = _cumulative_curve(pattern_all)
 
     return {
-        "scalp_stats": s_stats,
-        "pattern_stats": p_stats,
-        "scalp_curve": s_curve,
-        "pattern_curve": p_curve,
+        "scalp_stats": _compute_stats(scalp_exits),
+        "scalp_curve": _cumulative_curve(scalp_all),
         "scalp_symbol_breakdown": _symbol_breakdown(scalp_exits),
-        "pattern_symbol_breakdown": _symbol_breakdown(pattern_exits),
     }
