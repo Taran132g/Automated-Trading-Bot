@@ -26,26 +26,6 @@ DEFAULT_CONFIG = {
     # PI-adjusted Kelly: scales multiplier by intraday PnL/share vs neutral
     "pi_neutral": 0.001,          # Neutral PnL/share ($0.001 = breakeven execution quality)
     "pi_kelly_weight": 0.5,       # How aggressively PI shifts the Kelly multiplier (log-scale)
-    # Pattern strategy (separate symbol list, position sizes, and plain Kelly — no PI)
-    "pattern_symbols": os.getenv("PATTERN_SYMBOLS", ""),
-    "pattern_live_position_size": int(os.getenv("PATTERN_LIVE_POSITION_SIZE", "100")),
-    "pattern_paper_position_size": int(os.getenv("PATTERN_PAPER_POSITION_SIZE", "1000")),
-    "pattern_min_confidence": 0.65,        # Minimum breakout confidence to enter (raised from 0.60)
-    "pattern_min_rr": 1.5,                 # Minimum reward:risk ratio required before entry
-    "pattern_hold_seconds": 1800,          # Hard time stop (30 minutes)
-    "pattern_atr_period": 14,              # Bars used to compute ATR
-    "pattern_atr_entry_max_pct": 0.004,    # Skip entry if ATR > 0.4% of price (tightened from 0.5%)
-    "pattern_atr_stop_multiplier": 2.0,    # ATR stop = entry ± (2.0 × ATR) — widened to reduce premature exits
-    # Pattern allowlist: only trade patterns in this comma-separated list.
-    # Simulation showed range_breakout and symmetrical_triangle are net-negative.
-    # bull_flag, bear_flag, head_and_shoulders, inverse_head_and_shoulders are profitable.
-    "pattern_allowlist": "bull_flag,bear_flag,head_and_shoulders,inverse_head_and_shoulders,double_top,double_bottom",
-    "pattern_kelly_enabled": True,
-    "pattern_kelly_fraction": 0.5,
-    "pattern_kelly_min_trades": 10,
-    "pattern_kelly_lookback_days": 30,
-    "pattern_kelly_min_multiplier": 0.25,
-    "pattern_kelly_max_multiplier": 2.0,
 }
 
 def load_config() -> Dict[str, Any]:

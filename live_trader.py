@@ -551,7 +551,6 @@ class LiveTrader:
         self.position_entry_times: Dict[str, float] = {}
         self.position_entry_prices: Dict[str, float] = {}  # Track entry prices for PnL
         self._time_stop_extended: Dict[str, float] = {}   # symbol -> until-when to skip time-stop (after STAY)
-        self.pattern_buckets: Dict[str, str] = {}  # symbol -> aligned/countertrend/neutral
         self.daily_pnl: float = 0.0
         self.daily_date: str = time.strftime("%Y-%m-%d")
         self._intraday_pnls: Dict[str, List[float]] = {}  # symbol -> today's closed-trade PnLs for Kelly
@@ -851,16 +850,11 @@ class LiveTrader:
                     price REAL,
                     entry_price REAL,
                     pnl REAL,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    pattern_bucket TEXT DEFAULT 'neutral'
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
-            # Migrate: add pattern_bucket if missing from existing DB
-            cols = [r[1] for r in cur.execute("PRAGMA table_info(live_trades)").fetchall()]
-            if "pattern_bucket" not in cols:
-                cur.execute("ALTER TABLE live_trades ADD COLUMN pattern_bucket TEXT DEFAULT 'neutral'")
-            # Filtered alerts table: logs neutral/countertrend signals that were skipped
+            # Filtered alerts table: logs signals that were skipped
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS filtered_alerts (
@@ -869,11 +863,6 @@ class LiveTrader:
                     symbol TEXT,
                     direction TEXT,
                     price REAL,
-                    pattern_bucket TEXT,
-                    chart_bias TEXT,
-                    size_factor REAL,
-                    bull_score REAL,
-                    bear_score REAL,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
                 """
@@ -938,8 +927,8 @@ class LiveTrader:
                         return float(quote[key])
         return float(fallback)
 
-    def _log_live_trade(self, *, symbol: str, side: str, qty: int, price: float, entry_price: float, pnl: float, pattern_bucket: str = "neutral") -> None:
-        """Log live trade to database for comparison with paper trades."""
+    def _log_live_trade(self, *, symbol: str, side: str, qty: int, price: float, entry_price: float, pnl: float) -> None:
+        """Log live trade to database."""
         LOGGER.info(
             "[LIVE] %s %s %s @ $%.4f | Entry: $%.4f | PnL: $%.2f | Daily PnL: $%.2f",
             side, qty, symbol, price, entry_price, pnl, self.daily_pnl
@@ -948,26 +937,10 @@ class LiveTrader:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO live_trades (timestamp, symbol, side, qty, price, entry_price, pnl, pattern_bucket)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO live_trades (timestamp, symbol, side, qty, price, entry_price, pnl)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (time.time(), symbol, side, qty, price, entry_price, pnl, pattern_bucket)
-            )
-            conn.commit()
-
-    def _log_filtered_alert(self, *, symbol: str, direction: str, price: float,
-                            pattern_bucket: str, chart_bias: str,
-                            size_factor: float, bull_score: float, bear_score: float) -> None:
-        """Log a filtered (neutral/countertrend) alert to DB for post-market analysis."""
-        with self._open_conn() as conn:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                INSERT INTO filtered_alerts
-                    (timestamp, symbol, direction, price, pattern_bucket, chart_bias, size_factor, bull_score, bear_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (time.time(), symbol, direction, price, pattern_bucket, chart_bias, size_factor, bull_score, bear_score),
+                (time.time(), symbol, side, qty, price, entry_price, pnl)
             )
             conn.commit()
 
@@ -1182,8 +1155,7 @@ class LiveTrader:
                 self._intraday_qty[symbol] = self._intraday_qty.get(symbol, 0) + qty
             
             # Log trade to database
-            self._log_live_trade(symbol=symbol, side=side, qty=qty, price=price, entry_price=entry_price, pnl=pnl,
-                                 pattern_bucket=self.pattern_buckets.get(symbol, "neutral"))
+            self._log_live_trade(symbol=symbol, side=side, qty=qty, price=price, entry_price=entry_price, pnl=pnl)
             
             delta = qty if side in {"BUY", "COVER"} else -qty
             self._apply_position_delta(symbol, delta)
@@ -1931,72 +1903,17 @@ class LiveTrader:
                 price=price,
             )
 
-    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, target_limit_price: float = 0.0, pattern_info: dict = None) -> None:
+    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, target_limit_price: float = 0.0) -> None:
         """Handle a single alert: flip position or enter new one."""
-        # Reject immediately if shutdown is in progress (kill switch or stop-loss triggered).
         if self._shutdown_event.is_set():
             LOGGER.warning("[%s] Shutdown in progress; rejecting alert %s for %s", self.name, alert_id, symbol)
             return
 
-        # Check if symbol is allowed for live trading
         if symbol not in self.live_symbols:
             LOGGER.info("Skipping live trade for %s (not in LIVE_SYMBOLS)", symbol)
             return
 
-        # 1. Pattern Lab Filter (The Skip Logic)
-        size_factor = 1.0
-        chart_bias = "neutral"
-        aligned = False
-        pattern_bucket = "neutral"
-        bull_score = 0.0
-        bear_score = 0.0
-        if pattern_info:
-            decision = pattern_info.get("decision", "enter_or_manage")
-            size_factor = 1.0  # pattern sizing handled by PatternTrader; scalper always uses base size
-            chart_bias = pattern_info.get("chart_bias", "neutral")
-            aligned = pattern_info.get("pattern_alignment", False)
-            bull_score = pattern_info.get("bullish_score", 0.0)
-            bear_score = pattern_info.get("bearish_score", 0.0)
-            if aligned:
-                pattern_bucket = "aligned"
-            elif chart_bias != "neutral":
-                pattern_bucket = "countertrend"
-
-            self.pattern_buckets[symbol] = pattern_bucket
-
-            # Check if this alert would close an existing opposing position.
-            # Exits are always allowed regardless of alignment; only entries require alignment.
-            with self._lock:
-                current_position = self.positions.get(symbol, 0)
-            is_exit = (direction == "ask-heavy" and current_position > 0) or \
-                      (direction == "bid-heavy" and current_position < 0)
-
-            if not is_exit:
-                # Execution filter: log non-aligned signals but allow them through
-                if pattern_bucket in ("neutral", "countertrend"):
-                    self._log_filtered_alert(
-                        symbol=symbol, direction=direction, price=price,
-                        pattern_bucket=pattern_bucket, chart_bias=chart_bias,
-                        size_factor=size_factor, bull_score=bull_score, bear_score=bear_score,
-                    )
-                    LOGGER.info(
-                        "[%s] [UNALIGNED] Allowing %s %s alert - bucket=%s (bias=%s, bull=%.2f, bear=%.2f)",
-                        self.name, direction, symbol, pattern_bucket, chart_bias, bull_score, bear_score,
-                    )
-
-                if decision == "skip":
-                    LOGGER.info("[%s] [FILTER] Skipping %s %s alert due to pattern mismatch (bias=%s)",
-                                self.name, direction, symbol, chart_bias)
-                    return
-            else:
-                LOGGER.info(
-                    "[%s] [EXIT] Allowing unaligned %s %s exit - bucket=%s (bias=%s, bull=%.2f, bear=%.2f)",
-                    self.name, direction, symbol, pattern_bucket, chart_bias, bull_score, bear_score,
-                )
-
-        # 2. Dynamic Sizing
-        # Start with the pattern-aligned size factor (1.0x – 1.5x from chart engine).
-        current_initial_size = int(self.initial_entry_size * size_factor)
+        current_initial_size = int(self.initial_entry_size)
 
         # 2a. Kelly Criterion overlay — scale further based on historical edge.
         # Queries live_trades for this symbol (falls back to global stats when thin).
@@ -2005,7 +1922,7 @@ class LiveTrader:
         current_initial_size = int(current_initial_size * kelly_mult)
 
         if current_initial_size <= 0:
-            LOGGER.info("[%s] [FILTER] Skipping %s %s due to size_factor/kelly yielding 0 shares",
+            LOGGER.info("[%s] [FILTER] Skipping %s %s due to kelly sizing yielding 0 shares",
                         self.name, direction, symbol)
             return
 
@@ -2079,10 +1996,6 @@ class LiveTrader:
                         price=target_limit_price if target_limit_price else price,
                         order_type="LIMIT",
                     )
-                    LOGGER.info(
-                        "[%s] [PATTERN] %s %s | bias=%s aligned=%s bucket=%s size_factor=%.2f bull=%.2f bear=%.2f",
-                        self.name, symbol, direction, chart_bias, aligned, pattern_bucket, size_factor, bull_score, bear_score,
-                    )
                 elif direction == "bid-heavy":
                     # Check if already long - skip to avoid stacking
                     if position > 0:
@@ -2128,11 +2041,6 @@ class LiveTrader:
                         price=target_limit_price if target_limit_price else price,
                         order_type="LIMIT",
                     )
-                    LOGGER.info(
-                        "[%s] [PATTERN] %s %s | bias=%s aligned=%s bucket=%s size_factor=%.2f bull=%.2f bear=%.2f",
-                        self.name, symbol, direction, chart_bias, aligned, pattern_bucket, size_factor, bull_score, bear_score,
-                    )
-
                 self._order_in_flight.discard(symbol)
                 break
 
@@ -2166,7 +2074,6 @@ class LiveTrader:
         persist_state: bool = True,
         range_cents: float = 0.0,
         target_limit_price: float = 0.0,
-        pattern_info: dict = None,
     ) -> None:
         """Process a single alert: update state and handle order execution."""
         with self._lock:
@@ -2179,7 +2086,7 @@ class LiveTrader:
                 return
             self.last_alert_id = int(alert_id)
 
-        self._handle_alert(alert_id, symbol, direction, price, range_cents, target_limit_price, pattern_info)
+        self._handle_alert(alert_id, symbol, direction, price, range_cents, target_limit_price)
         
         if persist_state and not self.dry_run:
             self._save_state()

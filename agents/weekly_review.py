@@ -6,7 +6,6 @@ alerts, and account equity — replaces the old alert_quality + optimizer report
 """
 
 import logging
-import sqlite3
 from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,7 +18,6 @@ from agents.base import get_db, save_report, send_telegram, get_previous_reports
 LOGGER = logging.getLogger("agents.weekly_review")
 ET = pytz.timezone("America/New_York")
 LOOKBACK_DAYS = 5
-DB_PATH = Path(__file__).parent.parent / "penny_basing.db"
 
 
 def _week_range() -> tuple[float, float]:
@@ -46,26 +44,6 @@ def collect_stats() -> dict:
             "WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC",
             conn, params=(cutoff_ts, now_ts),
         )
-
-    # Optional tables (may not exist)
-    pattern_trades = pd.DataFrame()
-    claude_log = pd.DataFrame()
-    try:
-        with closing(sqlite3.connect(str(DB_PATH))) as conn:
-            pattern_trades = pd.read_sql_query(
-                "SELECT * FROM pattern_trades WHERE timestamp >= ? AND timestamp <= ?",
-                conn, params=(cutoff_ts, now_ts),
-            )
-    except Exception:
-        pass
-    try:
-        with closing(sqlite3.connect(str(DB_PATH))) as conn:
-            claude_log = pd.read_sql_query(
-                "SELECT * FROM pattern_claude_log WHERE timestamp >= ? AND timestamp <= ?",
-                conn, params=(cutoff_ts, now_ts),
-            )
-    except Exception:
-        pass
 
     stats: dict = {
         "lookback_days": LOOKBACK_DAYS,
@@ -153,49 +131,6 @@ def collect_stats() -> dict:
 
         stats["live"] = live_stats
 
-    # --- Pattern trades ---
-    if not pattern_trades.empty:
-        exits = pattern_trades[pattern_trades["side"].isin(["SELL", "COVER"])]
-        pat_stats: dict = {
-            "total_exits": len(exits),
-            "total_pnl": round(float(pattern_trades["pnl"].fillna(0).sum()), 4),
-        }
-        if not exits.empty:
-            pat_stats["win_rate"] = round(float((exits["pnl"] > 0).sum()) / len(exits) * 100, 1)
-            by_pat = []
-            for pat, grp in pattern_trades.groupby("pattern"):
-                pat_exits = grp[grp["side"].isin(["SELL", "COVER"])]
-                by_pat.append({
-                    "pattern": pat,
-                    "exits": len(pat_exits),
-                    "total_pnl": round(float(grp["pnl"].fillna(0).sum()), 4),
-                    "win_rate": round(float((pat_exits["pnl"] > 0).sum()) / len(pat_exits) * 100, 1) if len(pat_exits) > 0 else None,
-                })
-            pat_stats["by_pattern"] = sorted(by_pat, key=lambda x: x["total_pnl"], reverse=True)
-            exit_rows = pattern_trades[pattern_trades["exit_reason"].notna() & (pattern_trades["exit_reason"] != "entry")]
-            by_exit = []
-            for reason, grp in exit_rows.groupby("exit_reason"):
-                by_exit.append({
-                    "reason": reason,
-                    "count": len(grp),
-                    "total_pnl": round(float(grp["pnl"].fillna(0).sum()), 4),
-                })
-            pat_stats["by_exit_reason"] = sorted(by_exit, key=lambda x: x["total_pnl"], reverse=True)
-        stats["pattern"] = pat_stats
-
-    # --- Claude filter stats ---
-    if not claude_log.empty:
-        approved = claude_log[claude_log["approved"] == 1]
-        rejected = claude_log[claude_log["approved"] == 0]
-        stats["claude_filter"] = {
-            "total_evaluated": len(claude_log),
-            "approved": len(approved),
-            "rejected": len(rejected),
-            "approval_rate": round(len(approved) / len(claude_log) * 100, 1),
-            "avg_rr_approved": round(float(approved["rr_ratio"].mean()), 2) if len(approved) > 0 else None,
-            "avg_rr_rejected": round(float(rejected["rr_ratio"].mean()), 2) if len(rejected) > 0 else None,
-        }
-
     # --- Alert stats ---
     if not alerts.empty:
         by_dir = []
@@ -239,23 +174,6 @@ def format_report(stats: dict) -> str:
             if worst["window"] != best["window"]:
                 lines.append(f"*Worst window:* `{worst['window']}` — {worst['win_rate']}% WR  ${worst['avg_pnl']:+.4f} avg")
 
-    pat = stats.get("pattern", {})
-    if pat:
-        lines.append(
-            f"\n*Pattern:* `{pat['total_exits']}` exits  `{pat.get('win_rate', 'N/A')}%` WR  `${pat['total_pnl']:+.4f}`"
-        )
-        for p in pat.get("by_pattern", []):
-            e = "🟢" if p["total_pnl"] >= 0 else "🔴"
-            wr = f"{p['win_rate']}%" if p["win_rate"] is not None else "N/A"
-            lines.append(f"  {e} `{p['pattern']}` — {p['exits']} exits  {wr} WR  ${p['total_pnl']:+.4f}")
-
-    cf = stats.get("claude_filter", {})
-    if cf:
-        lines.append(
-            f"\n🤖 *Claude Filter:* `{cf['approved']}/{cf['total_evaluated']}` approved "
-            f"(`{cf['approval_rate']}%`)  R:R approved=`{cf.get('avg_rr_approved')}` / rejected=`{cf.get('avg_rr_rejected')}`"
-        )
-
     return "\n".join(lines)
 
 
@@ -265,7 +183,7 @@ def _get_week_daily_analyses(cutoff_ts: float) -> list[str]:
         with closing(get_db()) as conn:
             rows = conn.execute(
                 "SELECT agent_name, timestamp, report_markdown FROM agent_reports "
-                "WHERE agent_name IN ('scalper_analyst', 'pattern_analyst') AND timestamp >= ? "
+                "WHERE agent_name = 'scalper_analyst' AND timestamp >= ? "
                 "ORDER BY timestamp ASC",
                 (cutoff_ts,),
             ).fetchall()
@@ -326,35 +244,6 @@ def _build_claude_prompt(stats: dict, previous: list[dict], daily_analyses: list
     else:
         live_str = "No scalper trades this week."
 
-    # Pattern trades block
-    pat = stats.get("pattern", {})
-    if pat:
-        by_pat_lines = "  ".join(
-            f"{p['pattern']} ${p['total_pnl']:+.4f} {p['win_rate']}%WR {p['exits']}exits"
-            for p in pat.get("by_pattern", [])
-        )
-        by_exit_lines = "  ".join(
-            f"{e['reason']}×{e['count']} ${e['total_pnl']:+.4f}"
-            for e in pat.get("by_exit_reason", [])
-        )
-        pat_str = (
-            f"Exits: {pat['total_exits']}  WR: {pat.get('win_rate', 'N/A')}%  Total PnL: ${pat['total_pnl']:+.4f}\n"
-            f"By pattern: {by_pat_lines or 'N/A'}\n"
-            f"By exit reason: {by_exit_lines or 'N/A'}"
-        )
-    else:
-        pat_str = "No pattern trades this week."
-
-    # Claude filter block
-    cf = stats.get("claude_filter", {})
-    cf_str = ""
-    if cf:
-        cf_str = (
-            f"\nClaude filter: {cf['total_evaluated']} evaluated  "
-            f"{cf['approved']} approved ({cf['approval_rate']}%)  {cf['rejected']} rejected  "
-            f"Avg R:R approved={cf.get('avg_rr_approved')} rejected={cf.get('avg_rr_rejected')}"
-        )
-
     # Daily analyses from this week
     daily_ctx = "\n---\n".join(daily_analyses) if daily_analyses else "No daily analyses this week."
 
@@ -379,8 +268,6 @@ def _build_claude_prompt(stats: dict, previous: list[dict], daily_analyses: list
         f"WEEK: {stats.get('week_start')} to {stats.get('week_end')}\n\n"
         f"ACCOUNT:\n{acct_str}\n\n"
         f"SCALPER (LIVE TRADES):\n{live_str}\n\n"
-        f"PATTERN STRATEGY:\n{pat_str}"
-        f"{cf_str}\n\n"
         f"THIS WEEK'S DAILY AI ANALYSES (for context):\n{daily_ctx}\n\n"
         f"PREVIOUS WEEKLY REVIEWS:\n{prev_str}\n\n"
         "Write a structured weekly review with these five sections:\n"
