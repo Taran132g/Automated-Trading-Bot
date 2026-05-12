@@ -5,3 +5,4 @@ yfinance
 pyotp
 pytz
 anthropic
+ib_insync

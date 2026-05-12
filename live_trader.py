@@ -507,7 +507,7 @@ class LiveTrader:
     and a kill-switch file.
     """
 
-    def __init__(self, *, dry_run: bool = False, executor: Optional[SchwabOrderExecutor] = None, name: str = "default", inline: bool = False, db_path: Optional[str] = None) -> None:
+    def __init__(self, *, dry_run: bool = False, executor=None, name: str = "default", inline: bool = False, db_path: Optional[str] = None) -> None:
         self.name = name  # Identifier for multi-account logging
         self.inline = inline
         self.db_path = Path(db_path or os.getenv("DB_PATH", "penny_basing.db"))
@@ -525,7 +525,15 @@ class LiveTrader:
         if name != "default":
             state_base = state_base.replace(".json", f"_{name}.json")
         self.state_path = Path(state_base)
-        self.executor = executor if executor is not None else SchwabOrderExecutor(dry_run=dry_run, name=name)
+        if executor is not None:
+            self.executor = executor
+        else:
+            _executor_kind = os.getenv("ORDER_EXECUTOR", "schwab").lower()
+            if _executor_kind == "ibkr":
+                from executors.ibkr import IBKROrderExecutor
+                self.executor = IBKROrderExecutor(dry_run=dry_run, name=name)
+            else:
+                self.executor = SchwabOrderExecutor(dry_run=dry_run, name=name)
         self.dry_run = getattr(self.executor, "dry_run", dry_run)
         self.kill_switch_path = Path(os.getenv("LIVE_KILL_SWITCH_FILE", "kill_switch.flag"))
         self.max_trades_per_hour = int(self.config.get("live_max_trades_per_hour", 60))
@@ -1775,7 +1783,7 @@ class LiveTrader:
                 # 1. Direct Cancel first
                 _direct_cancel_ok = False
                 try:
-                    self.executor.client.cancel_order(order_id, self.executor.account_id)
+                    self.executor.cancel_order(order_id)
                     _direct_cancel_ok = True
                     LOGGER.info("Direct cancel sent for order %s", order_id)
                 except Exception as _ce:
