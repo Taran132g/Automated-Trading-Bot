@@ -21,10 +21,11 @@ const queryClient = new QueryClient({
 })
 
 // ── ElevenLabs: preload "Welcome, Trader." in Arnold's cinematic voice ──
-const ELEVEN_KEY     = 'sk_4496a2282e5e190984516e5212242f2f86e72f32b242e508'
-const ELEVEN_VOICE   = 'JBFqnCBsd6RMkjVDRZzb' // George — warm captivating storyteller, deepest narrator tone
+const ELEVEN_KEY     = import.meta.env.VITE_ELEVEN_KEY   as string | undefined
+const ELEVEN_VOICE   = import.meta.env.VITE_ELEVEN_VOICE as string | undefined ?? 'JBFqnCBsd6RMkjVDRZzb'
 
 async function fetchWelcomeAudio(): Promise<HTMLAudioElement | null> {
+  if (!ELEVEN_KEY) return null
   try {
     const res = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}`,
