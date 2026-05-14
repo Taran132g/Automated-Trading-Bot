@@ -1,4 +1,5 @@
 .env
+quant-os-ui/.env
 *.log
 *.db
 schwab_tokens.json
