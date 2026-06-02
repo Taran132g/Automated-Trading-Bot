@@ -214,7 +214,7 @@ function route(url: string): unknown {
   switch (path) {
     case '/auth/verify':          return { valid: true }
     case '/auth/login':           return { token: 'demo', expires_at: new Date(Date.now() + 864e5).toISOString() }
-    case '/admin/status':         return { loop_running: true, trader_running: true, grok_running: true, paper_running: true, token_file_exists: true, token_file_mtime: new Date().toISOString() }
+    case '/admin/status':         return { loop_running: false, trader_running: false, grok_running: false, paper_running: false, token_file_exists: true, token_file_mtime: new Date().toISOString() }
     case '/terminal/state':       return { account_details: ACCOUNT, daily_pnl: DAY_PNL, win_rate: DAY_WIN_RATE }
     case '/terminal/trades':      return { trades: TRADES }
     case '/terminal/equity-curve':return { points: EQUITY_TODAY }
