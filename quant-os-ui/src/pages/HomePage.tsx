@@ -6,7 +6,7 @@ import {
   ArrowRight, Zap, Shield, Brain,
 } from 'lucide-react'
 import {
-  adminService, terminalService, patternService, marketService,
+  adminService, terminalService, marketService,
 } from '@/services/api'
 import type { QuoteItem } from '@/services/api'
 
@@ -230,11 +230,6 @@ export function HomePage() {
     queryFn: () => terminalService.getState().then(r => r.data),
     refetchInterval: 10000, retry: false,
   })
-  const { data: patternState } = useQuery({
-    queryKey: ['pattern-state-live'],
-    queryFn: () => patternService.getState('live').then(r => r.data),
-    refetchInterval: 10000, retry: false,
-  })
   const { data: marketData } = useQuery({
     queryKey: ['market-quotes'],
     queryFn: () => marketService.getQuotes().then(r => r.data),
@@ -244,8 +239,7 @@ export function HomePage() {
   const backendOnline = !!(status?.loop_running || status?.trader_running || status?.grok_running)
   const acctVal = scalperState?.account_details?.liquidation_value
   const scalperPnl = scalperState?.daily_pnl
-  const patternPnl = patternState?.daily_pnl
-  const totalPnl = (scalperPnl ?? 0) + (patternPnl ?? 0)
+  const totalPnl = scalperPnl ?? 0
   const movers: QuoteItem[] = [...(marketData?.top ?? []), ...(marketData?.bottom ?? [])].slice(0, 6)
 
   return (
@@ -388,12 +382,6 @@ export function HomePage() {
               running={!!status?.trader_running}
               pnl={scalperPnl} winRate={scalperState?.win_rate}
               to="/scalper"
-            />
-            <StrategyLiveCard
-              accent="#a78bfa" icon={BarChart2} label="PATTERN" tag="LIVE"
-              running={!!status?.loop_running}
-              pnl={patternPnl} winRate={patternState?.win_rate}
-              to="/pattern"
             />
             <StrategyLiveCard
               accent="#22d3ee" icon={Radio} label="SIGNALS" tag="LIVE"

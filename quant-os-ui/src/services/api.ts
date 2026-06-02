@@ -1,8 +1,10 @@
 import axios from 'axios'
+import { DEMO, demoAdapter } from './demo'
 
 export const api = axios.create({
   baseURL: '/api',
   headers: { 'Content-Type': 'application/json' },
+  ...(DEMO ? { adapter: demoAdapter } : {}),
 })
 
 api.interceptors.request.use((config) => {

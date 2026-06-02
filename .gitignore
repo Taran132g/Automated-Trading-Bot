@@ -9,6 +9,10 @@ __pycache__/
 
 daily_pnl.txt
 *_state.json
+# Live trader state + SQLite sidecars — contain REAL account balances, never commit
+live_trader_state_*.json
+*.db-shm
+*.db-wal
 kill_switch.flag
 telegram_signal_advisor/.env
 telegram_signal_advisor/*.session
