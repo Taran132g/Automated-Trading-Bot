@@ -226,7 +226,7 @@ class SchwabOrderExecutor:
             status = payload.get("status") or payload.get("orderStatus") or payload.get("order_status")
             filled_qty = payload.get("filledQuantity") or payload.get("filled_quantity")
             avg_fill_price = payload.get("averageExecutionPrice") or payload.get("avg_execution_price")
-            
+
             # Schwab often omits averageExecutionPrice but provides the fill price
             # inside orderActivityCollection[].executionLegs[].price
             if not avg_fill_price:
@@ -238,7 +238,7 @@ class SchwabOrderExecutor:
                             avg_fill_price = legs[0].get("price")
                 except (IndexError, KeyError, TypeError):
                     pass
-            
+
             result["status"] = status
             result["filled_quantity"] = filled_qty
             result["avg_fill_price"] = avg_fill_price
@@ -277,28 +277,28 @@ class SchwabOrderExecutor:
 
         if not isinstance(data, dict):
             return {}
-        
+
         # Schwab API structure for account details
         securities_account = data.get("securitiesAccount", {})
         current_balances = securities_account.get("currentBalances", {})
         initial_balances = securities_account.get("initialBalances", {})
-        
+
         # Calculate Day PnL: Liquidation Value - Previous Day Liquidation Value
         # Or sometimes provided directly depending on fields
-        
+
         liquidation_value = float(current_balances.get("liquidationValue", 0.0))
         cash_balance = float(current_balances.get("cashBalance", 0.0))
         buying_power = float(current_balances.get("buyingPower", 0.0))
-        
+
         # Try to find PnL from positions or balances
         # Schwab doesn't always give a direct "day PnL" field in the top level
         # We might need to sum up position PnL or compare with start of day
         # For now, let's trust what we can get.
-        
+
         # Attempt to get day PnL if available, otherwise 0.0
         # Some endpoints provide 'profitAndLoss'
         day_pnl = 0.0
-        
+
         # If we have positions, we might sum their day PnL
         positions = securities_account.get("positions", [])
         if positions:
@@ -342,17 +342,17 @@ class SchwabOrderExecutor:
 
         securities_account = data.get("securitiesAccount", {})
         positions_raw = securities_account.get("positions", [])
-        
+
         result = {}
         for pos in positions_raw:
             instrument = pos.get("instrument", {})
             symbol = instrument.get("symbol")
             qty = pos.get("longQuantity", 0) - pos.get("shortQuantity", 0)
-            
+
             # Schwab sometimes returns 0 quantity positions for recently closed trades
             if symbol and qty != 0:
                 result[symbol] = int(qty)
-                
+
         return result
     def get_price_history(self, symbol: str, days: int = 5) -> Optional[pd.DataFrame]:
         """Fetch historical 1-minute bars for a symbol."""
@@ -370,7 +370,7 @@ class SchwabOrderExecutor:
             # Using start/end datetime to avoid Enum issues with 'period'
             end_date = datetime.utcnow()
             start_date = end_date - timedelta(days=days)
-            
+
             response = get_history(
                 symbol,
                 frequency_type=self.client.PriceHistory.FrequencyType.MINUTE,
@@ -387,7 +387,7 @@ class SchwabOrderExecutor:
             candles = data.get("candles", [])
             if not candles:
                 return None
-            
+
             df = pd.DataFrame(candles)
             # Standardize column names for OHLCVStore
             # Schwab returns: open, high, low, close, volume, datetime
@@ -397,7 +397,7 @@ class SchwabOrderExecutor:
         except Exception as exc:
             LOGGER.error("Failed to parse price history for %s: %s", symbol, exc)
             return None
-        
+
         return None
 
     def submit_limit(self, *, symbol: str, qty: int, side: str, price: float) -> Dict[str, Optional[str]]:
@@ -438,7 +438,7 @@ class SchwabOrderExecutor:
 
     def cancel_all_orders(self) -> int:
         """Cancel all open/working orders on the account.
-        
+
         Returns the number of orders cancelled, or -1 if using native cancel.
         and cancelling each WORKING one individually.
         """
@@ -511,7 +511,7 @@ class LiveTrader:
         self.name = name  # Identifier for multi-account logging
         self.inline = inline
         self.db_path = Path(db_path or os.getenv("DB_PATH", "penny_basing.db"))
-        
+
         # Load dynamic config
         self.config = config_manager.load_config()
         self.position_size = int(self.config.get("live_position_size", 100))
@@ -549,7 +549,7 @@ class LiveTrader:
         self.pi_cooldown_until: float = 0.0  # Timestamp when PI cooldown ends
         self.pending_limit_orders: Dict[str, str] = {}  # symbol -> order_id (bookkeeping only)
         self.pending_limit_count: int = 0  # Tally of currently in-flight limit orders (anti-stacking gate)
-        
+
         # Zero-Latency State
         self.live_prices: Dict[str, float] = {} # symbol -> latest stream price (zero-latency)
         self.active_limit_stops: Dict[str, bool] = {}  # symbol -> True (exit order in flight, block re-entry)
@@ -569,13 +569,13 @@ class LiveTrader:
         self.live_symbols = self._parse_live_symbols()
         self.account_details: Dict[str, float] = {}
         self.min_range_cents = int(os.getenv("MIN_RANGE_CENTS", "2"))
-        
+
         # Penalty Box State (per-symbol dicts)
         self.consecutive_loss_cents: Dict[str, float] = {}
         self.loss_cooldown_until: Dict[str, float] = {}
         self.pi_cooldown_until: float = 0.0
         self.telegram = TelegramNotifier()
-        
+
         self._lock = threading.RLock()
         self._order_in_flight: set = set()  # symbols with an order currently being processed
         self._shutdown_event = threading.Event()
@@ -1093,7 +1093,7 @@ class LiveTrader:
     def _apply_position_delta(self, symbol: str, delta: int) -> None:
         old_qty = self.positions.get(symbol, 0)
         new_qty = old_qty + delta
-        
+
         # Track entry time for new positions or flips
         if old_qty == 0 and new_qty != 0:
             self.position_entry_times[symbol] = time.time()
@@ -1116,7 +1116,7 @@ class LiveTrader:
         with self._lock:
             old_qty = self.positions.get(symbol, 0)
             entry_price = self.position_entry_prices.get(symbol, price)
-            
+
             # Calculate PnL for closing trades
             pnl = 0.0
             per_share_pnl = 0.0
@@ -1126,7 +1126,7 @@ class LiveTrader:
             elif old_qty < 0 and side == "COVER":
                 pnl = (entry_price - price) * qty
                 per_share_pnl = entry_price - price
-            
+
             # Penalty Box Logic: Cumulative Loss Bucket
             # Threshold: Cumulative loss of >= $0.02 per share in consecutive trades
             if pnl != 0: # Only check closing trades
@@ -1146,7 +1146,7 @@ class LiveTrader:
                     if self.consecutive_loss_cents.get(symbol, 0.0) > 0:
                         LOGGER.info("Win/Flat trade on %s ($%.4f/share) resets cumulative loss bucket (was $%.4f)", symbol, per_share_pnl, self.consecutive_loss_cents[symbol])
                     self.consecutive_loss_cents[symbol] = 0.0
-            
+
             # Update daily PnL
             today = time.strftime("%Y-%m-%d")
             if today != self.daily_date:
@@ -1161,13 +1161,13 @@ class LiveTrader:
             if side in ("SELL", "COVER"):
                 self._intraday_pnls.setdefault(symbol, []).append(pnl)
                 self._intraday_qty[symbol] = self._intraday_qty.get(symbol, 0) + qty
-            
+
             # Log trade to database
             self._log_live_trade(symbol=symbol, side=side, qty=qty, price=price, entry_price=entry_price, pnl=pnl)
-            
+
             delta = qty if side in {"BUY", "COVER"} else -qty
             self._apply_position_delta(symbol, delta)
-            
+
             # Track entry price for new positions
             new_qty = self.positions.get(symbol, 0)
             if old_qty == 0 and new_qty != 0:
@@ -1176,12 +1176,12 @@ class LiveTrader:
                 self.position_entry_prices.pop(symbol, None)
             elif (old_qty > 0 and new_qty < 0) or (old_qty < 0 and new_qty > 0):
                 self.position_entry_prices[symbol] = price
-            
+
             if not self.dry_run:
                 self._save_state()
             self.trade_timestamps.append(time.time())
         self._enforce_trade_rate_limit()
-        
+
         # Aggressively clear all working orders to prevent ghosts
         LOGGER.info("Trade finalized. Cancelling any remaining working orders to clear the book.")
         self.executor.cancel_all_orders()
@@ -1195,6 +1195,28 @@ class LiveTrader:
             msg = f"⚠️  Trade rate exceeded limit ({len(self.trade_timestamps)} in the last hour)"
             LOGGER.warning(msg)
             print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
+
+    def _entry_rate_limited(self) -> bool:
+        """Return True if opening a NEW position would breach the hourly trade cap.
+
+        This is the actual gate the README/risk-monitor describe as a 'hard cap'.
+        Only fresh entries are blocked — exits are always allowed so we can still
+        flatten an open position even when the cap is hit.
+        """
+        cutoff = time.time() - 3600
+        with self._lock:
+            self.trade_timestamps = [ts for ts in self.trade_timestamps if ts >= cutoff]
+            count = len(self.trade_timestamps)
+        if count >= self.max_trades_per_hour:
+            msg = (f"⛔ Hourly trade cap reached ({count}/{self.max_trades_per_hour}) — "
+                   f"blocking new entries until the rate drops")
+            LOGGER.warning("[%s] %s", self.name, msg)
+            try:
+                self.telegram.notify_error("Trade Cap Hit", msg)
+            except Exception:
+                pass
+            return True
+        return False
 
     def _engage_emergency_shutdown(self, reason: str) -> None:
         # Set the event FIRST so all other threads stop accepting new alerts immediately.
@@ -1222,9 +1244,9 @@ class LiveTrader:
                 continue
             side = "SELL" if qty > 0 else "COVER"
             price = self._latest_price(symbol) or 0.0
-            
+
             LOGGER.info("Flattening %s %s (Qty: %d) due to shutdown...", side, symbol, abs(qty))
-            
+
             self._submit_order(
                 alert_id=-1,
                 symbol=symbol,
@@ -1259,46 +1281,17 @@ class LiveTrader:
         self, symbol: str, direction: str, entry_price: float,
         current_price: float, pnl: float, hold_secs: float,
     ) -> str:
+        """Time-stop action selector. Returns 'EXIT', 'STAY', or 'PARTIAL'.
+
+        The Claude consult was disabled on 2026-06-13: it issued a synchronous
+        1-5s LLM call on grok's event-loop thread, blinding the L2 scalper to
+        the market for the whole call while holding a position. Time-stops now
+        deterministically EXIT at market once the hold window elapses — which
+        was the consult's documented default action anyway. To re-enable an
+        LLM/heuristic judgment later, do it OFF the hot path (e.g. a worker
+        thread that pre-computes the decision) so stream processing never blocks.
         """
-        Ask Claude whether to EXIT, STAY, or take PARTIAL profit on a time-stopped position.
-        Returns 'EXIT', 'STAY', or 'PARTIAL'. Falls back to 'EXIT' on any error.
-        """
-        try:
-            from agents.base import call_claude
-            pnl_pct = pnl / entry_price * 100 if entry_price > 0 else 0.0
-            prompt = (
-                f"A scalp trade has hit its time-stop (held {hold_secs:.0f}s).\n\n"
-                f"SYMBOL: {symbol}  |  DIRECTION: {direction}\n"
-                f"ENTRY: ${entry_price:.4f}  |  CURRENT: ${current_price:.4f}\n"
-                f"UNREALIZED P&L: ${pnl:+.4f} ({pnl_pct:+.3f}%)\n\n"
-                "Choose one of exactly three actions:\n"
-                "  EXIT — close the full position now at market.\n"
-                "  STAY — hold a bit longer (momentum still clearly intact).\n"
-                "  PARTIAL — close half now and trail the remainder with a stop.\n\n"
-                "Respond with exactly two lines:\n"
-                "Line 1: EXIT, STAY, or PARTIAL\n"
-                "Line 2: One sentence reason (max 20 words).\n\n"
-                "Rules:\n"
-                "- STAY only if the trade is profitable AND price is still moving in trade direction.\n"
-                "- PARTIAL only if profitable but momentum is visibly weakening.\n"
-                "- EXIT if at a loss, stalling, or direction is unclear.\n"
-                "- Default to EXIT — scalp trades should not overstay."
-            )
-            response = call_claude(prompt, max_tokens=80)
-            if not response:
-                return "EXIT"
-            first_line = response.strip().splitlines()[0].strip().upper()
-            if "STAY" in first_line:
-                LOGGER.info("[TIME-STOP] Claude says STAY for %s (pnl=%.4f)", symbol, pnl)
-                return "STAY"
-            if "PARTIAL" in first_line:
-                LOGGER.info("[TIME-STOP] Claude says PARTIAL for %s (pnl=%.4f)", symbol, pnl)
-                return "PARTIAL"
-            LOGGER.info("[TIME-STOP] Claude says EXIT for %s (pnl=%.4f)", symbol, pnl)
-            return "EXIT"
-        except Exception as exc:
-            LOGGER.warning("[TIME-STOP] Claude consult failed for %s: %s — exiting", symbol, exc)
-            return "EXIT"
+        return "EXIT"
 
     def _check_profit_limits(self) -> None:
         """Time stop (with Claude consult) + trailing stop for post-partial positions."""
@@ -1450,7 +1443,7 @@ class LiveTrader:
 
         # Use string formatting to 4 decimal places to avoid float precision issues
         price_str = f"{price:.4f}"
-        
+
         # Check if the price exactly ends in '99' or '01'
         is_99 = price_str.endswith("99")
         is_01 = price_str.endswith("01")
@@ -1469,7 +1462,7 @@ class LiveTrader:
             msg = f"⚠️  BAD FILL #{self.consecutive_bad_fills}: {side} at ${price:.4f} ({fill_type})"
             LOGGER.warning(msg)
             print(f"\n{'='*60}\n{msg}\n{'='*60}\n", flush=True)
-            
+
             if self.consecutive_bad_fills >= 3:
                 LOGGER.error("🚨 ALERT: %d consecutive bad fills detected! (%s at $%.4f)", self.consecutive_bad_fills, side, price)
                 print(f"\n🚨🚨🚨 ALERT: {self.consecutive_bad_fills} CONSECUTIVE BAD FILLS! 🚨🚨🚨\n", flush=True)
@@ -1513,10 +1506,10 @@ class LiveTrader:
         self.recent_pi.append(pi_per_share)
         avg_pi = sum(self.recent_pi) / len(self.recent_pi)
         self.rolling_pi = avg_pi
-        
+
         LOGGER.info("PI per share: $%.4f  (Cumulative Avg over %d trades: $%.4f)",
                     pi_per_share, len(self.recent_pi), avg_pi)
-        
+
         # Trigger PI Cooldown if avg PI < $0.0005 (5.0 per-10k shares logic)
         if len(self.recent_pi) >= 5 and avg_pi < 0.0005:
             if time.time() >= self.pi_cooldown_until:
@@ -1643,15 +1636,15 @@ class LiveTrader:
             else:
                  # Sell at Ask
                  limit_price = float(quote.get("askPrice", 0.0))
-        
+
         if limit_price <= 0:
              LOGGER.warning("Invalid limit price %.2f for %s; skipping", limit_price, symbol)
              return False
 
         LOGGER.info("[LIMIT] Submitting %s %d %s @ $%.2f", side, qty, symbol, limit_price)
-        
+
         result = self.executor.submit_limit(symbol=symbol, qty=qty, side=side, price=limit_price)
-        
+
         error = result.get("error")
         if error:
              LOGGER.error("Limit order submission failed: %s", error)
@@ -1707,12 +1700,12 @@ class LiveTrader:
         try:
             LOGGER.info("Waiting %.1fs for fill on order %s...", self.limit_poll_interval, order_id)
             time.sleep(self.limit_poll_interval)
-        
+
             status = self.executor.fetch_order_status(order_id)
             order_status = status.get("status", "").upper()
             filled_qty = status.get("filled_quantity") or 0
             avg_price = status.get("avg_fill_price")
-        
+
             LOGGER.info("Order %s status: %s (Filled: %s)", order_id, order_status, filled_qty)
 
             # Cancel remaining working orders only AFTER poll — saves one full API round-trip on entries
@@ -1723,7 +1716,7 @@ class LiveTrader:
                     LOGGER.warning("Post-poll cancel_all failed: %s", exc)
 
             final_filled = False
-        
+
             if order_status in {"FILLED", "EXPIRED"} or filled_qty == qty:
                 # Filled!
                 final_filled = True
@@ -1745,7 +1738,7 @@ class LiveTrader:
                     elif side in ("SELL", "SHORT") and quoted_bid > 0:
                         pi = realized_price - quoted_bid
                         self._record_pi(max(pi, 0.0))
-        
+
             elif order_status in {"CANCELED", "REJECTED"}:
                  LOGGER.warning("Order %s was already %s", order_id, order_status)
                  # Even if canceled, check if there was partial fill
@@ -1757,7 +1750,7 @@ class LiveTrader:
                  else:
                      result["fill_status"] = order_status
                      result["filled_qty"] = 0
-             
+
             else:
                 # Still Open (WORKING, QUEUED, etc) -> check fill status one more time
                 # before sending any cancel to avoid the cancel/fill race.
@@ -1798,18 +1791,18 @@ class LiveTrader:
                     if (recheck.get("filled_quantity") or 0) > 0:
                         LOGGER.info("Abort cancel loop: Order %s filled in background", order_id)
                         break
-                    
+
                     LOGGER.warning("Cancel sweep found 0 orders. API delay? Retrying...")
                     cancel_count = self.executor.cancel_all_orders()
                     retry += 1
-            
+
                 if True: # Always proceed to verification
                     LOGGER.info("Order %s cancel procedure finished. Verifying final status...", order_id)
                     time.sleep(2.0) # Give Schwab time to propagate cancel vs fill race
                     final_status = self.executor.fetch_order_status(order_id)
                     final_state = final_status.get("status", "").upper()
                     final_filled_qty = final_status.get("filled_quantity") or 0
-                
+
                     # Double-check: If Schwab says 0 fills, wait and ask again
                     # (their API sometimes lags behind actual fill propagation)
                     if final_filled_qty == 0 and final_state not in {"CANCELED", "REJECTED"}:
@@ -1830,7 +1823,7 @@ class LiveTrader:
                          avg_price = final_status.get("avg_fill_price")
                          realized_price = float(avg_price) if avg_price else limit_price
                          self._record_fill(symbol=symbol, side=side, qty=int(final_filled_qty), price=realized_price)
-                     
+
                          if final_filled_qty >= qty:
                              result["fill_status"] = "FILLED"
                          else:
@@ -1856,7 +1849,7 @@ class LiveTrader:
                                 pass
                         result["fill_status"] = "CANCELED_TIMEOUT"
                         result["filled_qty"] = 0
-        
+
             self._record_order(
                 alert_id=alert_id,
                 symbol=symbol,
@@ -1965,7 +1958,7 @@ class LiveTrader:
                         LOGGER.info("Already short %s; skip stacking", symbol)
                         self._order_in_flight.discard(symbol)
                         return
-                    
+
                     # If currently long, close the long position first
                     if position > 0:
                         close_qty = abs(position)
@@ -1995,6 +1988,11 @@ class LiveTrader:
                          self._order_in_flight.discard(symbol)
                          return
 
+                    # Hourly trade cap — blocks new entries only (exits returned above)
+                    if self._entry_rate_limited():
+                        self._order_in_flight.discard(symbol)
+                        return
+
                     filled = self._submit_order(
                         alert_id=alert_id,
                         symbol=symbol,
@@ -2010,7 +2008,7 @@ class LiveTrader:
                         LOGGER.info("Already long %s; skip stacking", symbol)
                         self._order_in_flight.discard(symbol)
                         return
-                    
+
                     # If currently short, close the short position first
                     if position < 0:
                         close_qty = abs(position)
@@ -2039,6 +2037,11 @@ class LiveTrader:
                                      symbol, cooldown_seconds - (time.time() - last_exit))
                          self._order_in_flight.discard(symbol)
                          return
+
+                    # Hourly trade cap — blocks new entries only (exits returned above)
+                    if self._entry_rate_limited():
+                        self._order_in_flight.discard(symbol)
+                        return
 
                     filled = self._submit_order(
                         alert_id=alert_id,
@@ -2070,7 +2073,7 @@ class LiveTrader:
                     self.telegram.notify_error("Schwab API / Trade Execution", f"Alert {alert_id}: {e}")
                 except Exception:
                     pass
-                break 
+                break
 
     def process_alert(
         self,
@@ -2095,7 +2098,7 @@ class LiveTrader:
             self.last_alert_id = int(alert_id)
 
         self._handle_alert(alert_id, symbol, direction, price, range_cents, target_limit_price)
-        
+
         if persist_state and not self.dry_run:
             self._save_state()
 
@@ -2117,19 +2120,19 @@ class LiveTrader:
                     self.daily_date = today
                     self.start_day_liquidation = liquidation_value
                     LOGGER.info("📊 New Day Anchor: %s (Liquidation: $%.2f)", self.daily_date, self.start_day_liquidation)
-                
+
                 # Update PnL based on liquidation change
                 old_pnl = self.daily_pnl
                 self.daily_pnl = liquidation_value - self.start_day_liquidation
                 details['day_pnl'] = self.daily_pnl
                 self.account_details = details
-                
+
                 # Notify on significant PnL change (REMOVED - User only wants cooldowns)
                 # if abs(self.daily_pnl - old_pnl) >= 1.0:
                 #    self.telegram.notify_account_update(details)
-            
+
             self._save_state()
-            
+
             # Log to DB
             try:
                 LOGGER.info("Attempting to log account history to DB: %s", self.db_path)
@@ -2183,7 +2186,7 @@ class LiveTrader:
         # monitoring used in ``paper_trader``.
         LOGGER.info("Starting LiveTrader loop...")
         self._check_kill_switch()
-        
+
         if self.inline:
             LOGGER.info("LiveTrader is running INLINE. Skipping DB polling loop.")
             # Keep the background account polling thread alive
@@ -2193,13 +2196,13 @@ class LiveTrader:
                 time.sleep(1.0)
             LOGGER.error("[%s] Shutdown event set; inline loop exiting.", self.name)
             return
-        
+
         # High-frequency polling back-off
         min_sleep = 0.05
         max_sleep = self.poll_interval
         idle_sleep = min_sleep
         db_mtime = 0.0
-        
+
         monitor_conn = self._open_conn()
         monitor_conn.isolation_level = None
         monitor_cur = monitor_conn.cursor()
@@ -2213,7 +2216,7 @@ class LiveTrader:
                     (self.last_alert_id,)
                 )
                 new_alerts = monitor_cur.fetchall()
-                
+
                 if new_alerts:
                     for row in new_alerts:
                         alert_id = row[0]
@@ -2221,26 +2224,26 @@ class LiveTrader:
                         direction = row[2]
                         price = float(row[3]) if row[3] is not None else 0.0
                         range_cents = float(row[4]) if len(row) > 4 and row[4] is not None else 0.0
-                        
+
                         # Note: DB polling doesn't currently store target_limit_price.
-                        # We would need a DB schema update for that. Since alerts are 
+                        # We would need a DB schema update for that. Since alerts are
                         # dispatched inline now with target_limit_price inside the dict,
                         # this fallback path just uses the standard price.
                         self.process_alert(alert_id, symbol, direction, price, range_cents=range_cents)
-                    
+
                     # Update mtime so we don't immediately wake up for old writes
                     try:
                         db_mtime = os.stat(self.db_path).st_mtime
                     except Exception:
                         pass
-                    
+
                     idle_sleep = min_sleep
                     time.sleep(0.01)
                 else:
                     # Low-latency idle sleep: check DB modified time every 10ms
                     target_sleep = min(idle_sleep * 2, max_sleep)
                     wake_deadline = time.monotonic() + target_sleep
-                    
+
                     woke_for_write = False
                     mtime_probe = 0.01
                     while time.monotonic() < wake_deadline:
@@ -2253,9 +2256,9 @@ class LiveTrader:
                         except Exception:
                             pass
                         time.sleep(mtime_probe)
-                    
+
                     idle_sleep = min_sleep if woke_for_write else target_sleep
-                    
+
             except Exception as exc:
                 LOGGER.error("Error in main loop: %s", exc)
                 try:
@@ -2263,7 +2266,7 @@ class LiveTrader:
                 except Exception:
                     pass
                 time.sleep(1.0)
-            
+
             self._check_kill_switch()
             self._check_time_stops()
 

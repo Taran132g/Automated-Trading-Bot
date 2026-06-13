@@ -381,6 +381,11 @@ STOCK_VOLUME_OVERRIDES = {
     "WOLF": 5000
 }
 MIN_IMBALANCE_DURATION_SEC: float = 10.0
+# Max real-time gap between two recorded same-direction ticks before we treat
+# the imbalance as having lapsed. The deque only records ticks where an
+# imbalance fired, so without this a brief re-trigger after a neutral lull
+# would otherwise look like one continuous (stale) imbalance.
+MAX_IMBALANCE_GAP_SEC: float = 3.0
 DB_PATH: str = "penny_basing.db"
 DISABLE_BID_HEAVY: bool = False
 PRINTED_NO_INSTR: set = set()
@@ -445,7 +450,7 @@ def _summarize(sym: str, now: float):
     if not q:
         log_structured("ROLL", {"symbol": sym, "message": "No prints yet"})
         return 0
-    
+
     # Price range logic (1-minute window)
     price_q = [t for t in q if t.ts >= now - WINDOW_SECONDS]
     if price_q:
@@ -459,10 +464,10 @@ def _summarize(sym: str, now: float):
     vol = sum(t.sz for t in vol_q)
     volume_window[sym].append(vol)
     smoothed_vol = sum(volume_window[sym]) / len(volume_window[sym]) if volume_window[sym] else vol
-    
+
     vol_window_duration = max(min(now - vol_q[0].ts, VOL_WINDOW_SECONDS), 1.0) if vol_q else VOL_WINDOW_SECONDS
     vol_per_min = (smoothed_vol / (vol_window_duration / 60)) if vol_window_duration > 0 else 0
-    
+
     log_structured("ROLL", {
         "symbol": sym,
         "window_sec": WINDOW_SECONDS,
@@ -500,12 +505,12 @@ def on_level1(msg: dict):
             if sym not in last_l1:
                 last_l1[sym] = {}
             last_l1[sym].update(it)
-            
+
             # Use merged state for price lookup
             merged = last_l1[sym]
             price = None
             missing_fields = []
-            
+
             if "LAST_PRICE" in merged:
                 price = merged["LAST_PRICE"]
             elif "BID_PRICE" in merged:
@@ -514,21 +519,21 @@ def on_level1(msg: dict):
                 price = merged["ASK_PRICE"]
             elif "CLOSE_PRICE" in merged:
                 price = merged["CLOSE_PRICE"]
-            
+
             if not price:
                 # Check what's missing from the MERGED state
                 if "LAST_PRICE" not in merged: missing_fields.append("LAST_PRICE")
                 if "BID_PRICE" not in merged: missing_fields.append("BID_PRICE")
                 if "ASK_PRICE" not in merged: missing_fields.append("ASK_PRICE")
                 if "CLOSE_PRICE" not in merged: missing_fields.append("CLOSE_PRICE")
-                
+
                 log_structured("L1_WARNING", {
                     "symbol": sym,
                     "message": "No valid price",
                     "missing_fields": missing_fields
                 })
                 continue
-            
+
             try:
                 price = float(price)
                 # Zero-latency price routing to inline live traders for Profit Monitoring
@@ -591,7 +596,7 @@ def on_chart_equity(msg: dict):
                 })
             if msg_count[sym] % PRINT_EVERY == 0:
                 _summarize(sym, now)
-                
+
 
 def on_timesale(msg: dict):
     now = time()
@@ -633,7 +638,7 @@ _cached_rolling_pi = 0.0
 def on_book(msg: dict):
     global _last_msg_ts, _last_pi_read_ts, _cached_rolling_pi
     now = time()
-    
+
     # Lightweight cache refresh for Rolling PI to avoid disk IO bottleneck
     if now - _last_pi_read_ts > 5.0:
         _last_pi_read_ts = now
@@ -645,7 +650,7 @@ def on_book(msg: dict):
                     _cached_rolling_pi = float(state.get("rolling_pi", 0.0))
         except Exception:
             pass
-            
+
     for it in msg.get("content", []):
         sym = it.get("key")
         if sym not in SYMBOLS:
@@ -723,22 +728,22 @@ def on_book(msg: dict):
                 "rolling_pi": _cached_rolling_pi
             })
         direction = None
-        
-        # EST = UTC - 5
-        # 10:30-12pm EST (15:30-16:59 UTC) = morning surge -> 3
-        # 12-2pm     EST (17:00-18:59 UTC) = lunch lull -> 4
-        # 3-4pm      EST (20:00-20:59 UTC) = power hour -> 3
+
+        # Time-of-day venue threshold, evaluated in EXCHANGE (ET) time. The
+        # previous version read datetime.fromtimestamp(now) (machine-local time)
+        # against hours that were commented as UTC, so the windows never landed
+        # where intended. Use ET explicitly so this matches the venue-count
+        # windows computed below.
         imbalance_threshold = 4
-        dt = datetime.fromtimestamp(now)
-        h = dt.hour
-        m = dt.minute
-        
-        if h == 20:
-            imbalance_threshold = 3   # 3-4pm EST: power hour, institutional flow
-        elif (h == 15 and m >= 30) or h == 16:
-            imbalance_threshold = 3   # 10:30am-12pm EST: morning surge
-        elif h in (17, 18):
-            imbalance_threshold = 5   # 12-2pm EST: lunch lull
+        _thr_et = datetime.now(ET_TZ)
+        _thr_h = _thr_et.hour + _thr_et.minute / 60.0
+
+        if 15.0 <= _thr_h < 16.0:
+            imbalance_threshold = 3   # 3-4pm ET: power hour, institutional flow
+        elif 10.5 <= _thr_h < 12.0:
+            imbalance_threshold = 3   # 10:30am-12pm ET: morning surge
+        elif 12.0 <= _thr_h < 14.0:
+            imbalance_threshold = 5   # 12-2pm ET: lunch lull
 
         if not DISABLE_BID_HEAVY and metrics.bid_heavy_venues >= metrics.ask_heavy_venues + imbalance_threshold:
             direction = "bid-heavy"
@@ -746,16 +751,22 @@ def on_book(msg: dict):
             direction = "ask-heavy"
         if direction:
             last_imbalance[sym].append((now, direction, metrics))
-            # Check if the imbalance has persisted for at least MIN_IMBALANCE_DURATION_SEC
+            # Measure how long the imbalance has continuously persisted. Walk
+            # back over consecutive same-direction ticks, but stop at any gap
+            # larger than MAX_IMBALANCE_GAP_SEC — the deque only records ticks
+            # where an imbalance fired, so a gap means the book went neutral in
+            # between and the streak is NOT continuous.
             imbalance_duration = 0.0
-            if last_imbalance[sym]:
-                first_ts = None
-                for ts, dir, _ in reversed(last_imbalance[sym]):
-                    if dir != direction:
-                        break
-                    first_ts = ts
-                if first_ts is not None:
-                    imbalance_duration = now - first_ts
+            first_ts = now
+            prev_ts = now
+            for ts, dir, _ in reversed(last_imbalance[sym]):
+                if dir != direction:
+                    break
+                if prev_ts - ts > MAX_IMBALANCE_GAP_SEC:
+                    break
+                first_ts = ts
+                prev_ts = ts
+            imbalance_duration = now - first_ts
             if DEBUG:
                 log_structured("DIRECTION_DEBUG", {
                     "symbol": sym,
@@ -764,7 +775,7 @@ def on_book(msg: dict):
                     "ask_heavy_venues": metrics.ask_heavy_venues,
                     "imbalance_duration": round(imbalance_duration, 2)
                 })
-            
+
             # Volatility Filter
             # Volatility Calculation (Passed to Trader)
             range_cents = 0.0
@@ -773,16 +784,16 @@ def on_book(msg: dict):
                 hi = max(t.px for t in q)
                 lo = min(t.px for t in q)
                 range_cents = (hi - lo) * 100.0
-            
+
             # Dynamic Duration Logic (Position Aware):
             # We check the REAL position in LiveTrader.
             # If (Position > 0 and Ask-Heavy) OR (Position < 0 and Bid-Heavy):
             #    We are losing money -> Exit Fast (2s).
             # Else (Flat or Stacking):
             #    Wait for standard confirmation (10s).
-            
+
             curr_min_duration = MIN_IMBALANCE_DURATION_SEC
-            
+
             # Helper to get net position
             net_pos = 0
             for _, trader in traders:
@@ -795,11 +806,11 @@ def on_book(msg: dict):
 
             is_long = net_pos > 0
             is_short = net_pos < 0
-            
+
             if (is_long and direction == "ask-heavy") or \
                (is_short and direction == "bid-heavy"):
                  curr_min_duration = 2.0
-            
+
             # Time-based venue threshold (ET):
             #   10:30–12:00 → 3 venues (active open)
             #   12:00–14:00 → 5 venues (midday lull, stricter)
@@ -868,7 +879,7 @@ def on_book(msg: dict):
                 inline_ok = True
                 if inline_trader_dispatch:
                     inline_ok = inline_trader_dispatch(next_alert_id, alert)
-                
+
                 # Always insert to DB for history, even if inline dispatch happened
                 c.execute(
                     "INSERT INTO alerts (rowid, timestamp, symbol, ratio, total_bids, total_asks, heavy_venues, direction, price, vol_per_min, range_cents) "
@@ -931,7 +942,6 @@ async def _book_monitor_task():
         await asyncio.sleep(BOOK_INTERVAL_SEC)
 
 async def _heartbeat_task():
-    import threading
     kill_switch_path = Path(os.getenv("LIVE_KILL_SWITCH_FILE", "kill_switch.flag"))
     while True:
         now = time()
@@ -942,12 +952,38 @@ async def _heartbeat_task():
             log_structured("HEARTBEAT", {"status": "alive", "last_data_age": round(age, 2)})
 
         if kill_switch_path.exists():
-            log_structured("KILL_SWITCH_DETECTED", {"source": "heartbeat", "message": "Kill switch flag detected — signalling traders and stopping"})
+            log_structured("KILL_SWITCH_DETECTED", {"source": "heartbeat", "message": "Kill switch flag detected — flattening traders before stop"})
+            # Run each trader's flatten in the shared pool and AWAIT completion
+            # (bounded by a timeout) instead of a blind 3s sleep. The old version
+            # fired daemon threads then stopped the loop after 3s, which killed
+            # the flatten mid-order and could leave positions open after a
+            # "shutdown". Awaiting the pool futures keeps the loop alive so the
+            # flatten orders actually finish.
+            pool = _TRADER_POOL
+            flatten_futs = []
             for _name, trader in list(traders):
-                if hasattr(trader, "_check_kill_switch"):
-                    threading.Thread(target=trader._check_kill_switch, daemon=True).start()
-            await asyncio.sleep(3.0)  # Give traders time to flatten positions
-            asyncio.get_event_loop().stop()
+                if not hasattr(trader, "_check_kill_switch"):
+                    continue
+                if pool is not None:
+                    flatten_futs.append(asyncio.wrap_future(pool.submit(trader._check_kill_switch)))
+                else:
+                    # No pool — run inline; the loop is stopping anyway.
+                    trader._check_kill_switch()
+            if flatten_futs:
+                flatten_timeout = _get_float_env("KILL_SWITCH_FLATTEN_TIMEOUT", 30.0, 1.0)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*flatten_futs, return_exceptions=True),
+                        timeout=flatten_timeout,
+                    )
+                    log_structured("KILL_SWITCH_FLATTEN", {"status": "complete"})
+                except asyncio.TimeoutError:
+                    log_structured("KILL_SWITCH_FLATTEN", {
+                        "status": "timeout",
+                        "seconds": flatten_timeout,
+                        "message": "Flatten did not finish within timeout; stopping anyway",
+                    })
+            asyncio.get_running_loop().stop()
             return
 
         await asyncio.sleep(HEARTBEAT_SEC)
@@ -1045,13 +1081,13 @@ async def main():
     # else:
     SYMBOLS = _get_symbols()
     DISABLE_BID_HEAVY = bool(args.disable_bid_heavy)
-    DEBUG_BOOK_RAW = True
+    DEBUG_BOOK_RAW = bool(args.debug_book_raw)
     JSON_BOOK = bool(args.json_book)
     SHOW_BOOK = bool(args.show_book)
     BOOK_INTERVAL_SEC = args.book_interval if args.book_interval is not None else _get_int_env("BOOK_INTERVAL_SEC", 2, 1)
     _book_raw_remaining = defaultdict(lambda: args.book_raw_limit if args.book_raw_limit is not None else _get_int_env("BOOK_RAW_LIMIT", 5, 1))
     DEBUG_INSTR = bool(args.debug_instr) or any(sym in {"CRON", "F"} for sym in SYMBOLS)
-    DEBUG = True
+    DEBUG = bool(args.debug)
 
     if not SYMBOLS:
         log_structured("CONFIG_ERROR", {"error": "No symbols provided"})
@@ -1094,9 +1130,9 @@ async def main():
     try:
         trader_kind = "live"
         traders.clear()
-        
+
         inline_requests = _bool_env("ENABLE_INLINE_DISPATCH", False)
-        
+
         if inline_requests:
             if inline_dry_run:
                 from paper_trader import PaperTrader
@@ -1108,7 +1144,7 @@ async def main():
                 traders.append(("primary", LiveTrader(dry_run=False, name="primary")))
         else:
             log_structured("STARTUP", {"message": "In-process (inline) traders disabled via ENABLE_INLINE_DISPATCH=0"})
-        
+
         # Persistent thread pool — created once, reused for every alert dispatch
         global _TRADER_POOL
         _TRADER_POOL = concurrent.futures.ThreadPoolExecutor(
@@ -1148,11 +1184,19 @@ async def main():
                             )
                             for name, trader in traders
                         ]
-                        for future in concurrent.futures.as_completed(futs):
-                            try:
-                                future.result()
-                            except Exception as e:
-                                log_structured("INLINE_TRADER_THREAD_ERROR", {"error": str(e)})
+                        # Await the pool work WITHOUT blocking the event loop:
+                        # wrap each concurrent.futures.Future so the loop stays
+                        # free to process market data while the order executes.
+                        # The limit-order polls, the market-path sleep, and the
+                        # cancel sweeps all run in the pool thread, not here.
+                        if futs:
+                            results = await asyncio.gather(
+                                *(asyncio.wrap_future(f) for f in futs),
+                                return_exceptions=True,
+                            )
+                            for r in results:
+                                if isinstance(r, Exception):
+                                    log_structured("INLINE_TRADER_THREAD_ERROR", {"error": str(r)})
                 except Exception as exc:
                     log_structured("INLINE_TRADER_ERROR", {"error": str(exc), "alert_id": alert_id})
                 finally:
@@ -1235,58 +1279,61 @@ async def main():
         log_structured("SUBS_ERROR", {"error": "Failed to establish stream connection"})
         sys.exit(4)
 
-    try:
-        if hasattr(stream, "quality_of_service"):
-            await stream.quality_of_service(StreamClient.QOSLevel.EXPRESS)
-        elif hasattr(stream, "set_quality_of_service"):
-            await stream.set_quality_of_service(StreamClient.QOSLevel.EXPRESS)
-        elif hasattr(stream, "set_qos"):
-            await stream.set_qos(StreamClient.QOSLevel.EXPRESS)
-    except Exception as e:
-        log_structured("QOS_ERROR", {"error": f"Failed to set QoS: {e}"})
+    async def _subscribe_all() -> None:
+        """(Re)apply QoS and every subscription. Safe to call after each (re)login:
+        Schwab SUBS replaces any prior subscription, so calling this again after a
+        reconnect restores the full feed. Without it, a fresh login leaves the
+        stream silently unsubscribed and the bot goes dark until manual restart."""
+        try:
+            if hasattr(stream, "quality_of_service"):
+                await stream.quality_of_service(StreamClient.QOSLevel.EXPRESS)
+            elif hasattr(stream, "set_quality_of_service"):
+                await stream.set_quality_of_service(StreamClient.QOSLevel.EXPRESS)
+            elif hasattr(stream, "set_qos"):
+                await stream.set_qos(StreamClient.QOSLevel.EXPRESS)
+        except Exception as e:
+            log_structured("QOS_ERROR", {"error": f"Failed to set QoS: {e}"})
 
-    await stream.level_one_equity_subs(SYMBOLS)
-    if has_ts:
-        await stream.timesale_equity_subs(SYMBOLS)
-    else:
-        await stream.chart_equity_subs(SYMBOLS)
-
-    nasdaq_syms = []
-    nyse_syms = []
-
-    for sym in SYMBOLS:
-        if sym == "CRON":
-            log_structured("SUBS", {"symbol": sym, "exchange": "NASDAQ"})
-            nasdaq_syms.append(sym)
-            continue
-        # if sym == "F":  <-- REMOVED to fix F alerts
-        #     log_structured("SUBS", {"symbol": sym, "exchange": "NYSE"})
-        #     await stream.nyse_book_subs([sym])
-        #     continue
-        ex = await resolve_exchange(client, sym)
-        if ex is None:
-            if sym not in PRINTED_NO_INSTR:
-                log_structured("SUBS_WARNING", {"symbol": sym, "message": "No instrument found, subscribing to both books"})
-                PRINTED_NO_INSTR.add(sym)
-            nasdaq_syms.append(sym)
-            nyse_syms.append(sym)
-        elif ex == "NASDAQ":
-            nasdaq_syms.append(sym)
-        elif ex == "NYSE":
-            nyse_syms.append(sym)
+        await stream.level_one_equity_subs(SYMBOLS)
+        if has_ts:
+            await stream.timesale_equity_subs(SYMBOLS)
         else:
-            if sym not in PRINTED_NO_INSTR:
-                log_structured("SUBS_WARNING", {"symbol": sym, "exchange": ex, "message": "Unsupported exchange, subscribing to both"})
-                PRINTED_NO_INSTR.add(sym)
-            nasdaq_syms.append(sym)
-            nyse_syms.append(sym)
+            await stream.chart_equity_subs(SYMBOLS)
 
-    if nasdaq_syms:
-        await stream.nasdaq_book_subs(nasdaq_syms)
-    if nyse_syms:
-        await stream.nyse_book_subs(nyse_syms)
+        nasdaq_syms = []
+        nyse_syms = []
 
-    log_structured("SUBS", {"message": f"Subscribed to L1, {'timesales' if has_ts else 'chart'}, and L2 for: {', '.join(SYMBOLS)}"})
+        for sym in SYMBOLS:
+            if sym == "CRON":
+                log_structured("SUBS", {"symbol": sym, "exchange": "NASDAQ"})
+                nasdaq_syms.append(sym)
+                continue
+            ex = await resolve_exchange(client, sym)
+            if ex is None:
+                if sym not in PRINTED_NO_INSTR:
+                    log_structured("SUBS_WARNING", {"symbol": sym, "message": "No instrument found, subscribing to both books"})
+                    PRINTED_NO_INSTR.add(sym)
+                nasdaq_syms.append(sym)
+                nyse_syms.append(sym)
+            elif ex == "NASDAQ":
+                nasdaq_syms.append(sym)
+            elif ex == "NYSE":
+                nyse_syms.append(sym)
+            else:
+                if sym not in PRINTED_NO_INSTR:
+                    log_structured("SUBS_WARNING", {"symbol": sym, "exchange": ex, "message": "Unsupported exchange, subscribing to both"})
+                    PRINTED_NO_INSTR.add(sym)
+                nasdaq_syms.append(sym)
+                nyse_syms.append(sym)
+
+        if nasdaq_syms:
+            await stream.nasdaq_book_subs(nasdaq_syms)
+        if nyse_syms:
+            await stream.nyse_book_subs(nyse_syms)
+
+        log_structured("SUBS", {"message": f"Subscribed to L1, {'timesales' if has_ts else 'chart'}, and L2 for: {', '.join(SYMBOLS)}"})
+
+    await _subscribe_all()
     log_structured("START", {
         "symbols": SYMBOLS,
         "window": WINDOW_SECONDS,
@@ -1316,14 +1363,18 @@ async def main():
                         for name, trader in traders
                         if hasattr(trader, "_check_profit_limits")
                     ]
-                    for future in concurrent.futures.as_completed(futs):
-                        try:
-                            future.result()
-                        except Exception as e:
-                            log_structured("LIMIT_MONITOR_ERROR", {"error": str(e)})
+                    # Await pool work without blocking the loop (see _inline_worker).
+                    if futs:
+                        results = await asyncio.gather(
+                            *(asyncio.wrap_future(f) for f in futs),
+                            return_exceptions=True,
+                        )
+                        for r in results:
+                            if isinstance(r, Exception):
+                                log_structured("LIMIT_MONITOR_ERROR", {"error": str(r)})
             except Exception as exc:
                 log_structured("LIMIT_MONITOR_CRITICAL", {"error": str(exc)})
-            
+
             await asyncio.sleep(0.5)
 
     profit_task = asyncio.create_task(_profit_limit_monitor_task())
@@ -1349,6 +1400,15 @@ async def main():
                             log_structured("STREAM_RECONCILE_ERROR", {"trader": _name, "error": str(_e)})
                 if not await connect_with_retries():
                     log_structured("STREAM_ERROR", {"error": "Reconnection failed"})
+                    break
+                # A fresh login starts an unsubscribed session — re-apply every
+                # subscription or the stream stays silent forever (perpetual 30s
+                # timeout loop) while we may still be holding a position.
+                try:
+                    await _subscribe_all()
+                    log_structured("SUBS", {"status": "resubscribed_after_reconnect"})
+                except Exception as _sub_e:
+                    log_structured("SUBS_ERROR", {"error": f"Re-subscribe after reconnect failed: {_sub_e}"})
                     break
     except KeyboardInterrupt:
         log_structured("STOP", {"message": "User stopped"})

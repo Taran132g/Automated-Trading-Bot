@@ -120,7 +120,10 @@ def run_checks():
 
     # --- 2. Stuck open position ---
     positions = state.get("positions", {})
-    position_timestamps = state.get("position_timestamps", {})
+    # live_trader persists entry times under "position_entry_times" — the old
+    # "position_timestamps" key never existed in the state file, so the stuck-
+    # position check below could never fire.
+    position_timestamps = state.get("position_entry_times", {})
     active_stuck = set()
     for symbol, qty in positions.items():
         if qty == 0:

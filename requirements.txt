@@ -6,3 +6,6 @@ pyotp
 pytz
 anthropic
 ib_insync
+fastapi
+uvicorn[standard]
+requests
