@@ -7,10 +7,10 @@ LOGGER = logging.getLogger("TelegramNotifier")
 class TelegramNotifier:
     def __init__(self):
         self.enabled = False
-        # Fallbacks provided by user for quick deployment
-        self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or "8281503085:AAHvQyEUnpmnriaYN4ngaiYLfDJ_SzLjHNc"
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID") or "8196739097"
-        
+        # Credentials come from the environment only — never hardcode tokens.
+        self.bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+        self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
         if self.bot_token and self.chat_id:
             self.enabled = True
             LOGGER.info("Telegram Notifier enabled.")
@@ -46,7 +46,7 @@ class TelegramNotifier:
     def notify_cooldown(self, cooldown_type: str, account_value: float):
         if not self.enabled:
             return
-        
+
         emoji = "❄️" if "PI" in cooldown_type else "🚨"
         msg = (
             f"{emoji} *Cooldown Triggered*\n"
