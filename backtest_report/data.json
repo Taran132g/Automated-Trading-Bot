@@ -1,0 +1,2409 @@
+{
+  "generated": "2026-06-25T20:37:14",
+  "position_size": 100,
+  "pi_cents": 0.5,
+  "fee_per_1000": 0.25,
+  "window_days": 14,
+  "results": [
+    {
+      "symbol": "AAL",
+      "side": "short",
+      "scenario": "optimistic",
+      "scenario_label": "Mid fills + 0.5c PI (backtest-perfect)",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 67435,
+      "avg_hold_s": 1234.9,
+      "median_hold_s": 75.1,
+      "gross_edge_ps": 0.00679,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.0,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.005,
+        "fill_rate": 100.0,
+        "total_friction": -0.0045
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 297,
+        "win_rate": 64.6,
+        "avg_net_ps": 0.01129,
+        "avg_net_trade": 1.13,
+        "net_total": 335.36
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 301,
+          "win_rate": 64.5,
+          "avg_net_ps": 0.01192,
+          "avg_net_trade": 1.19,
+          "net_total": 358.7
+        },
+        {
+          "latency": 0.25,
+          "trades": 296,
+          "win_rate": 63.5,
+          "avg_net_ps": 0.01129,
+          "avg_net_trade": 1.13,
+          "net_total": 334.1
+        },
+        {
+          "latency": 0.5,
+          "trades": 296,
+          "win_rate": 63.9,
+          "avg_net_ps": 0.01133,
+          "avg_net_trade": 1.13,
+          "net_total": 335.4
+        },
+        {
+          "latency": 1.0,
+          "trades": 297,
+          "win_rate": 64.6,
+          "avg_net_ps": 0.01129,
+          "avg_net_trade": 1.13,
+          "net_total": 335.36
+        },
+        {
+          "latency": 2.0,
+          "trades": 294,
+          "win_rate": 60.9,
+          "avg_net_ps": 0.0111,
+          "avg_net_trade": 1.11,
+          "net_total": 326.43
+        },
+        {
+          "latency": 3.0,
+          "trades": 294,
+          "win_rate": 60.9,
+          "avg_net_ps": 0.0105,
+          "avg_net_trade": 1.05,
+          "net_total": 308.83
+        },
+        {
+          "latency": 5.0,
+          "trades": 294,
+          "win_rate": 61.9,
+          "avg_net_ps": 0.01099,
+          "avg_net_trade": 1.1,
+          "net_total": 323.08
+        },
+        {
+          "latency": 10.0,
+          "trades": 297,
+          "win_rate": 61.3,
+          "avg_net_ps": 0.00818,
+          "avg_net_trade": 0.82,
+          "net_total": 242.96
+        }
+      ]
+    },
+    {
+      "symbol": "AAL",
+      "side": "short",
+      "scenario": "worst_case",
+      "scenario_label": "Full spread + slippage, no PI, +borrow (worst-case live)",
+      "headline_latency": 2.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 67435,
+      "avg_hold_s": 1242.2,
+      "median_hold_s": 74.4,
+      "gross_edge_ps": 0.0066,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.02,
+        "adverse": 0.005,
+        "borrow": 0.002,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 100.0,
+        "total_friction": 0.0275
+      },
+      "headline": {
+        "latency": 2.0,
+        "trades": 294,
+        "win_rate": 11.2,
+        "avg_net_ps": -0.0209,
+        "avg_net_trade": -2.09,
+        "net_total": -614.37
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 301,
+          "win_rate": 13.0,
+          "avg_net_ps": -0.02008,
+          "avg_net_trade": -2.01,
+          "net_total": -604.5
+        },
+        {
+          "latency": 0.25,
+          "trades": 296,
+          "win_rate": 10.8,
+          "avg_net_ps": -0.02071,
+          "avg_net_trade": -2.07,
+          "net_total": -613.1
+        },
+        {
+          "latency": 0.5,
+          "trades": 296,
+          "win_rate": 10.8,
+          "avg_net_ps": -0.02067,
+          "avg_net_trade": -2.07,
+          "net_total": -611.8
+        },
+        {
+          "latency": 1.0,
+          "trades": 297,
+          "win_rate": 10.8,
+          "avg_net_ps": -0.02071,
+          "avg_net_trade": -2.07,
+          "net_total": -615.04
+        },
+        {
+          "latency": 2.0,
+          "trades": 294,
+          "win_rate": 11.2,
+          "avg_net_ps": -0.0209,
+          "avg_net_trade": -2.09,
+          "net_total": -614.37
+        },
+        {
+          "latency": 3.0,
+          "trades": 294,
+          "win_rate": 11.6,
+          "avg_net_ps": -0.0215,
+          "avg_net_trade": -2.15,
+          "net_total": -631.97
+        },
+        {
+          "latency": 5.0,
+          "trades": 294,
+          "win_rate": 12.2,
+          "avg_net_ps": -0.02101,
+          "avg_net_trade": -2.1,
+          "net_total": -617.72
+        },
+        {
+          "latency": 10.0,
+          "trades": 297,
+          "win_rate": 10.8,
+          "avg_net_ps": -0.02382,
+          "avg_net_trade": -2.38,
+          "net_total": -707.44
+        }
+      ]
+    },
+    {
+      "symbol": "AAL",
+      "side": "short",
+      "scenario": "maker",
+      "scenario_label": "Passive limits: earn half-spread, but only fill on adverse paths",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 67435,
+      "avg_hold_s": 548.4,
+      "median_hold_s": 52.9,
+      "gross_edge_ps": 0.00679,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": -0.01,
+        "adverse": 0.0,
+        "borrow": 0.002,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 9.3,
+        "total_friction": -0.0075
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 206,
+        "win_rate": 71.8,
+        "avg_net_ps": 0.01204,
+        "avg_net_trade": 1.2,
+        "net_total": 248.12
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 207,
+          "win_rate": 71.5,
+          "avg_net_ps": 0.01242,
+          "avg_net_trade": 1.24,
+          "net_total": 257.08
+        },
+        {
+          "latency": 0.25,
+          "trades": 207,
+          "win_rate": 75.4,
+          "avg_net_ps": 0.01262,
+          "avg_net_trade": 1.26,
+          "net_total": 261.33
+        },
+        {
+          "latency": 0.5,
+          "trades": 206,
+          "win_rate": 72.3,
+          "avg_net_ps": 0.01225,
+          "avg_net_trade": 1.22,
+          "net_total": 252.33
+        },
+        {
+          "latency": 1.0,
+          "trades": 206,
+          "win_rate": 71.8,
+          "avg_net_ps": 0.01204,
+          "avg_net_trade": 1.2,
+          "net_total": 248.12
+        },
+        {
+          "latency": 2.0,
+          "trades": 212,
+          "win_rate": 72.6,
+          "avg_net_ps": 0.01226,
+          "avg_net_trade": 1.23,
+          "net_total": 259.9
+        },
+        {
+          "latency": 3.0,
+          "trades": 216,
+          "win_rate": 70.4,
+          "avg_net_ps": 0.01069,
+          "avg_net_trade": 1.07,
+          "net_total": 230.81
+        },
+        {
+          "latency": 5.0,
+          "trades": 205,
+          "win_rate": 70.2,
+          "avg_net_ps": 0.01056,
+          "avg_net_trade": 1.06,
+          "net_total": 216.56
+        },
+        {
+          "latency": 10.0,
+          "trades": 199,
+          "win_rate": 68.3,
+          "avg_net_ps": 0.00974,
+          "avg_net_trade": 0.97,
+          "net_total": 193.89
+        }
+      ]
+    },
+    {
+      "symbol": "AAL",
+      "side": "long",
+      "scenario": "optimistic",
+      "scenario_label": "Mid fills + 0.5c PI (backtest-perfect)",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 67435,
+      "avg_hold_s": 831.5,
+      "median_hold_s": 76.2,
+      "gross_edge_ps": -0.00129,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.0,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.005,
+        "fill_rate": 100.0,
+        "total_friction": -0.0045
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 296,
+        "win_rate": 67.2,
+        "avg_net_ps": 0.00321,
+        "avg_net_trade": 0.32,
+        "net_total": 95.03
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 300,
+          "win_rate": 66.0,
+          "avg_net_ps": 0.00396,
+          "avg_net_trade": 0.4,
+          "net_total": 118.75
+        },
+        {
+          "latency": 0.25,
+          "trades": 295,
+          "win_rate": 66.1,
+          "avg_net_ps": 0.00318,
+          "avg_net_trade": 0.32,
+          "net_total": 93.77
+        },
+        {
+          "latency": 0.5,
+          "trades": 295,
+          "win_rate": 66.8,
+          "avg_net_ps": 0.00322,
+          "avg_net_trade": 0.32,
+          "net_total": 95.07
+        },
+        {
+          "latency": 1.0,
+          "trades": 296,
+          "win_rate": 67.2,
+          "avg_net_ps": 0.00321,
+          "avg_net_trade": 0.32,
+          "net_total": 95.03
+        },
+        {
+          "latency": 2.0,
+          "trades": 293,
+          "win_rate": 67.6,
+          "avg_net_ps": 0.00331,
+          "avg_net_trade": 0.33,
+          "net_total": 96.98
+        },
+        {
+          "latency": 3.0,
+          "trades": 293,
+          "win_rate": 66.2,
+          "avg_net_ps": 0.00295,
+          "avg_net_trade": 0.29,
+          "net_total": 86.38
+        },
+        {
+          "latency": 5.0,
+          "trades": 293,
+          "win_rate": 65.9,
+          "avg_net_ps": 0.00283,
+          "avg_net_trade": 0.28,
+          "net_total": 83.01
+        },
+        {
+          "latency": 10.0,
+          "trades": 296,
+          "win_rate": 63.5,
+          "avg_net_ps": 5e-05,
+          "avg_net_trade": 0.01,
+          "net_total": 1.51
+        }
+      ]
+    },
+    {
+      "symbol": "AAL",
+      "side": "long",
+      "scenario": "worst_case",
+      "scenario_label": "Full spread + slippage, no PI, +borrow (worst-case live)",
+      "headline_latency": 2.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 67435,
+      "avg_hold_s": 838.4,
+      "median_hold_s": 75.5,
+      "gross_edge_ps": -0.00119,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.02,
+        "adverse": 0.005,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 100.0,
+        "total_friction": 0.0255
+      },
+      "headline": {
+        "latency": 2.0,
+        "trades": 293,
+        "win_rate": 8.5,
+        "avg_net_ps": -0.02669,
+        "avg_net_trade": -2.67,
+        "net_total": -782.02
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 300,
+          "win_rate": 10.3,
+          "avg_net_ps": -0.02604,
+          "avg_net_trade": -2.6,
+          "net_total": -781.25
+        },
+        {
+          "latency": 0.25,
+          "trades": 295,
+          "win_rate": 8.8,
+          "avg_net_ps": -0.02682,
+          "avg_net_trade": -2.68,
+          "net_total": -791.23
+        },
+        {
+          "latency": 0.5,
+          "trades": 295,
+          "win_rate": 8.8,
+          "avg_net_ps": -0.02678,
+          "avg_net_trade": -2.68,
+          "net_total": -789.93
+        },
+        {
+          "latency": 1.0,
+          "trades": 296,
+          "win_rate": 8.4,
+          "avg_net_ps": -0.02679,
+          "avg_net_trade": -2.68,
+          "net_total": -792.97
+        },
+        {
+          "latency": 2.0,
+          "trades": 293,
+          "win_rate": 8.5,
+          "avg_net_ps": -0.02669,
+          "avg_net_trade": -2.67,
+          "net_total": -782.02
+        },
+        {
+          "latency": 3.0,
+          "trades": 293,
+          "win_rate": 9.2,
+          "avg_net_ps": -0.02705,
+          "avg_net_trade": -2.71,
+          "net_total": -792.62
+        },
+        {
+          "latency": 5.0,
+          "trades": 293,
+          "win_rate": 8.5,
+          "avg_net_ps": -0.02717,
+          "avg_net_trade": -2.72,
+          "net_total": -795.99
+        },
+        {
+          "latency": 10.0,
+          "trades": 296,
+          "win_rate": 8.4,
+          "avg_net_ps": -0.02995,
+          "avg_net_trade": -2.99,
+          "net_total": -886.49
+        }
+      ]
+    },
+    {
+      "symbol": "AAL",
+      "side": "long",
+      "scenario": "maker",
+      "scenario_label": "Passive limits: earn half-spread, but only fill on adverse paths",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 67435,
+      "avg_hold_s": 2460.1,
+      "median_hold_s": 59.5,
+      "gross_edge_ps": -0.00129,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": -0.01,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 8.5,
+        "total_friction": -0.0095
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 191,
+        "win_rate": 73.8,
+        "avg_net_ps": 0.00133,
+        "avg_net_trade": 0.13,
+        "net_total": 25.44
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 183,
+          "win_rate": 74.3,
+          "avg_net_ps": 0.00126,
+          "avg_net_trade": 0.13,
+          "net_total": 23.09
+        },
+        {
+          "latency": 0.25,
+          "trades": 189,
+          "win_rate": 75.7,
+          "avg_net_ps": 0.00152,
+          "avg_net_trade": 0.15,
+          "net_total": 28.65
+        },
+        {
+          "latency": 0.5,
+          "trades": 190,
+          "win_rate": 74.2,
+          "avg_net_ps": 0.00163,
+          "avg_net_trade": 0.16,
+          "net_total": 30.9
+        },
+        {
+          "latency": 1.0,
+          "trades": 191,
+          "win_rate": 73.8,
+          "avg_net_ps": 0.00133,
+          "avg_net_trade": 0.13,
+          "net_total": 25.44
+        },
+        {
+          "latency": 2.0,
+          "trades": 197,
+          "win_rate": 74.1,
+          "avg_net_ps": 0.00182,
+          "avg_net_trade": 0.18,
+          "net_total": 35.92
+        },
+        {
+          "latency": 3.0,
+          "trades": 192,
+          "win_rate": 72.9,
+          "avg_net_ps": 0.00495,
+          "avg_net_trade": 0.49,
+          "net_total": 95.01
+        },
+        {
+          "latency": 5.0,
+          "trades": 200,
+          "win_rate": 72.5,
+          "avg_net_ps": 0.00098,
+          "avg_net_trade": 0.1,
+          "net_total": 19.57
+        },
+        {
+          "latency": 10.0,
+          "trades": 201,
+          "win_rate": 73.6,
+          "avg_net_ps": 0.00028,
+          "avg_net_trade": 0.03,
+          "net_total": 5.68
+        }
+      ]
+    },
+    {
+      "symbol": "RIG",
+      "side": "short",
+      "scenario": "optimistic",
+      "scenario_label": "Mid fills + 0.5c PI (backtest-perfect)",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 101408,
+      "avg_hold_s": 553.9,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": 0.00018,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.0,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.005,
+        "fill_rate": 100.0,
+        "total_friction": -0.0045
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 919,
+        "win_rate": 87.1,
+        "avg_net_ps": 0.00468,
+        "avg_net_trade": 0.47,
+        "net_total": 430.01
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 937,
+          "win_rate": 86.4,
+          "avg_net_ps": 0.00474,
+          "avg_net_trade": 0.47,
+          "net_total": 443.71
+        },
+        {
+          "latency": 0.25,
+          "trades": 920,
+          "win_rate": 86.8,
+          "avg_net_ps": 0.00468,
+          "avg_net_trade": 0.47,
+          "net_total": 430.86
+        },
+        {
+          "latency": 0.5,
+          "trades": 919,
+          "win_rate": 87.1,
+          "avg_net_ps": 0.00468,
+          "avg_net_trade": 0.47,
+          "net_total": 430.0
+        },
+        {
+          "latency": 1.0,
+          "trades": 919,
+          "win_rate": 87.1,
+          "avg_net_ps": 0.00468,
+          "avg_net_trade": 0.47,
+          "net_total": 430.01
+        },
+        {
+          "latency": 2.0,
+          "trades": 912,
+          "win_rate": 87.0,
+          "avg_net_ps": 0.00469,
+          "avg_net_trade": 0.47,
+          "net_total": 427.66
+        },
+        {
+          "latency": 3.0,
+          "trades": 911,
+          "win_rate": 85.7,
+          "avg_net_ps": 0.00463,
+          "avg_net_trade": 0.46,
+          "net_total": 421.61
+        },
+        {
+          "latency": 5.0,
+          "trades": 909,
+          "win_rate": 85.7,
+          "avg_net_ps": 0.00469,
+          "avg_net_trade": 0.47,
+          "net_total": 426.57
+        },
+        {
+          "latency": 10.0,
+          "trades": 918,
+          "win_rate": 85.4,
+          "avg_net_ps": 0.00445,
+          "avg_net_trade": 0.44,
+          "net_total": 408.35
+        }
+      ]
+    },
+    {
+      "symbol": "RIG",
+      "side": "short",
+      "scenario": "worst_case",
+      "scenario_label": "Full spread + slippage, no PI, +borrow (worst-case live)",
+      "headline_latency": 2.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 101408,
+      "avg_hold_s": 469.5,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": 0.00019,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.02,
+        "adverse": 0.005,
+        "borrow": 0.002,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 100.0,
+        "total_friction": 0.0275
+      },
+      "headline": {
+        "latency": 2.0,
+        "trades": 912,
+        "win_rate": 1.4,
+        "avg_net_ps": -0.02731,
+        "avg_net_trade": -2.73,
+        "net_total": -2490.74
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 937,
+          "win_rate": 1.8,
+          "avg_net_ps": -0.02726,
+          "avg_net_trade": -2.73,
+          "net_total": -2554.69
+        },
+        {
+          "latency": 0.25,
+          "trades": 920,
+          "win_rate": 2.0,
+          "avg_net_ps": -0.02732,
+          "avg_net_trade": -2.73,
+          "net_total": -2513.14
+        },
+        {
+          "latency": 0.5,
+          "trades": 919,
+          "win_rate": 2.0,
+          "avg_net_ps": -0.02732,
+          "avg_net_trade": -2.73,
+          "net_total": -2510.8
+        },
+        {
+          "latency": 1.0,
+          "trades": 919,
+          "win_rate": 2.0,
+          "avg_net_ps": -0.02732,
+          "avg_net_trade": -2.73,
+          "net_total": -2510.79
+        },
+        {
+          "latency": 2.0,
+          "trades": 912,
+          "win_rate": 1.4,
+          "avg_net_ps": -0.02731,
+          "avg_net_trade": -2.73,
+          "net_total": -2490.74
+        },
+        {
+          "latency": 3.0,
+          "trades": 911,
+          "win_rate": 1.5,
+          "avg_net_ps": -0.02737,
+          "avg_net_trade": -2.74,
+          "net_total": -2493.59
+        },
+        {
+          "latency": 5.0,
+          "trades": 909,
+          "win_rate": 1.5,
+          "avg_net_ps": -0.02731,
+          "avg_net_trade": -2.73,
+          "net_total": -2482.23
+        },
+        {
+          "latency": 10.0,
+          "trades": 918,
+          "win_rate": 1.3,
+          "avg_net_ps": -0.02755,
+          "avg_net_trade": -2.76,
+          "net_total": -2529.25
+        }
+      ]
+    },
+    {
+      "symbol": "RIG",
+      "side": "short",
+      "scenario": "maker",
+      "scenario_label": "Passive limits: earn half-spread, but only fill on adverse paths",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 101408,
+      "avg_hold_s": 404.4,
+      "median_hold_s": 1.5,
+      "gross_edge_ps": 0.00018,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": -0.01,
+        "adverse": 0.0,
+        "borrow": 0.002,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 3.1,
+        "total_friction": -0.0075
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 222,
+        "win_rate": 82.9,
+        "avg_net_ps": 0.00697,
+        "avg_net_trade": 0.7,
+        "net_total": 154.74
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 216,
+          "win_rate": 81.9,
+          "avg_net_ps": 0.00686,
+          "avg_net_trade": 0.69,
+          "net_total": 148.19
+        },
+        {
+          "latency": 0.25,
+          "trades": 222,
+          "win_rate": 82.0,
+          "avg_net_ps": 0.00673,
+          "avg_net_trade": 0.67,
+          "net_total": 149.5
+        },
+        {
+          "latency": 0.5,
+          "trades": 224,
+          "win_rate": 82.6,
+          "avg_net_ps": 0.00685,
+          "avg_net_trade": 0.69,
+          "net_total": 153.54
+        },
+        {
+          "latency": 1.0,
+          "trades": 222,
+          "win_rate": 82.9,
+          "avg_net_ps": 0.00697,
+          "avg_net_trade": 0.7,
+          "net_total": 154.74
+        },
+        {
+          "latency": 2.0,
+          "trades": 222,
+          "win_rate": 83.3,
+          "avg_net_ps": 0.00784,
+          "avg_net_trade": 0.78,
+          "net_total": 174.06
+        },
+        {
+          "latency": 3.0,
+          "trades": 221,
+          "win_rate": 82.4,
+          "avg_net_ps": 0.00749,
+          "avg_net_trade": 0.75,
+          "net_total": 165.6
+        },
+        {
+          "latency": 5.0,
+          "trades": 226,
+          "win_rate": 80.5,
+          "avg_net_ps": 0.00774,
+          "avg_net_trade": 0.77,
+          "net_total": 174.88
+        },
+        {
+          "latency": 10.0,
+          "trades": 212,
+          "win_rate": 80.2,
+          "avg_net_ps": 0.00714,
+          "avg_net_trade": 0.71,
+          "net_total": 151.34
+        }
+      ]
+    },
+    {
+      "symbol": "RIG",
+      "side": "long",
+      "scenario": "optimistic",
+      "scenario_label": "Mid fills + 0.5c PI (backtest-perfect)",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 101408,
+      "avg_hold_s": 112.8,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": -0.00022,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.0,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.005,
+        "fill_rate": 100.0,
+        "total_friction": -0.0045
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 920,
+        "win_rate": 85.2,
+        "avg_net_ps": 0.00428,
+        "avg_net_trade": 0.43,
+        "net_total": 393.46
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 938,
+          "win_rate": 85.5,
+          "avg_net_ps": 0.00434,
+          "avg_net_trade": 0.43,
+          "net_total": 407.16
+        },
+        {
+          "latency": 0.25,
+          "trades": 921,
+          "win_rate": 85.3,
+          "avg_net_ps": 0.00428,
+          "avg_net_trade": 0.43,
+          "net_total": 394.31
+        },
+        {
+          "latency": 0.5,
+          "trades": 920,
+          "win_rate": 85.3,
+          "avg_net_ps": 0.00428,
+          "avg_net_trade": 0.43,
+          "net_total": 393.45
+        },
+        {
+          "latency": 1.0,
+          "trades": 920,
+          "win_rate": 85.2,
+          "avg_net_ps": 0.00428,
+          "avg_net_trade": 0.43,
+          "net_total": 393.46
+        },
+        {
+          "latency": 2.0,
+          "trades": 913,
+          "win_rate": 84.4,
+          "avg_net_ps": 0.00427,
+          "avg_net_trade": 0.43,
+          "net_total": 389.61
+        },
+        {
+          "latency": 3.0,
+          "trades": 912,
+          "win_rate": 84.4,
+          "avg_net_ps": 0.00421,
+          "avg_net_trade": 0.42,
+          "net_total": 383.76
+        },
+        {
+          "latency": 5.0,
+          "trades": 910,
+          "win_rate": 84.9,
+          "avg_net_ps": 0.00422,
+          "avg_net_trade": 0.42,
+          "net_total": 383.72
+        },
+        {
+          "latency": 10.0,
+          "trades": 919,
+          "win_rate": 84.4,
+          "avg_net_ps": 0.00403,
+          "avg_net_trade": 0.4,
+          "net_total": 370.62
+        }
+      ]
+    },
+    {
+      "symbol": "RIG",
+      "side": "long",
+      "scenario": "worst_case",
+      "scenario_label": "Full spread + slippage, no PI, +borrow (worst-case live)",
+      "headline_latency": 2.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 101408,
+      "avg_hold_s": 202.2,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": -0.00023,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.02,
+        "adverse": 0.005,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 100.0,
+        "total_friction": 0.0255
+      },
+      "headline": {
+        "latency": 2.0,
+        "trades": 913,
+        "win_rate": 1.3,
+        "avg_net_ps": -0.02573,
+        "avg_net_trade": -2.57,
+        "net_total": -2349.39
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 938,
+          "win_rate": 1.2,
+          "avg_net_ps": -0.02566,
+          "avg_net_trade": -2.57,
+          "net_total": -2406.84
+        },
+        {
+          "latency": 0.25,
+          "trades": 921,
+          "win_rate": 1.1,
+          "avg_net_ps": -0.02572,
+          "avg_net_trade": -2.57,
+          "net_total": -2368.69
+        },
+        {
+          "latency": 0.5,
+          "trades": 920,
+          "win_rate": 1.1,
+          "avg_net_ps": -0.02572,
+          "avg_net_trade": -2.57,
+          "net_total": -2366.55
+        },
+        {
+          "latency": 1.0,
+          "trades": 920,
+          "win_rate": 1.1,
+          "avg_net_ps": -0.02572,
+          "avg_net_trade": -2.57,
+          "net_total": -2366.54
+        },
+        {
+          "latency": 2.0,
+          "trades": 913,
+          "win_rate": 1.3,
+          "avg_net_ps": -0.02573,
+          "avg_net_trade": -2.57,
+          "net_total": -2349.39
+        },
+        {
+          "latency": 3.0,
+          "trades": 912,
+          "win_rate": 1.5,
+          "avg_net_ps": -0.02579,
+          "avg_net_trade": -2.58,
+          "net_total": -2352.24
+        },
+        {
+          "latency": 5.0,
+          "trades": 910,
+          "win_rate": 1.0,
+          "avg_net_ps": -0.02578,
+          "avg_net_trade": -2.58,
+          "net_total": -2346.28
+        },
+        {
+          "latency": 10.0,
+          "trades": 919,
+          "win_rate": 0.9,
+          "avg_net_ps": -0.02597,
+          "avg_net_trade": -2.6,
+          "net_total": -2386.38
+        }
+      ]
+    },
+    {
+      "symbol": "RIG",
+      "side": "long",
+      "scenario": "maker",
+      "scenario_label": "Passive limits: earn half-spread, but only fill on adverse paths",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 101408,
+      "avg_hold_s": 42.5,
+      "median_hold_s": -0.0,
+      "gross_edge_ps": -0.00022,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": -0.01,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 2.8,
+        "total_friction": -0.0095
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 239,
+        "win_rate": 87.9,
+        "avg_net_ps": 0.01055,
+        "avg_net_trade": 1.06,
+        "net_total": 252.25
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 246,
+          "win_rate": 88.2,
+          "avg_net_ps": 0.01039,
+          "avg_net_trade": 1.04,
+          "net_total": 255.57
+        },
+        {
+          "latency": 0.25,
+          "trades": 238,
+          "win_rate": 87.4,
+          "avg_net_ps": 0.01058,
+          "avg_net_trade": 1.06,
+          "net_total": 251.69
+        },
+        {
+          "latency": 0.5,
+          "trades": 239,
+          "win_rate": 87.9,
+          "avg_net_ps": 0.01055,
+          "avg_net_trade": 1.06,
+          "net_total": 252.22
+        },
+        {
+          "latency": 1.0,
+          "trades": 239,
+          "win_rate": 87.9,
+          "avg_net_ps": 0.01055,
+          "avg_net_trade": 1.06,
+          "net_total": 252.25
+        },
+        {
+          "latency": 2.0,
+          "trades": 237,
+          "win_rate": 86.5,
+          "avg_net_ps": 0.01032,
+          "avg_net_trade": 1.03,
+          "net_total": 244.57
+        },
+        {
+          "latency": 3.0,
+          "trades": 244,
+          "win_rate": 87.7,
+          "avg_net_ps": 0.01025,
+          "avg_net_trade": 1.03,
+          "net_total": 250.22
+        },
+        {
+          "latency": 5.0,
+          "trades": 230,
+          "win_rate": 87.0,
+          "avg_net_ps": 0.00948,
+          "avg_net_trade": 0.95,
+          "net_total": 217.98
+        },
+        {
+          "latency": 10.0,
+          "trades": 210,
+          "win_rate": 87.1,
+          "avg_net_ps": 0.00897,
+          "avg_net_trade": 0.9,
+          "net_total": 188.41
+        }
+      ]
+    },
+    {
+      "symbol": "F",
+      "side": "short",
+      "scenario": "optimistic",
+      "scenario_label": "Mid fills + 0.5c PI (backtest-perfect)",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 114645,
+      "avg_hold_s": 302.6,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": 0.00152,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.0,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.005,
+        "fill_rate": 100.0,
+        "total_friction": -0.0045
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 1150,
+        "win_rate": 88.7,
+        "avg_net_ps": 0.00602,
+        "avg_net_trade": 0.6,
+        "net_total": 692.39
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 1177,
+          "win_rate": 88.4,
+          "avg_net_ps": 0.00611,
+          "avg_net_trade": 0.61,
+          "net_total": 718.62
+        },
+        {
+          "latency": 0.25,
+          "trades": 1150,
+          "win_rate": 89.0,
+          "avg_net_ps": 0.00609,
+          "avg_net_trade": 0.61,
+          "net_total": 700.5
+        },
+        {
+          "latency": 0.5,
+          "trades": 1150,
+          "win_rate": 89.0,
+          "avg_net_ps": 0.00607,
+          "avg_net_trade": 0.61,
+          "net_total": 698.02
+        },
+        {
+          "latency": 1.0,
+          "trades": 1150,
+          "win_rate": 88.7,
+          "avg_net_ps": 0.00602,
+          "avg_net_trade": 0.6,
+          "net_total": 692.39
+        },
+        {
+          "latency": 2.0,
+          "trades": 1143,
+          "win_rate": 87.9,
+          "avg_net_ps": 0.00598,
+          "avg_net_trade": 0.6,
+          "net_total": 683.1
+        },
+        {
+          "latency": 3.0,
+          "trades": 1142,
+          "win_rate": 88.2,
+          "avg_net_ps": 0.00587,
+          "avg_net_trade": 0.59,
+          "net_total": 670.61
+        },
+        {
+          "latency": 5.0,
+          "trades": 1138,
+          "win_rate": 88.1,
+          "avg_net_ps": 0.00576,
+          "avg_net_trade": 0.58,
+          "net_total": 655.6
+        },
+        {
+          "latency": 10.0,
+          "trades": 1137,
+          "win_rate": 87.6,
+          "avg_net_ps": 0.00581,
+          "avg_net_trade": 0.58,
+          "net_total": 660.47
+        }
+      ]
+    },
+    {
+      "symbol": "F",
+      "side": "short",
+      "scenario": "worst_case",
+      "scenario_label": "Full spread + slippage, no PI, +borrow (worst-case live)",
+      "headline_latency": 2.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 114645,
+      "avg_hold_s": 303.6,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": 0.00148,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.02,
+        "adverse": 0.005,
+        "borrow": 0.002,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 100.0,
+        "total_friction": 0.0275
+      },
+      "headline": {
+        "latency": 2.0,
+        "trades": 1143,
+        "win_rate": 1.0,
+        "avg_net_ps": -0.02602,
+        "avg_net_trade": -2.6,
+        "net_total": -2974.5
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 1177,
+          "win_rate": 1.0,
+          "avg_net_ps": -0.02589,
+          "avg_net_trade": -2.59,
+          "net_total": -3047.78
+        },
+        {
+          "latency": 0.25,
+          "trades": 1150,
+          "win_rate": 1.2,
+          "avg_net_ps": -0.02591,
+          "avg_net_trade": -2.59,
+          "net_total": -2979.5
+        },
+        {
+          "latency": 0.5,
+          "trades": 1150,
+          "win_rate": 1.1,
+          "avg_net_ps": -0.02593,
+          "avg_net_trade": -2.59,
+          "net_total": -2981.98
+        },
+        {
+          "latency": 1.0,
+          "trades": 1150,
+          "win_rate": 1.1,
+          "avg_net_ps": -0.02598,
+          "avg_net_trade": -2.6,
+          "net_total": -2987.61
+        },
+        {
+          "latency": 2.0,
+          "trades": 1143,
+          "win_rate": 1.0,
+          "avg_net_ps": -0.02602,
+          "avg_net_trade": -2.6,
+          "net_total": -2974.5
+        },
+        {
+          "latency": 3.0,
+          "trades": 1142,
+          "win_rate": 0.9,
+          "avg_net_ps": -0.02613,
+          "avg_net_trade": -2.61,
+          "net_total": -2983.79
+        },
+        {
+          "latency": 5.0,
+          "trades": 1138,
+          "win_rate": 0.8,
+          "avg_net_ps": -0.02624,
+          "avg_net_trade": -2.62,
+          "net_total": -2986.0
+        },
+        {
+          "latency": 10.0,
+          "trades": 1137,
+          "win_rate": 1.2,
+          "avg_net_ps": -0.02619,
+          "avg_net_trade": -2.62,
+          "net_total": -2977.93
+        }
+      ]
+    },
+    {
+      "symbol": "F",
+      "side": "short",
+      "scenario": "maker",
+      "scenario_label": "Passive limits: earn half-spread, but only fill on adverse paths",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 114645,
+      "avg_hold_s": 895.3,
+      "median_hold_s": -6.3,
+      "gross_edge_ps": 0.00152,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": -0.01,
+        "adverse": 0.0,
+        "borrow": 0.002,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 5.6,
+        "total_friction": -0.0075
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 361,
+        "win_rate": 86.4,
+        "avg_net_ps": 0.0109,
+        "avg_net_trade": 1.09,
+        "net_total": 393.41
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 357,
+          "win_rate": 87.4,
+          "avg_net_ps": 0.01064,
+          "avg_net_trade": 1.06,
+          "net_total": 379.87
+        },
+        {
+          "latency": 0.25,
+          "trades": 358,
+          "win_rate": 86.6,
+          "avg_net_ps": 0.01062,
+          "avg_net_trade": 1.06,
+          "net_total": 380.19
+        },
+        {
+          "latency": 0.5,
+          "trades": 358,
+          "win_rate": 87.4,
+          "avg_net_ps": 0.01071,
+          "avg_net_trade": 1.07,
+          "net_total": 383.53
+        },
+        {
+          "latency": 1.0,
+          "trades": 361,
+          "win_rate": 86.4,
+          "avg_net_ps": 0.0109,
+          "avg_net_trade": 1.09,
+          "net_total": 393.41
+        },
+        {
+          "latency": 2.0,
+          "trades": 348,
+          "win_rate": 85.9,
+          "avg_net_ps": 0.0111,
+          "avg_net_trade": 1.11,
+          "net_total": 386.14
+        },
+        {
+          "latency": 3.0,
+          "trades": 343,
+          "win_rate": 86.3,
+          "avg_net_ps": 0.011,
+          "avg_net_trade": 1.1,
+          "net_total": 377.32
+        },
+        {
+          "latency": 5.0,
+          "trades": 339,
+          "win_rate": 84.4,
+          "avg_net_ps": 0.01028,
+          "avg_net_trade": 1.03,
+          "net_total": 348.62
+        },
+        {
+          "latency": 10.0,
+          "trades": 343,
+          "win_rate": 84.8,
+          "avg_net_ps": 0.01022,
+          "avg_net_trade": 1.02,
+          "net_total": 350.41
+        }
+      ]
+    },
+    {
+      "symbol": "F",
+      "side": "long",
+      "scenario": "optimistic",
+      "scenario_label": "Mid fills + 0.5c PI (backtest-perfect)",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 114645,
+      "avg_hold_s": 230.1,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": -0.00044,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.0,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.005,
+        "fill_rate": 100.0,
+        "total_friction": -0.0045
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 1151,
+        "win_rate": 85.3,
+        "avg_net_ps": 0.00406,
+        "avg_net_trade": 0.41,
+        "net_total": 466.84
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 1178,
+          "win_rate": 85.9,
+          "avg_net_ps": 0.00419,
+          "avg_net_trade": 0.42,
+          "net_total": 493.07
+        },
+        {
+          "latency": 0.25,
+          "trades": 1151,
+          "win_rate": 85.3,
+          "avg_net_ps": 0.00413,
+          "avg_net_trade": 0.41,
+          "net_total": 474.95
+        },
+        {
+          "latency": 0.5,
+          "trades": 1151,
+          "win_rate": 85.2,
+          "avg_net_ps": 0.0041,
+          "avg_net_trade": 0.41,
+          "net_total": 472.47
+        },
+        {
+          "latency": 1.0,
+          "trades": 1151,
+          "win_rate": 85.3,
+          "avg_net_ps": 0.00406,
+          "avg_net_trade": 0.41,
+          "net_total": 466.84
+        },
+        {
+          "latency": 2.0,
+          "trades": 1144,
+          "win_rate": 85.2,
+          "avg_net_ps": 0.004,
+          "avg_net_trade": 0.4,
+          "net_total": 457.05
+        },
+        {
+          "latency": 3.0,
+          "trades": 1142,
+          "win_rate": 85.1,
+          "avg_net_ps": 0.00392,
+          "avg_net_trade": 0.39,
+          "net_total": 448.11
+        },
+        {
+          "latency": 5.0,
+          "trades": 1138,
+          "win_rate": 85.0,
+          "avg_net_ps": 0.00381,
+          "avg_net_trade": 0.38,
+          "net_total": 433.72
+        },
+        {
+          "latency": 10.0,
+          "trades": 1138,
+          "win_rate": 84.2,
+          "avg_net_ps": 0.00382,
+          "avg_net_trade": 0.38,
+          "net_total": 434.92
+        }
+      ]
+    },
+    {
+      "symbol": "F",
+      "side": "long",
+      "scenario": "worst_case",
+      "scenario_label": "Full spread + slippage, no PI, +borrow (worst-case live)",
+      "headline_latency": 2.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 114645,
+      "avg_hold_s": 231.9,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": -0.0005,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.02,
+        "adverse": 0.005,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 100.0,
+        "total_friction": 0.0255
+      },
+      "headline": {
+        "latency": 2.0,
+        "trades": 1144,
+        "win_rate": 0.8,
+        "avg_net_ps": -0.026,
+        "avg_net_trade": -2.6,
+        "net_total": -2974.95
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 1178,
+          "win_rate": 1.2,
+          "avg_net_ps": -0.02581,
+          "avg_net_trade": -2.58,
+          "net_total": -3040.93
+        },
+        {
+          "latency": 0.25,
+          "trades": 1151,
+          "win_rate": 1.0,
+          "avg_net_ps": -0.02587,
+          "avg_net_trade": -2.59,
+          "net_total": -2978.05
+        },
+        {
+          "latency": 0.5,
+          "trades": 1151,
+          "win_rate": 1.0,
+          "avg_net_ps": -0.0259,
+          "avg_net_trade": -2.59,
+          "net_total": -2980.53
+        },
+        {
+          "latency": 1.0,
+          "trades": 1151,
+          "win_rate": 1.0,
+          "avg_net_ps": -0.02594,
+          "avg_net_trade": -2.59,
+          "net_total": -2986.16
+        },
+        {
+          "latency": 2.0,
+          "trades": 1144,
+          "win_rate": 0.8,
+          "avg_net_ps": -0.026,
+          "avg_net_trade": -2.6,
+          "net_total": -2974.95
+        },
+        {
+          "latency": 3.0,
+          "trades": 1142,
+          "win_rate": 0.9,
+          "avg_net_ps": -0.02608,
+          "avg_net_trade": -2.61,
+          "net_total": -2977.89
+        },
+        {
+          "latency": 5.0,
+          "trades": 1138,
+          "win_rate": 0.6,
+          "avg_net_ps": -0.02619,
+          "avg_net_trade": -2.62,
+          "net_total": -2980.28
+        },
+        {
+          "latency": 10.0,
+          "trades": 1138,
+          "win_rate": 0.6,
+          "avg_net_ps": -0.02618,
+          "avg_net_trade": -2.62,
+          "net_total": -2979.08
+        }
+      ]
+    },
+    {
+      "symbol": "F",
+      "side": "long",
+      "scenario": "maker",
+      "scenario_label": "Passive limits: earn half-spread, but only fill on adverse paths",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 114645,
+      "avg_hold_s": 595.1,
+      "median_hold_s": -5.1,
+      "gross_edge_ps": -0.00044,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": -0.01,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 4.8,
+        "total_friction": -0.0095
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 387,
+        "win_rate": 86.0,
+        "avg_net_ps": 0.00834,
+        "avg_net_trade": 0.83,
+        "net_total": 322.71
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 373,
+          "win_rate": 87.7,
+          "avg_net_ps": 0.0087,
+          "avg_net_trade": 0.87,
+          "net_total": 324.63
+        },
+        {
+          "latency": 0.25,
+          "trades": 382,
+          "win_rate": 87.7,
+          "avg_net_ps": 0.00838,
+          "avg_net_trade": 0.84,
+          "net_total": 319.95
+        },
+        {
+          "latency": 0.5,
+          "trades": 385,
+          "win_rate": 86.8,
+          "avg_net_ps": 0.00836,
+          "avg_net_trade": 0.84,
+          "net_total": 321.68
+        },
+        {
+          "latency": 1.0,
+          "trades": 387,
+          "win_rate": 86.0,
+          "avg_net_ps": 0.00834,
+          "avg_net_trade": 0.83,
+          "net_total": 322.71
+        },
+        {
+          "latency": 2.0,
+          "trades": 377,
+          "win_rate": 83.6,
+          "avg_net_ps": 0.00868,
+          "avg_net_trade": 0.87,
+          "net_total": 327.42
+        },
+        {
+          "latency": 3.0,
+          "trades": 383,
+          "win_rate": 83.0,
+          "avg_net_ps": 0.00867,
+          "avg_net_trade": 0.87,
+          "net_total": 331.89
+        },
+        {
+          "latency": 5.0,
+          "trades": 382,
+          "win_rate": 83.8,
+          "avg_net_ps": 0.00888,
+          "avg_net_trade": 0.89,
+          "net_total": 339.11
+        },
+        {
+          "latency": 10.0,
+          "trades": 404,
+          "win_rate": 87.6,
+          "avg_net_ps": 0.01069,
+          "avg_net_trade": 1.07,
+          "net_total": 431.98
+        }
+      ]
+    },
+    {
+      "symbol": "BBAI",
+      "side": "short",
+      "scenario": "optimistic",
+      "scenario_label": "Mid fills + 0.5c PI (backtest-perfect)",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 106251,
+      "avg_hold_s": 964.5,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": 0.00034,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.0,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.005,
+        "fill_rate": 100.0,
+        "total_friction": -0.0045
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 499,
+        "win_rate": 85.0,
+        "avg_net_ps": 0.00484,
+        "avg_net_trade": 0.48,
+        "net_total": 241.33
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 523,
+          "win_rate": 85.7,
+          "avg_net_ps": 0.00548,
+          "avg_net_trade": 0.55,
+          "net_total": 286.76
+        },
+        {
+          "latency": 0.25,
+          "trades": 501,
+          "win_rate": 84.6,
+          "avg_net_ps": 0.00483,
+          "avg_net_trade": 0.48,
+          "net_total": 241.77
+        },
+        {
+          "latency": 0.5,
+          "trades": 499,
+          "win_rate": 85.2,
+          "avg_net_ps": 0.00485,
+          "avg_net_trade": 0.48,
+          "net_total": 241.85
+        },
+        {
+          "latency": 1.0,
+          "trades": 499,
+          "win_rate": 85.0,
+          "avg_net_ps": 0.00484,
+          "avg_net_trade": 0.48,
+          "net_total": 241.33
+        },
+        {
+          "latency": 2.0,
+          "trades": 495,
+          "win_rate": 86.1,
+          "avg_net_ps": 0.00494,
+          "avg_net_trade": 0.49,
+          "net_total": 244.76
+        },
+        {
+          "latency": 3.0,
+          "trades": 496,
+          "win_rate": 85.3,
+          "avg_net_ps": 0.00491,
+          "avg_net_trade": 0.49,
+          "net_total": 243.33
+        },
+        {
+          "latency": 5.0,
+          "trades": 492,
+          "win_rate": 86.0,
+          "avg_net_ps": 0.00492,
+          "avg_net_trade": 0.49,
+          "net_total": 242.14
+        },
+        {
+          "latency": 10.0,
+          "trades": 510,
+          "win_rate": 85.1,
+          "avg_net_ps": 0.00481,
+          "avg_net_trade": 0.48,
+          "net_total": 245.06
+        }
+      ]
+    },
+    {
+      "symbol": "BBAI",
+      "side": "short",
+      "scenario": "worst_case",
+      "scenario_label": "Full spread + slippage, no PI, +borrow (worst-case live)",
+      "headline_latency": 2.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 106251,
+      "avg_hold_s": 972.0,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": 0.00044,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.02,
+        "adverse": 0.005,
+        "borrow": 0.002,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 100.0,
+        "total_friction": 0.0275
+      },
+      "headline": {
+        "latency": 2.0,
+        "trades": 495,
+        "win_rate": 2.2,
+        "avg_net_ps": -0.02706,
+        "avg_net_trade": -2.71,
+        "net_total": -1339.24
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 523,
+          "win_rate": 2.1,
+          "avg_net_ps": -0.02652,
+          "avg_net_trade": -2.65,
+          "net_total": -1386.84
+        },
+        {
+          "latency": 0.25,
+          "trades": 501,
+          "win_rate": 1.8,
+          "avg_net_ps": -0.02717,
+          "avg_net_trade": -2.72,
+          "net_total": -1361.43
+        },
+        {
+          "latency": 0.5,
+          "trades": 499,
+          "win_rate": 1.8,
+          "avg_net_ps": -0.02715,
+          "avg_net_trade": -2.72,
+          "net_total": -1354.95
+        },
+        {
+          "latency": 1.0,
+          "trades": 499,
+          "win_rate": 1.8,
+          "avg_net_ps": -0.02716,
+          "avg_net_trade": -2.72,
+          "net_total": -1355.47
+        },
+        {
+          "latency": 2.0,
+          "trades": 495,
+          "win_rate": 2.2,
+          "avg_net_ps": -0.02706,
+          "avg_net_trade": -2.71,
+          "net_total": -1339.24
+        },
+        {
+          "latency": 3.0,
+          "trades": 496,
+          "win_rate": 2.0,
+          "avg_net_ps": -0.02709,
+          "avg_net_trade": -2.71,
+          "net_total": -1343.87
+        },
+        {
+          "latency": 5.0,
+          "trades": 492,
+          "win_rate": 2.0,
+          "avg_net_ps": -0.02708,
+          "avg_net_trade": -2.71,
+          "net_total": -1332.26
+        },
+        {
+          "latency": 10.0,
+          "trades": 510,
+          "win_rate": 2.0,
+          "avg_net_ps": -0.02719,
+          "avg_net_trade": -2.72,
+          "net_total": -1386.94
+        }
+      ]
+    },
+    {
+      "symbol": "BBAI",
+      "side": "short",
+      "scenario": "maker",
+      "scenario_label": "Passive limits: earn half-spread, but only fill on adverse paths",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 106251,
+      "avg_hold_s": 3245.4,
+      "median_hold_s": 6.7,
+      "gross_edge_ps": 0.00034,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": -0.01,
+        "adverse": 0.0,
+        "borrow": 0.002,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 3.2,
+        "total_friction": -0.0075
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 100,
+        "win_rate": 70.0,
+        "avg_net_ps": 0.0065,
+        "avg_net_trade": 0.65,
+        "net_total": 65.03
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 102,
+          "win_rate": 72.5,
+          "avg_net_ps": 0.00615,
+          "avg_net_trade": 0.62,
+          "net_total": 62.74
+        },
+        {
+          "latency": 0.25,
+          "trades": 101,
+          "win_rate": 69.3,
+          "avg_net_ps": 0.0061,
+          "avg_net_trade": 0.61,
+          "net_total": 61.62
+        },
+        {
+          "latency": 0.5,
+          "trades": 100,
+          "win_rate": 70.0,
+          "avg_net_ps": 0.00635,
+          "avg_net_trade": 0.64,
+          "net_total": 63.53
+        },
+        {
+          "latency": 1.0,
+          "trades": 100,
+          "win_rate": 70.0,
+          "avg_net_ps": 0.0065,
+          "avg_net_trade": 0.65,
+          "net_total": 65.03
+        },
+        {
+          "latency": 2.0,
+          "trades": 107,
+          "win_rate": 70.1,
+          "avg_net_ps": 0.00994,
+          "avg_net_trade": 0.99,
+          "net_total": 106.31
+        },
+        {
+          "latency": 3.0,
+          "trades": 112,
+          "win_rate": 70.5,
+          "avg_net_ps": 0.00684,
+          "avg_net_trade": 0.68,
+          "net_total": 76.64
+        },
+        {
+          "latency": 5.0,
+          "trades": 114,
+          "win_rate": 74.6,
+          "avg_net_ps": 0.00723,
+          "avg_net_trade": 0.72,
+          "net_total": 82.42
+        },
+        {
+          "latency": 10.0,
+          "trades": 119,
+          "win_rate": 82.4,
+          "avg_net_ps": 0.00777,
+          "avg_net_trade": 0.78,
+          "net_total": 92.42
+        }
+      ]
+    },
+    {
+      "symbol": "BBAI",
+      "side": "long",
+      "scenario": "optimistic",
+      "scenario_label": "Mid fills + 0.5c PI (backtest-perfect)",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 106251,
+      "avg_hold_s": 263.4,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": 1e-05,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.0,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.005,
+        "fill_rate": 100.0,
+        "total_friction": -0.0045
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 499,
+        "win_rate": 83.4,
+        "avg_net_ps": 0.00451,
+        "avg_net_trade": 0.45,
+        "net_total": 224.83
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 523,
+          "win_rate": 82.8,
+          "avg_net_ps": 0.00517,
+          "avg_net_trade": 0.52,
+          "net_total": 270.26
+        },
+        {
+          "latency": 0.25,
+          "trades": 501,
+          "win_rate": 83.2,
+          "avg_net_ps": 0.0045,
+          "avg_net_trade": 0.45,
+          "net_total": 225.27
+        },
+        {
+          "latency": 0.5,
+          "trades": 499,
+          "win_rate": 83.4,
+          "avg_net_ps": 0.00452,
+          "avg_net_trade": 0.45,
+          "net_total": 225.35
+        },
+        {
+          "latency": 1.0,
+          "trades": 499,
+          "win_rate": 83.4,
+          "avg_net_ps": 0.00451,
+          "avg_net_trade": 0.45,
+          "net_total": 224.83
+        },
+        {
+          "latency": 2.0,
+          "trades": 494,
+          "win_rate": 83.6,
+          "avg_net_ps": 0.0047,
+          "avg_net_trade": 0.47,
+          "net_total": 232.3
+        },
+        {
+          "latency": 3.0,
+          "trades": 496,
+          "win_rate": 83.5,
+          "avg_net_ps": 0.00473,
+          "avg_net_trade": 0.47,
+          "net_total": 234.84
+        },
+        {
+          "latency": 5.0,
+          "trades": 492,
+          "win_rate": 83.5,
+          "avg_net_ps": 0.00474,
+          "avg_net_trade": 0.47,
+          "net_total": 233.15
+        },
+        {
+          "latency": 10.0,
+          "trades": 510,
+          "win_rate": 84.1,
+          "avg_net_ps": 0.00448,
+          "avg_net_trade": 0.45,
+          "net_total": 228.56
+        }
+      ]
+    },
+    {
+      "symbol": "BBAI",
+      "side": "long",
+      "scenario": "worst_case",
+      "scenario_label": "Full spread + slippage, no PI, +borrow (worst-case live)",
+      "headline_latency": 2.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 106251,
+      "avg_hold_s": 263.9,
+      "median_hold_s": 1.0,
+      "gross_edge_ps": 0.0002,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": 0.02,
+        "adverse": 0.005,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 100.0,
+        "total_friction": 0.0255
+      },
+      "headline": {
+        "latency": 2.0,
+        "trades": 494,
+        "win_rate": 2.6,
+        "avg_net_ps": -0.0253,
+        "avg_net_trade": -2.53,
+        "net_total": -1249.7
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 523,
+          "win_rate": 2.9,
+          "avg_net_ps": -0.02483,
+          "avg_net_trade": -2.48,
+          "net_total": -1298.74
+        },
+        {
+          "latency": 0.25,
+          "trades": 501,
+          "win_rate": 2.6,
+          "avg_net_ps": -0.0255,
+          "avg_net_trade": -2.55,
+          "net_total": -1277.73
+        },
+        {
+          "latency": 0.5,
+          "trades": 499,
+          "win_rate": 2.6,
+          "avg_net_ps": -0.02548,
+          "avg_net_trade": -2.55,
+          "net_total": -1271.65
+        },
+        {
+          "latency": 1.0,
+          "trades": 499,
+          "win_rate": 2.6,
+          "avg_net_ps": -0.02549,
+          "avg_net_trade": -2.55,
+          "net_total": -1272.17
+        },
+        {
+          "latency": 2.0,
+          "trades": 494,
+          "win_rate": 2.6,
+          "avg_net_ps": -0.0253,
+          "avg_net_trade": -2.53,
+          "net_total": -1249.7
+        },
+        {
+          "latency": 3.0,
+          "trades": 496,
+          "win_rate": 2.8,
+          "avg_net_ps": -0.02527,
+          "avg_net_trade": -2.53,
+          "net_total": -1253.16
+        },
+        {
+          "latency": 5.0,
+          "trades": 492,
+          "win_rate": 2.4,
+          "avg_net_ps": -0.02526,
+          "avg_net_trade": -2.53,
+          "net_total": -1242.85
+        },
+        {
+          "latency": 10.0,
+          "trades": 510,
+          "win_rate": 2.2,
+          "avg_net_ps": -0.02552,
+          "avg_net_trade": -2.55,
+          "net_total": -1301.44
+        }
+      ]
+    },
+    {
+      "symbol": "BBAI",
+      "side": "long",
+      "scenario": "maker",
+      "scenario_label": "Passive limits: earn half-spread, but only fill on adverse paths",
+      "headline_latency": 1.0,
+      "window": [
+        "2026-02-26",
+        "2026-03-05"
+      ],
+      "trading_days": 6,
+      "ticks": 106251,
+      "avg_hold_s": 850.6,
+      "median_hold_s": 36.8,
+      "gross_edge_ps": 1e-05,
+      "breakeven_latency_s": null,
+      "costs": {
+        "spread": -0.01,
+        "adverse": 0.0,
+        "borrow": 0.0,
+        "fees": 0.0005,
+        "pi_credit": 0.0,
+        "fill_rate": 3.1,
+        "total_friction": -0.0095
+      },
+      "headline": {
+        "latency": 1.0,
+        "trades": 101,
+        "win_rate": 81.2,
+        "avg_net_ps": 0.00974,
+        "avg_net_trade": 0.97,
+        "net_total": 98.41
+      },
+      "sweep": [
+        {
+          "latency": 0.0,
+          "trades": 112,
+          "win_rate": 85.7,
+          "avg_net_ps": 0.00973,
+          "avg_net_trade": 0.97,
+          "net_total": 108.96
+        },
+        {
+          "latency": 0.25,
+          "trades": 100,
+          "win_rate": 82.0,
+          "avg_net_ps": 0.00888,
+          "avg_net_trade": 0.89,
+          "net_total": 88.85
+        },
+        {
+          "latency": 0.5,
+          "trades": 100,
+          "win_rate": 81.0,
+          "avg_net_ps": 0.00984,
+          "avg_net_trade": 0.98,
+          "net_total": 98.37
+        },
+        {
+          "latency": 1.0,
+          "trades": 101,
+          "win_rate": 81.2,
+          "avg_net_ps": 0.00974,
+          "avg_net_trade": 0.97,
+          "net_total": 98.41
+        },
+        {
+          "latency": 2.0,
+          "trades": 100,
+          "win_rate": 83.0,
+          "avg_net_ps": 0.01187,
+          "avg_net_trade": 1.19,
+          "net_total": 118.66
+        },
+        {
+          "latency": 3.0,
+          "trades": 96,
+          "win_rate": 82.3,
+          "avg_net_ps": 0.00825,
+          "avg_net_trade": 0.82,
+          "net_total": 79.16
+        },
+        {
+          "latency": 5.0,
+          "trades": 104,
+          "win_rate": 81.7,
+          "avg_net_ps": 0.00893,
+          "avg_net_trade": 0.89,
+          "net_total": 92.85
+        },
+        {
+          "latency": 10.0,
+          "trades": 118,
+          "win_rate": 88.1,
+          "avg_net_ps": 0.00897,
+          "avg_net_trade": 0.9,
+          "net_total": 105.85
+        }
+      ]
+    }
+  ]
+}

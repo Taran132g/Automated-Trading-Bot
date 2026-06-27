@@ -185,6 +185,8 @@ def get_paper_performance():
                 rows_out.append({
                     "symbol": r["symbol"],
                     "total_pnl": round(total_pnl, 2),
+                    "today_pnl": round(today_pnl, 2),
+                    "today_shares": int(today_shares),
                     "trades": r["trades"],
                     "win_rate": round(wins / exits * 100, 1) if exits > 0 else 0.0,
                     "today_win_rate": round(today_wins / today_exits * 100, 1) if today_exits > 0 else 0.0,

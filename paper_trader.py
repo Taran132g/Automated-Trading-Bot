@@ -30,6 +30,19 @@ SLIPPAGE = 0.001
 COMMISSION = 0.0
 STATE_FILE = "paper_trader_state.json"
 
+# ============================================================
+# Maker (passive-limit) fill model
+# ------------------------------------------------------------
+# When enabled, entries/exits rest a passive limit at the near touch instead
+# of taking liquidity at the mid. A resting order only fills when a LATER
+# observed price trades through it (forward-safe — no peeking). Entries that
+# never fill in the window are MISSED; exits that never fill CROSS the spread
+# to guarantee we get flat. This reproduces the backtest's maker economics
+# (earn ~half-spread, miss the fast moves) in live simulation.
+MAKER_ENABLED = bool(_config.get("maker_enabled", False))
+MAKER_HALF_SPREAD = float(_config.get("maker_half_spread_cents", 1.0)) / 100.0  # $/share
+MAKER_FILL_WINDOW = float(_config.get("maker_fill_window_sec", 30.0))           # seconds
+
 
 class PaperTrader:
     """Paper trading engine — FLIP-ONLY version.
@@ -52,6 +65,10 @@ class PaperTrader:
 
         # === Exit cooldown (mirrors live trader: 30s after any close) ===
         self.last_exit_time: dict = {}
+
+        # === Maker: resting passive limit orders (one per symbol) ===
+        # symbol -> {side, qty, limit, deadline, is_exit, mid}
+        self.pending: dict = {}
 
         atexit.register(self.save_state)
 
@@ -312,6 +329,106 @@ class PaperTrader:
             conn.commit()
 
     # ============================================================
+    # MAKER: passive resting-limit fill model
+    # ============================================================
+    @staticmethod
+    def _is_sell_side(side: str) -> bool:
+        return side in ("SHORT", "SELL")
+
+    def _register_pending(self, symbol, side, qty, mid, is_exit):
+        """Rest a passive limit at the near touch (sell at offer, buy at bid)."""
+        h = MAKER_HALF_SPREAD
+        limit = (mid + h) if self._is_sell_side(side) else (mid - h)
+        self.pending[symbol] = {
+            "side": side, "qty": qty, "limit": limit,
+            "deadline": time.time() + MAKER_FILL_WINDOW, "is_exit": is_exit, "mid": mid,
+        }
+        print(f"[PAPER][MAKER] Rest {side} {qty} {symbol} @ ${limit:.4f} "
+              f"(mid ${mid:.4f}, {'exit' if is_exit else 'entry'}, "
+              f"{MAKER_FILL_WINDOW:.0f}s window)", flush=True)
+
+    def _fill_pending(self, symbol, p, fill_price, crossed=False):
+        side = p["side"]
+        qty = p["qty"]
+        self.pending.pop(symbol, None)
+        print(f"[PAPER][{'CROSS' if crossed else 'MAKER'}] Fill {side} {qty} "
+              f"{symbol} @ ${fill_price:.4f}", flush=True)
+        signed = {"SHORT": -qty, "SELL": -qty, "BUY": qty, "COVER": qty}[side]
+        self._execute_order(symbol, signed, fill_price, side)
+        if p["is_exit"]:
+            self.last_exit_time[symbol] = time.time()
+
+    def _check_pending(self, symbol, observed_price, now=None):
+        """Resolve a resting order against a freshly observed price."""
+        p = self.pending.get(symbol)
+        if not p:
+            return
+        now = now if now is not None else time.time()
+        sell_side = self._is_sell_side(p["side"])
+        crossed = (observed_price >= p["limit"]) if sell_side else (observed_price <= p["limit"])
+        if crossed:
+            self._fill_pending(symbol, p, p["limit"])
+            return
+        if now >= p["deadline"]:
+            if p["is_exit"]:
+                # didn't fill passively -> cross to get flat (worse by half-spread)
+                h = MAKER_HALF_SPREAD
+                cross_px = (observed_price - h) if sell_side else (observed_price + h)
+                self._fill_pending(symbol, p, cross_px, crossed=True)
+            else:
+                # entry never filled -> we simply miss the trade
+                print(f"[PAPER][MAKER] {p['side']} {symbol} entry unfilled in "
+                      f"window -> MISS", flush=True)
+                self.pending.pop(symbol, None)
+
+    def _last_alert_price(self, symbol):
+        """Most recent observed price for a symbol, or None if we have none.
+
+        Unlike _get_current_price this never invents a fallback price — a
+        resting order must not fill against a made-up quote.
+        """
+        with closing(self._open_conn()) as conn:
+            row = conn.execute(
+                "SELECT price FROM alerts WHERE symbol=? ORDER BY timestamp DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+        return float(row[0]) if row and row[0] is not None else None
+
+    def _sweep_all_pending(self):
+        """Advance every resting order on each tick so deadlines fire promptly."""
+        if not (MAKER_ENABLED and self.pending):
+            return
+        for sym in list(self.pending.keys()):
+            px = self._last_alert_price(sym)
+            if px is not None:
+                self._check_pending(sym, px)
+
+    def _maker_handle(self, symbol, direction, price, short_size, long_size):
+        """Flip-only decision, but rest a passive limit instead of taking."""
+        if symbol in self.pending:
+            return  # one resting order per symbol at a time
+        current_qty = self.positions.get(symbol, {}).get("qty", 0)
+        cooldown = 30.0
+        if direction == "ask-heavy":
+            if current_qty > 0:                       # exit long -> rest SELL at offer
+                self._register_pending(symbol, "SELL", current_qty, price, is_exit=True)
+            elif current_qty < 0:
+                return                                # already short
+            else:                                     # flat -> rest SHORT entry
+                if time.time() - self.last_exit_time.get(symbol, 0) < cooldown:
+                    return
+                self._register_pending(symbol, "SHORT", short_size, price, is_exit=False)
+        elif direction == "bid-heavy":
+            if current_qty < 0:                       # exit short -> rest COVER at bid
+                self._register_pending(symbol, "COVER", abs(current_qty), price, is_exit=True)
+            elif current_qty > 0:
+                return                                # already long
+            else:                                     # flat -> rest BUY entry
+                if time.time() - self.last_exit_time.get(symbol, 0) < cooldown:
+                    return
+                self._register_pending(symbol, "BUY", long_size, price, is_exit=False)
+
+    # ============================================================
     # FLIP-ONLY ALERT LOGIC
     # ============================================================
     def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, pattern_info: dict = None) -> None:
@@ -329,6 +446,14 @@ class PaperTrader:
         current_short_size = int(SHORT_SIZE * size_factor)
 
         self._record_seen_price(alert_id=alert_id, symbol=symbol, direction=direction, price=price)
+
+        # Maker mode: resolve any resting order against this price, then post a
+        # fresh passive limit. Instant-fill (taker) logic below is skipped.
+        if MAKER_ENABLED:
+            self._check_pending(symbol, price)
+            self._maker_handle(symbol, direction, price, current_short_size, current_position_size)
+            self._update_position_db(symbol, cur_price=price)
+            return
 
         pos = self.positions.get(symbol, {})
         current_qty = pos.get("qty", 0)
@@ -415,6 +540,7 @@ class PaperTrader:
         pattern_info = kwargs.get("pattern_info")
         with self._lock:
             self.last_alert_id = max(self.last_alert_id, int(alert_id))
+            self._sweep_all_pending()  # advance every resting order's deadline
             self._handle_alert(alert_id, symbol, direction, price, range_cents, pattern_info)
             self.save_state()
 

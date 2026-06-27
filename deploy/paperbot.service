@@ -1,0 +1,24 @@
+[Unit]
+Description=MAKER paper-trading supervisor (grok.py + dashboard)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Automated-Trading-Bot
+# DASH_PORT 8013 to match the Mac setup; change if it collides with pais-api.
+Environment=DASH_PORT=8013
+ExecStart=/bin/bash /home/ubuntu/Automated-Trading-Bot/supervisor_paper.sh
+# systemd restarts the supervisor itself if it ever dies; the supervisor in turn
+# restarts grok.py within ~30s of any crash during market hours.
+Restart=always
+RestartSec=10
+# Keep this bot from starving live PAIS (pais-api / dr-profit-listener) — but on a
+# DEDICATED 2nd micro this is just a safety net, not load-shedding.
+MemoryMax=700M
+StandardOutput=append:/home/ubuntu/Automated-Trading-Bot/supervisor.log
+StandardError=append:/home/ubuntu/Automated-Trading-Bot/supervisor.log
+
+[Install]
+WantedBy=multi-user.target
