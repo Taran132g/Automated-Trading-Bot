@@ -147,6 +147,40 @@ class PaperTrader:
             except sqlite3.OperationalError:
                 pass
 
+            # Conviction instrumentation (migration): stamp each trade with the
+            # order-book imbalance that triggered it so we can later answer
+            # "did stronger signals do better?" NULL on rows predating this.
+            for _col, _decl in (
+                ("imbalance_ratio", "REAL"),
+                ("imbalance_duration", "REAL"),
+                ("heavy_venues", "INTEGER"),
+            ):
+                try:
+                    cur.execute(f"ALTER TABLE paper_trades ADD COLUMN {_col} {_decl}")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Miss diagnostics: every entry that never filled in the maker
+            # window. Records how far the resting limit was from where price
+            # actually traded — tells "barely missing" (tweak offset) from
+            # "wildly missing" (no edge), without abandoning the maker posture.
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS paper_misses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp REAL,
+                    symbol TEXT,
+                    side TEXT,
+                    rest_limit REAL,
+                    mid_at_rest REAL,
+                    observed_price REAL,
+                    missed_by_cents REAL,
+                    imbalance_ratio REAL,
+                    imbalance_duration REAL,
+                    heavy_venues INTEGER,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
             cur.execute("DELETE FROM paper_positions")
             conn.commit()
 
@@ -195,7 +229,7 @@ class PaperTrader:
     # ============================================================
     # Order Execution
     # ============================================================
-    def _execute_order(self, symbol, qty, price, side, size_factor=1.0):
+    def _execute_order(self, symbol, qty, price, side, size_factor=1.0, conviction=None):
         notional = abs(qty) * price
 
         # Cash movements
@@ -229,7 +263,7 @@ class PaperTrader:
             )
 
         # Log trade + PnL
-        self._log_trade(symbol, side, abs(qty), price, old_entry, old_qty, size_factor=size_factor)
+        self._log_trade(symbol, side, abs(qty), price, old_entry, old_qty, size_factor=size_factor, conviction=conviction)
 
         # If back to flat remove position
         if pos["qty"] == 0:
@@ -250,7 +284,7 @@ class PaperTrader:
     # ============================================================
     # Trade Logging + PNL Calculation
     # ============================================================
-    def _log_trade(self, symbol, side, qty, price, entry_price, old_qty, size_factor=1.0):
+    def _log_trade(self, symbol, side, qty, price, entry_price, old_qty, size_factor=1.0, conviction=None):
 
         # Correct realized PnL
         pnl = 0.0
@@ -276,15 +310,23 @@ class PaperTrader:
         with open(pnl_file, "w") as f:
             f.write(str(self.daily_pnl))
 
+        # Conviction stamp (order-book imbalance that triggered this trade).
+        conv = conviction or {}
+        _ratio = conv.get("ratio")
+        _dur = conv.get("imbalance_duration")
+        _venues = conv.get("heavy_venues")
+
         # Log to DB
         with closing(self._open_conn()) as conn:
             cur = conn.cursor()
             cur.execute("""
                 INSERT INTO paper_trades
-                (timestamp, symbol, side, qty, price, slippage, commission, pnl, size_factor)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (timestamp, symbol, side, qty, price, slippage, commission, pnl, size_factor,
+                 imbalance_ratio, imbalance_duration, heavy_venues)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (time.time(), symbol, side, qty, price,
-                qty * price * SLIPPAGE, COMMISSION, pnl, size_factor))
+                qty * price * SLIPPAGE, COMMISSION, pnl, size_factor,
+                _ratio, _dur, _venues))
             conn.commit()
 
         # === Enhanced log with daily PnL ===
@@ -335,13 +377,14 @@ class PaperTrader:
     def _is_sell_side(side: str) -> bool:
         return side in ("SHORT", "SELL")
 
-    def _register_pending(self, symbol, side, qty, mid, is_exit):
+    def _register_pending(self, symbol, side, qty, mid, is_exit, conviction=None):
         """Rest a passive limit at the near touch (sell at offer, buy at bid)."""
         h = MAKER_HALF_SPREAD
         limit = (mid + h) if self._is_sell_side(side) else (mid - h)
         self.pending[symbol] = {
             "side": side, "qty": qty, "limit": limit,
             "deadline": time.time() + MAKER_FILL_WINDOW, "is_exit": is_exit, "mid": mid,
+            "conviction": conviction,
         }
         print(f"[PAPER][MAKER] Rest {side} {qty} {symbol} @ ${limit:.4f} "
               f"(mid ${mid:.4f}, {'exit' if is_exit else 'entry'}, "
@@ -354,7 +397,7 @@ class PaperTrader:
         print(f"[PAPER][{'CROSS' if crossed else 'MAKER'}] Fill {side} {qty} "
               f"{symbol} @ ${fill_price:.4f}", flush=True)
         signed = {"SHORT": -qty, "SELL": -qty, "BUY": qty, "COVER": qty}[side]
-        self._execute_order(symbol, signed, fill_price, side)
+        self._execute_order(symbol, signed, fill_price, side, conviction=p.get("conviction"))
         if p["is_exit"]:
             self.last_exit_time[symbol] = time.time()
 
@@ -377,9 +420,32 @@ class PaperTrader:
                 self._fill_pending(symbol, p, cross_px, crossed=True)
             else:
                 # entry never filled -> we simply miss the trade
+                missed_by = ((p["limit"] - observed_price) if sell_side
+                             else (observed_price - p["limit"])) * 100.0
                 print(f"[PAPER][MAKER] {p['side']} {symbol} entry unfilled in "
-                      f"window -> MISS", flush=True)
+                      f"window -> MISS (by {missed_by:.2f}c)", flush=True)
+                self._record_miss(symbol, p, observed_price, missed_by)
                 self.pending.pop(symbol, None)
+
+    def _record_miss(self, symbol, p, observed_price, missed_by_cents):
+        """Persist an unfilled maker entry for fill-quality analysis."""
+        conv = p.get("conviction") or {}
+        try:
+            with closing(self._open_conn()) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO paper_misses
+                    (timestamp, symbol, side, rest_limit, mid_at_rest, observed_price,
+                     missed_by_cents, imbalance_ratio, imbalance_duration, heavy_venues)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (time.time(), symbol, p["side"], p["limit"], p.get("mid"),
+                     observed_price, missed_by_cents,
+                     conv.get("ratio"), conv.get("imbalance_duration"), conv.get("heavy_venues")),
+                )
+                conn.commit()
+        except Exception as e:
+            print(f"[PAPER] miss-log failed: {e}", flush=True)
 
     def _last_alert_price(self, symbol):
         """Most recent observed price for a symbol, or None if we have none.
@@ -403,7 +469,7 @@ class PaperTrader:
             if px is not None:
                 self._check_pending(sym, px)
 
-    def _maker_handle(self, symbol, direction, price, short_size, long_size):
+    def _maker_handle(self, symbol, direction, price, short_size, long_size, conviction=None):
         """Flip-only decision, but rest a passive limit instead of taking."""
         if symbol in self.pending:
             return  # one resting order per symbol at a time
@@ -411,27 +477,27 @@ class PaperTrader:
         cooldown = 30.0
         if direction == "ask-heavy":
             if current_qty > 0:                       # exit long -> rest SELL at offer
-                self._register_pending(symbol, "SELL", current_qty, price, is_exit=True)
+                self._register_pending(symbol, "SELL", current_qty, price, is_exit=True, conviction=conviction)
             elif current_qty < 0:
                 return                                # already short
             else:                                     # flat -> rest SHORT entry
                 if time.time() - self.last_exit_time.get(symbol, 0) < cooldown:
                     return
-                self._register_pending(symbol, "SHORT", short_size, price, is_exit=False)
+                self._register_pending(symbol, "SHORT", short_size, price, is_exit=False, conviction=conviction)
         elif direction == "bid-heavy":
             if current_qty < 0:                       # exit short -> rest COVER at bid
-                self._register_pending(symbol, "COVER", abs(current_qty), price, is_exit=True)
+                self._register_pending(symbol, "COVER", abs(current_qty), price, is_exit=True, conviction=conviction)
             elif current_qty > 0:
                 return                                # already long
             else:                                     # flat -> rest BUY entry
                 if time.time() - self.last_exit_time.get(symbol, 0) < cooldown:
                     return
-                self._register_pending(symbol, "BUY", long_size, price, is_exit=False)
+                self._register_pending(symbol, "BUY", long_size, price, is_exit=False, conviction=conviction)
 
     # ============================================================
     # FLIP-ONLY ALERT LOGIC
     # ============================================================
-    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, pattern_info: dict = None) -> None:
+    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, pattern_info: dict = None, conviction: dict = None) -> None:
         """Core flip-only logic shared by inline + DB polling paths."""
         
         # Determine dynamic size
@@ -451,7 +517,7 @@ class PaperTrader:
         # fresh passive limit. Instant-fill (taker) logic below is skipped.
         if MAKER_ENABLED:
             self._check_pending(symbol, price)
-            self._maker_handle(symbol, direction, price, current_short_size, current_position_size)
+            self._maker_handle(symbol, direction, price, current_short_size, current_position_size, conviction=conviction)
             self._update_position_db(symbol, cur_price=price)
             return
 
@@ -538,10 +604,18 @@ class PaperTrader:
         self._check_kill_switch()
         range_cents = kwargs.get("range_cents", 0.0)
         pattern_info = kwargs.get("pattern_info")
+        # Conviction passed from grok's alert dict (None when polling the DB).
+        conviction = None
+        if any(k in kwargs for k in ("ratio", "imbalance_duration", "heavy_venues")):
+            conviction = {
+                "ratio": kwargs.get("ratio"),
+                "imbalance_duration": kwargs.get("imbalance_duration"),
+                "heavy_venues": kwargs.get("heavy_venues"),
+            }
         with self._lock:
             self.last_alert_id = max(self.last_alert_id, int(alert_id))
             self._sweep_all_pending()  # advance every resting order's deadline
-            self._handle_alert(alert_id, symbol, direction, price, range_cents, pattern_info)
+            self._handle_alert(alert_id, symbol, direction, price, range_cents, pattern_info, conviction=conviction)
             self.save_state()
 
     def monitor_alerts(self):

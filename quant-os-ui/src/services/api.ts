@@ -1,8 +1,14 @@
 import axios from 'axios'
 import { DEMO, demoAdapter } from './demo'
 
+// In prod the UI is served from Vercel while the API lives on the Oracle box,
+// reached over a Tailscale Funnel HTTPS URL. VITE_API_URL points there
+// (e.g. https://quant-os.<tailnet>.ts.net/api). Falls back to same-origin /api
+// for local dev and when the API serves the static build itself.
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) || '/api'
+
 export const api = axios.create({
-  baseURL: '/api',
+  baseURL: API_BASE,
   headers: { 'Content-Type': 'application/json' },
   ...(DEMO ? { adapter: demoAdapter } : {}),
 })
@@ -51,6 +57,7 @@ export const paperService = {
   getTrades: (range = 'today') => api.get(`/paper/trades?range=${range}`),
   getEquityCurve: (range = 'today') => api.get(`/paper/equity-curve?range=${range}`),
   getPerformance: () => api.get('/paper/performance'),
+  getAnalytics: (range = 'all') => api.get(`/paper/analytics?range=${range}`),
 }
 
 export const comparisonService = {

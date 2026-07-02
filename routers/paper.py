@@ -5,6 +5,12 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+except Exception:  # pragma: no cover
+    _ET = None
+
 from fastapi import APIRouter, Query
 
 router = APIRouter()
@@ -196,3 +202,161 @@ def get_paper_performance():
     except Exception:
         pass
     return {"rows": rows_out}
+
+
+# ============================================================
+# Deep analytics: round-trip pairing → hour-of-day, conviction,
+# direction, symbol, and maker miss diagnostics.
+# ============================================================
+def _et_hour(ts: float) -> int:
+    """Hour-of-day (0-23) in US/Eastern for a unix timestamp."""
+    if _ET is not None:
+        return datetime.fromtimestamp(float(ts), _ET).hour
+    return datetime.utcfromtimestamp(float(ts)).hour
+
+
+def _conviction_bucket(ratio) -> str:
+    if ratio is None:
+        return "untagged"
+    r = float(ratio)
+    if r < 3:
+        return "<3"
+    if r < 5:
+        return "3-5"
+    if r < 7:
+        return "5-7"
+    if r < 10:
+        return "7-10"
+    return "10+"
+
+
+def _build_round_trips(rows):
+    """Pair each entry (BUY/SHORT) with its closing leg (SELL/COVER) per symbol.
+    Flip-only means no stacking, so a simple per-symbol open slot is sufficient.
+    The realized PnL lands on the exit; we attach the ENTRY's time + conviction
+    so 'when/under what conviction did we make money' is answerable."""
+    open_by_sym = {}
+    trips = []
+    for r in rows:
+        side = r["side"]
+        if side in ("BUY", "SHORT"):
+            open_by_sym[r["symbol"]] = r
+        elif side in ("SELL", "COVER"):
+            entry = open_by_sym.pop(r["symbol"], None)
+            direction = "long" if side == "SELL" else "short"
+            trips.append({
+                "symbol": r["symbol"],
+                "direction": direction,
+                "pnl": float(r["pnl"] or 0.0),
+                "entry_ts": float(entry["timestamp"]) if entry else float(r["timestamp"]),
+                "exit_ts": float(r["timestamp"]),
+                "ratio": (entry["imbalance_ratio"] if entry else None),
+                "duration": (entry["imbalance_duration"] if entry else None),
+                "venues": (entry["heavy_venues"] if entry else None),
+            })
+    return trips
+
+
+def _agg(trips, keyfn):
+    """Group round-trips by keyfn → pnl / count / win-rate."""
+    buckets = {}
+    for t in trips:
+        k = keyfn(t)
+        b = buckets.setdefault(k, {"pnl": 0.0, "trades": 0, "wins": 0})
+        b["pnl"] += t["pnl"]
+        b["trades"] += 1
+        if t["pnl"] > 0:
+            b["wins"] += 1
+    out = []
+    for k, b in buckets.items():
+        out.append({
+            "key": k,
+            "pnl": round(b["pnl"], 2),
+            "trades": b["trades"],
+            "win_rate": round(b["wins"] / b["trades"] * 100, 1) if b["trades"] else 0.0,
+        })
+    return out
+
+
+@router.get("/analytics")
+def get_paper_analytics(range: str = Query("all")):
+    """All the instrumentation in one payload for the Paper Lab UI."""
+    empty = {"by_hour": [], "by_direction": [], "by_symbol": [],
+             "by_conviction": [], "misses": {}, "range": range, "trips": 0}
+    if not DB_PATH.exists():
+        return empty
+    today_start = _get_today_start()
+    try:
+        with closing(sqlite3.connect(str(DB_PATH))) as conn:
+            conn.row_factory = sqlite3.Row
+            where = "WHERE timestamp >= ?" if range == "today" else ""
+            args = (today_start,) if range == "today" else ()
+            rows = conn.execute(
+                f"SELECT * FROM paper_trades {where} ORDER BY timestamp ASC", args
+            ).fetchall()
+
+            mwhere = "WHERE timestamp >= ?" if range == "today" else ""
+            misses = conn.execute(
+                f"SELECT * FROM paper_misses {mwhere} ORDER BY timestamp ASC", args
+            ).fetchall()
+    except Exception:
+        return empty
+
+    trips = _build_round_trips(rows)
+
+    # by_hour: keep all market hours present so the chart has a clean axis.
+    hour_map = {h["key"]: h for h in _agg(trips, lambda t: _et_hour(t["entry_ts"]))}
+    by_hour = []
+    for h in range_hours():
+        b = hour_map.get(h)
+        by_hour.append({
+            "hour": h,
+            "label": f"{h:02d}:00",
+            "pnl": b["pnl"] if b else 0.0,
+            "trades": b["trades"] if b else 0,
+            "win_rate": b["win_rate"] if b else 0.0,
+        })
+
+    by_direction = sorted(_agg(trips, lambda t: t["direction"]), key=lambda x: x["key"])
+    by_symbol = sorted(_agg(trips, lambda t: t["symbol"]), key=lambda x: -x["pnl"])
+    conv_order = {"<3": 0, "3-5": 1, "5-7": 2, "7-10": 3, "10+": 4, "untagged": 5}
+    by_conviction = sorted(
+        _agg(trips, lambda t: _conviction_bucket(t["ratio"])),
+        key=lambda x: conv_order.get(x["key"], 9),
+    )
+
+    # Miss diagnostics
+    n_miss = len(misses)
+    miss_by_sym = {}
+    miss_dist = []
+    for m in misses:
+        mb = float(m["missed_by_cents"] or 0.0)
+        miss_dist.append(mb)
+        s = miss_by_sym.setdefault(m["symbol"], {"count": 0, "sum_cents": 0.0})
+        s["count"] += 1
+        s["sum_cents"] += mb
+    miss_stats = {
+        "total": n_miss,
+        "avg_missed_cents": round(sum(miss_dist) / n_miss, 2) if n_miss else 0.0,
+        "near_miss_pct": round(sum(1 for d in miss_dist if d <= 1.0) / n_miss * 100, 1) if n_miss else 0.0,
+        "by_symbol": [
+            {"symbol": k, "count": v["count"],
+             "avg_cents": round(v["sum_cents"] / v["count"], 2)}
+            for k, v in sorted(miss_by_sym.items(), key=lambda kv: -kv[1]["count"])
+        ],
+    }
+
+    return {
+        "range": range,
+        "trips": len(trips),
+        "by_hour": by_hour,
+        "by_direction": by_direction,
+        "by_symbol": by_symbol,
+        "by_conviction": by_conviction,
+        "misses": miss_stats,
+    }
+
+
+def range_hours():
+    """Market-relevant hours to display on the hour-of-day chart (ET)."""
+    return list(range(7, 20))  # 7am pre-market → 7pm after-hours, ET

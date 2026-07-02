@@ -203,8 +203,10 @@ export function TelegramPage() {
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const url = `${protocol}://${window.location.host}/api/telegram/ws`
+    const wsBase =
+      (import.meta.env.VITE_WS_URL as string | undefined) ||
+      `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`
+    const url = `${wsBase}/api/telegram/ws`
 
     function connect() {
       const ws = new WebSocket(url)

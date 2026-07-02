@@ -237,6 +237,12 @@ export function HomePage() {
   })
 
   const backendOnline = !!(status?.loop_running || status?.trader_running || status?.grok_running)
+  // System badge: paper trading runs inline in grok, so grok_running == actively
+  // paper trading; supervisor up but market closed == Standby; nothing == Offline.
+  const paperActive = !!status?.grok_running
+  const serviceUp = !!(status?.supervisor_running || status?.trader_running || status?.loop_running)
+  const sysLabel = paperActive ? 'Paper Trading' : serviceUp ? 'Standby' : 'Offline'
+  const sysColor = paperActive ? GREEN : serviceUp ? '#eab308' : RED
   const acctVal = scalperState?.account_details?.liquidation_value
   const scalperPnl = scalperState?.daily_pnl
   const totalPnl = scalperPnl ?? 0
@@ -360,8 +366,8 @@ export function HomePage() {
             />
             <StatPill
               label="System"
-              value={backendOnline ? 'Online' : 'Offline'}
-              color={backendOnline ? GREEN : RED}
+              value={sysLabel}
+              color={sysColor}
             />
           </div>
         </AnimBlock>

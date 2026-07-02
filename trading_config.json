@@ -1,6 +1,6 @@
 {
     "live_symbols": "BBAI",
-    "paper_symbols": "AAL, RIG, F, BBAI",
+    "paper_symbols": "AAL, RIG, F, BBAI, OPEN",
     "live_position_size": 100,
     "paper_position_size": 100,
     "maker_enabled": true,

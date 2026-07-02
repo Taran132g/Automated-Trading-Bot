@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   Activity, Search, GitCompare,
   Terminal, Bot, ShieldAlert, LogOut, X, Radio,
-  LayoutDashboard, LineChart,
+  LayoutDashboard, LineChart, FlaskConical,
 } from 'lucide-react'
 import { useAuthStore } from '@/store/authStore'
 import { authService, adminService } from '@/services/api'
@@ -28,12 +28,13 @@ const NAV_GROUPS = [
     label: 'Live Trading',
     items: [
       { to: '/scalper', icon: Activity, label: 'Scalper', tag: 'LIVE', end: false },
-      { to: '/signals', icon: Radio, label: 'Signals', tag: 'LIVE', end: false },
+      // Signals hidden from nav — route/page kept at /signals.
     ],
   },
   {
     label: 'Simulation',
     items: [
+      { to: '/paper-lab', icon: FlaskConical, label: 'Paper Lab', tag: 'SIM', end: false },
       { to: '/backtest', icon: Search, label: 'Backtest', tag: 'SIM', end: false },
     ],
   },

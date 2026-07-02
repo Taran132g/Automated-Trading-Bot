@@ -13,6 +13,7 @@ import { AgentsPage } from '@/pages/AgentsPage'
 import { AdminPage } from '@/pages/AdminPage'
 import { SignalsPage } from '@/pages/SignalsPage'
 import { AnalyticsPage } from '@/pages/AnalyticsPage'
+import { PaperAnalyticsPage } from '@/pages/PaperAnalyticsPage'
 import { ScreenerPage } from '@/pages/ScreenerPage'
 import { TelegramPage } from '@/pages/TelegramPage'
 
@@ -600,6 +601,7 @@ export default function App() {
             <Route path="/backtest" element={<BacktestPage />} />
             <Route path="/comparison" element={<ComparisonPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
+            <Route path="/paper-lab" element={<PaperAnalyticsPage />} />
             <Route path="/grok" element={<GrokPage />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/signals" element={<SignalsPage />} />

@@ -47,7 +47,12 @@ def get_admin_status():
         "loop_running": _is_process_running("restart_loop.sh"),
         "trader_running": _is_process_running("live_trader.py"),
         "grok_running": _is_process_running("grok.py"),
-        "paper_running": _is_process_running("paper_trader.py"),
+        # In this deployment paper trading runs INLINE inside grok.py (not a
+        # separate paper_trader.py process), so grok_running == "actively paper
+        # trading". supervisor_running == the service is up (may be idle when
+        # the market is closed). The UI uses these for a 3-state badge.
+        "paper_running": _is_process_running("paper_trader.py") or _is_process_running("grok.py"),
+        "supervisor_running": _is_process_running("supervisor_paper.sh"),
         "token_file_exists": SCHWAB_TOKEN_PATH.exists(),
         "token_file_mtime": SCHWAB_TOKEN_PATH.stat().st_mtime if SCHWAB_TOKEN_PATH.exists() else None,
     }

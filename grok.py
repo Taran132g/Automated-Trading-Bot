@@ -865,6 +865,7 @@ def on_book(msg: dict):
                     "target_limit_price": target_limit_price,
                     "vol_per_min": vol_per_min,
                     "range_cents": range_cents,
+                    "imbalance_duration": round(imbalance_duration, 2),
                     "exchanges": [EXCHANGE_MAP.get(ex, ex) for ex in metrics.per_venue.keys()]
                 }
                 alert_history[sym].append(alert)
@@ -1181,6 +1182,9 @@ async def main():
                                 alert["direction"],
                                 float(alert["price"]),
                                 range_cents=float(alert.get("range_cents", 0.0)),
+                                ratio=alert.get("ratio"),
+                                imbalance_duration=alert.get("imbalance_duration"),
+                                heavy_venues=alert.get("heavy_venues"),
                             )
                             for name, trader in traders
                         ]
