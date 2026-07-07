@@ -397,6 +397,13 @@ last_alert: Dict[str, float] = {}
 traders: List = [] # Global list of (name, trader) tuples
 last_imbalance: Dict[str, Deque[tuple[float, str, BookMetrics]]] = defaultdict(lambda: deque(maxlen=200))
 tape_ticks: Dict[str, Deque] = defaultdict(deque)   # (ts, lee_ready_dir, vol_per_min)
+# Trailing-drift tag: the Jun-15 edge backtest and the Jul-06 log replay both
+# found the imbalance signal is MEAN-REVERTING (counter-trend alerts carry the
+# edge; trend-aligned alerts lose). We stamp every alert with the 60s price
+# drift so the Paper Lab can A/B counter vs aligned on forward data before any
+# filtering is turned on.
+price_hist: Dict[str, Deque[tuple[float, float]]] = defaultdict(deque)  # (ts, price)
+DRIFT_WINDOW_SEC: float = 60.0
 _tape_prev_price: Dict[str, float] = {}              # last known price per symbol for tick rule
 _last_msg_ts: float = 0.0
 PRINT_EVERY: int = 20
@@ -635,6 +642,26 @@ def on_timesale(msg: dict):
 _last_pi_read_ts = 0.0
 _cached_rolling_pi = 0.0
 
+def _drift_60s(sym: str, now: float) -> Optional[float]:
+    """Signed price change over the trailing DRIFT_WINDOW_SEC.
+
+    Returns latest_price − price_at_or_before(now − 60s), or None when the
+    history doesn't yet reach back 60s (session open, new symbol). The deque
+    is ascending, so the reference is the last entry old enough to qualify.
+    """
+    ph = price_hist.get(sym)
+    if not ph:
+        return None
+    past = None
+    for ts, px in ph:
+        if ts <= now - DRIFT_WINDOW_SEC:
+            past = px
+        else:
+            break
+    if past is None:
+        return None
+    return ph[-1][1] - past
+
 def on_book(msg: dict):
     global _last_msg_ts, _last_pi_read_ts, _cached_rolling_pi
     now = time()
@@ -713,6 +740,10 @@ def on_book(msg: dict):
                 tape_ticks[sym].popleft()
         if price:
             _tape_prev_price[sym] = price
+            ph = price_hist[sym]
+            ph.append((now, price))
+            while ph and ph[0][0] < now - (DRIFT_WINDOW_SEC + 30.0):
+                ph.popleft()
         # ──────────────────────────────────────────────────────────────────────
 
         if DEBUG:
@@ -853,6 +884,7 @@ def on_book(msg: dict):
 
                 heavy_venues = metrics.ask_heavy_venues if direction == "ask-heavy" else metrics.bid_heavy_venues
                 target_limit_price = bid_price if direction == "bid-heavy" else ask_price
+                drift_60s = _drift_60s(sym, now)
                 alert = {
                     "timestamp": now,
                     "symbol": sym,
@@ -866,6 +898,7 @@ def on_book(msg: dict):
                     "vol_per_min": vol_per_min,
                     "range_cents": range_cents,
                     "imbalance_duration": round(imbalance_duration, 2),
+                    "drift_60s": round(drift_60s, 4) if drift_60s is not None else None,
                     "exchanges": [EXCHANGE_MAP.get(ex, ex) for ex in metrics.per_venue.keys()]
                 }
                 alert_history[sym].append(alert)
@@ -899,7 +932,8 @@ def on_book(msg: dict):
                     "asks": metrics.total_asks,
                     "price": round(price, 4),
                     "vol_per_min": round(vol_per_min, 2),
-                    "imbalance_duration": round(imbalance_duration, 2)
+                    "imbalance_duration": round(imbalance_duration, 2),
+                    "drift_60s": alert["drift_60s"]
                 })
 
 async def resolve_exchange(client: Client, sym: str) -> Optional[str]:
@@ -1137,7 +1171,13 @@ async def main():
         if inline_requests:
             if inline_dry_run:
                 from paper_trader import PaperTrader
-                traders.append(("paper", PaperTrader()))
+                _paper = PaperTrader()
+                # Inline mode dispatches process_alert directly and never calls
+                # start(), so start the maker liveness timer here (no-op unless
+                # maker mode is on) — otherwise pending exits never cross and
+                # the kill switch is ignored on a quiet feed.
+                _paper.start_maker_timer()
+                traders.append(("paper", _paper))
                 trader_kind = "paper"
             else:
                 from live_trader import LiveTrader, SchwabOrderExecutor
@@ -1185,6 +1225,11 @@ async def main():
                                 ratio=alert.get("ratio"),
                                 imbalance_duration=alert.get("imbalance_duration"),
                                 heavy_venues=alert.get("heavy_venues"),
+                                drift_60s=alert.get("drift_60s"),
+                                # Real near-touch (bid for bid-heavy, offer for
+                                # ask-heavy) so the maker sim rests AT the touch
+                                # instead of rebuilding it from a flat constant.
+                                target_limit_price=alert.get("target_limit_price"),
                             )
                             for name, trader in traders
                         ]

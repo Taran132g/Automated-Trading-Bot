@@ -29,6 +29,12 @@ SHORT_SIZE = _paper_size      # Short size
 SLIPPAGE = 0.001
 COMMISSION = 0.0
 STATE_FILE = "paper_trader_state.json"
+BASELINE_CASH = 1_000_000.0
+
+# Sweep cadence for the maker liveness timer (see _maker_timer_loop). Kept
+# small so pending exits cross the spread and the kill switch fires within a
+# second of their deadline even when the alert feed goes quiet.
+MAKER_SWEEP_INTERVAL = 1.0
 
 # ============================================================
 # Maker (passive-limit) fill model
@@ -55,6 +61,24 @@ class PaperTrader:
         self.name = name
         self.db_path = db_path
         self.state_file = state_file
+
+        # === Injectable clock (default: wall clock) ===
+        # The backfill replay sets this per-alert so deadlines, cooldowns and
+        # logged trade timestamps advance on the historical clock instead of
+        # "now". Everything on the maker/cooldown path reads self._now().
+        self._now_override = None
+
+        # === Injectable price source (default: live DB) ===
+        # When set to a {symbol: price} dict, resting-order sweeps read the last
+        # OBSERVED price from here instead of querying the alerts table. This
+        # keeps the replay forward-safe: the alerts table already holds every
+        # (future) row, so a DB query would let an order fill against a price it
+        # could not have seen yet.
+        self._price_source = None
+
+        self._maker_timer = None
+        self._timer_stop = threading.Event()
+
         self.load_state()
         self._init_db_schema()
         self.last_alert_id = self._get_last_alert_id()
@@ -75,25 +99,50 @@ class PaperTrader:
     # ============================================================
     # State Persistence
     # ============================================================
+    def _now(self) -> float:
+        """Current time on the active clock (wall clock, or replay sim time)."""
+        return self._now_override if self._now_override is not None else time.time()
+
     def load_state(self):
-        if Path(self.state_file).exists():
-            try:
-                with open(self.state_file, "r") as f:
-                    data = json.load(f)
-                    self.cash = float(data.get("cash", 1_000_000.0))
-                    # self.positions = data.get("positions", {})  <-- REMOVED
-                    self.positions = {} # Always start empty
-                print(f"[{self.name.upper()}] Loaded state: Cash ${self.cash:,.2f}, {len(self.positions)} positions", flush=True)
-            except:
-                self.cash = 1_000_000.0
-                self.positions = {}
-        else:
-            self.cash = 1_000_000.0
+        # Cash and positions are persisted TOGETHER and must stay consistent:
+        # cash only ever reflects closed round-trips, so it is only correct
+        # relative to the open positions that produced it. The old code kept
+        # cash but always discarded positions, so a crash with a position open
+        # left the entry's cash movement stranded — a permanent phantom
+        # drawdown. We now resume both, or reset both to baseline if the file
+        # is missing/corrupt, so the two can never disagree.
+        self.cash = BASELINE_CASH
+        self.positions = {}
+        if not Path(self.state_file).exists():
+            return
+        try:
+            with open(self.state_file, "r") as f:
+                data = json.load(f)
+            cash = float(data.get("cash", BASELINE_CASH))
+            positions = data.get("positions", {}) or {}
+            # Validate structure before trusting it — a malformed position must
+            # not silently corrupt fills.
+            clean = {}
+            for sym, pos in positions.items():
+                clean[sym] = {
+                    "qty": int(pos["qty"]),
+                    "entry_price": float(pos["entry_price"]),
+                    "entry_time": float(pos.get("entry_time", self._now())),
+                }
+            self.cash = cash
+            self.positions = clean
+            print(f"[{self.name.upper()}] Loaded state: Cash ${self.cash:,.2f}, "
+                  f"{len(self.positions)} position(s) resumed", flush=True)
+        except Exception as e:
+            # Reset cash AND positions together so the invariant holds.
+            self.cash = BASELINE_CASH
             self.positions = {}
+            print(f"[{self.name.upper()}] State file unreadable ({e}); "
+                  f"reset to baseline ${BASELINE_CASH:,.2f}", flush=True)
 
     def save_state(self):
-        # Only save cash, not positions
-        state = {"cash": self.cash} #, "positions": self.positions} 
+        # Persist cash and positions together (see load_state).
+        state = {"cash": self.cash, "positions": self.positions}
         try:
             with open(self.state_file, "w") as f:
                 json.dump(state, f, indent=2)
@@ -154,6 +203,7 @@ class PaperTrader:
                 ("imbalance_ratio", "REAL"),
                 ("imbalance_duration", "REAL"),
                 ("heavy_venues", "INTEGER"),
+                ("drift_60s", "REAL"),
             ):
                 try:
                     cur.execute(f"ALTER TABLE paper_trades ADD COLUMN {_col} {_decl}")
@@ -180,6 +230,10 @@ class PaperTrader:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            try:
+                cur.execute("ALTER TABLE paper_misses ADD COLUMN drift_60s REAL")
+            except sqlite3.OperationalError:
+                pass
 
             cur.execute("DELETE FROM paper_positions")
             conn.commit()
@@ -208,7 +262,16 @@ class PaperTrader:
                 # Some test setups use a fresh DB without the alerts table; start from 0.
                 return 0
 
-    def _get_current_price(self, symbol: str) -> float:
+    def _get_current_price(self, symbol: str):
+        """Most recent observed price for a symbol, or None if we have none.
+
+        Returns None rather than a fabricated fallback — every caller must
+        decide what to do without a real quote instead of settling a fill at a
+        made-up number (the old code invented 13.35). During replay this reads
+        the injected forward-safe price source.
+        """
+        if self._price_source is not None:
+            return self._price_source.get(symbol)
         with closing(self._open_conn()) as conn:
             cur = conn.cursor()
             cur.execute(
@@ -216,7 +279,7 @@ class PaperTrader:
                 (symbol,),
             )
             row = cur.fetchone()
-            return float(row[0]) if row else 13.35
+            return float(row[0]) if row and row[0] is not None else None
 
     # ============================================================
     # Order Wrapper Functions (required)
@@ -232,15 +295,22 @@ class PaperTrader:
     def _execute_order(self, symbol, qty, price, side, size_factor=1.0, conviction=None):
         notional = abs(qty) * price
 
+        # In maker mode the fill price IS the limit price (passive fills earn
+        # the spread; forced exit-crosses already bake the half-spread penalty
+        # into `price`). Charging taker slippage on top would double-count
+        # friction and, worse, make the cash book disagree with the realized
+        # PnL book — which uses no slippage — so they could never reconcile.
+        slip = 0.0 if MAKER_ENABLED else SLIPPAGE
+
         # Cash movements
         if qty > 0:  # Buy/Cover
-            cost = notional * (1 + SLIPPAGE)
+            cost = notional * (1 + slip)
             if cost > self.cash:
                 print(f"[PAPER] Not enough cash for {side}", flush=True)
                 return
             self.cash -= cost
         else:  # Sell/Short
-            proceeds = notional * (1 - SLIPPAGE)
+            proceeds = notional * (1 - slip)
             self.cash += proceeds
 
         # Old position values
@@ -250,7 +320,7 @@ class PaperTrader:
 
         # Create new position if needed
         if symbol not in self.positions:
-            self.positions[symbol] = {"qty": 0, "entry_price": price, "entry_time": time.time()}
+            self.positions[symbol] = {"qty": 0, "entry_price": price, "entry_time": self._now()}
 
         pos = self.positions[symbol]
         pos["qty"] = pos["qty"] + qty
@@ -315,18 +385,20 @@ class PaperTrader:
         _ratio = conv.get("ratio")
         _dur = conv.get("imbalance_duration")
         _venues = conv.get("heavy_venues")
+        _drift = conv.get("drift_60s")
 
         # Log to DB
         with closing(self._open_conn()) as conn:
             cur = conn.cursor()
+            slip_cost = 0.0 if MAKER_ENABLED else (qty * price * SLIPPAGE)
             cur.execute("""
                 INSERT INTO paper_trades
                 (timestamp, symbol, side, qty, price, slippage, commission, pnl, size_factor,
-                 imbalance_ratio, imbalance_duration, heavy_venues)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (time.time(), symbol, side, qty, price,
-                qty * price * SLIPPAGE, COMMISSION, pnl, size_factor,
-                _ratio, _dur, _venues))
+                 imbalance_ratio, imbalance_duration, heavy_venues, drift_60s)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (self._now(), symbol, side, qty, price,
+                slip_cost, COMMISSION, pnl, size_factor,
+                _ratio, _dur, _venues, _drift))
             conn.commit()
 
         # === Enhanced log with daily PnL ===
@@ -377,13 +449,22 @@ class PaperTrader:
     def _is_sell_side(side: str) -> bool:
         return side in ("SHORT", "SELL")
 
-    def _register_pending(self, symbol, side, qty, mid, is_exit, conviction=None):
-        """Rest a passive limit at the near touch (sell at offer, buy at bid)."""
-        h = MAKER_HALF_SPREAD
-        limit = (mid + h) if self._is_sell_side(side) else (mid - h)
+    def _register_pending(self, symbol, side, qty, mid, is_exit, conviction=None, rest_price=None):
+        """Rest a passive limit at the near touch (sell at offer, buy at bid).
+
+        `rest_price`, when supplied, is the REAL touch from the live order book
+        (grok's target_limit_price) and is used verbatim. When absent — the
+        backfill replay only has a mid/last price — we derive the touch as
+        mid ± half_spread. `mid` is retained for miss diagnostics either way.
+        """
+        if rest_price is not None:
+            limit = float(rest_price)
+        else:
+            h = MAKER_HALF_SPREAD
+            limit = (mid + h) if self._is_sell_side(side) else (mid - h)
         self.pending[symbol] = {
             "side": side, "qty": qty, "limit": limit,
-            "deadline": time.time() + MAKER_FILL_WINDOW, "is_exit": is_exit, "mid": mid,
+            "deadline": self._now() + MAKER_FILL_WINDOW, "is_exit": is_exit, "mid": mid,
             "conviction": conviction,
         }
         print(f"[PAPER][MAKER] Rest {side} {qty} {symbol} @ ${limit:.4f} "
@@ -399,19 +480,27 @@ class PaperTrader:
         signed = {"SHORT": -qty, "SELL": -qty, "BUY": qty, "COVER": qty}[side]
         self._execute_order(symbol, signed, fill_price, side, conviction=p.get("conviction"))
         if p["is_exit"]:
-            self.last_exit_time[symbol] = time.time()
+            self.last_exit_time[symbol] = self._now()
 
     def _check_pending(self, symbol, observed_price, now=None):
-        """Resolve a resting order against a freshly observed price."""
+        """Resolve a resting order against a freshly observed price.
+
+        Order matters: we check the DEADLINE FIRST. A resting order lives for
+        exactly MAKER_FILL_WINDOW seconds; once it expires it is cancelled
+        (entry) or crossed (exit). Only while it is still live can a passive
+        fill happen. The old code checked the cross condition before the
+        deadline, so an order whose window had long since lapsed would still
+        "fill" against the next observed price — which on a thin feed can
+        arrive minutes or hours later — granting fills the real strategy would
+        never get.
+        """
         p = self.pending.get(symbol)
         if not p:
             return
-        now = now if now is not None else time.time()
+        now = now if now is not None else self._now()
         sell_side = self._is_sell_side(p["side"])
-        crossed = (observed_price >= p["limit"]) if sell_side else (observed_price <= p["limit"])
-        if crossed:
-            self._fill_pending(symbol, p, p["limit"])
-            return
+
+        # Expired first.
         if now >= p["deadline"]:
             if p["is_exit"]:
                 # didn't fill passively -> cross to get flat (worse by half-spread)
@@ -426,6 +515,12 @@ class PaperTrader:
                       f"window -> MISS (by {missed_by:.2f}c)", flush=True)
                 self._record_miss(symbol, p, observed_price, missed_by)
                 self.pending.pop(symbol, None)
+            return
+
+        # Still live -> passive fill only if the market has traded through us.
+        crossed = (observed_price >= p["limit"]) if sell_side else (observed_price <= p["limit"])
+        if crossed:
+            self._fill_pending(symbol, p, p["limit"])
 
     def _record_miss(self, symbol, p, observed_price, missed_by_cents):
         """Persist an unfilled maker entry for fill-quality analysis."""
@@ -436,12 +531,13 @@ class PaperTrader:
                     """
                     INSERT INTO paper_misses
                     (timestamp, symbol, side, rest_limit, mid_at_rest, observed_price,
-                     missed_by_cents, imbalance_ratio, imbalance_duration, heavy_venues)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     missed_by_cents, imbalance_ratio, imbalance_duration, heavy_venues, drift_60s)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (time.time(), symbol, p["side"], p["limit"], p.get("mid"),
+                    (self._now(), symbol, p["side"], p["limit"], p.get("mid"),
                      observed_price, missed_by_cents,
-                     conv.get("ratio"), conv.get("imbalance_duration"), conv.get("heavy_venues")),
+                     conv.get("ratio"), conv.get("imbalance_duration"), conv.get("heavy_venues"),
+                     conv.get("drift_60s")),
                 )
                 conn.commit()
         except Exception as e:
@@ -450,9 +546,13 @@ class PaperTrader:
     def _last_alert_price(self, symbol):
         """Most recent observed price for a symbol, or None if we have none.
 
-        Unlike _get_current_price this never invents a fallback price — a
-        resting order must not fill against a made-up quote.
+        A resting order must not fill against a made-up quote, so this never
+        invents a fallback. During replay it reads the injected forward-safe
+        price source instead of the alerts table (which already holds future
+        rows).
         """
+        if self._price_source is not None:
+            return self._price_source.get(symbol)
         with closing(self._open_conn()) as conn:
             row = conn.execute(
                 "SELECT price FROM alerts WHERE symbol=? ORDER BY timestamp DESC LIMIT 1",
@@ -469,35 +569,40 @@ class PaperTrader:
             if px is not None:
                 self._check_pending(sym, px)
 
-    def _maker_handle(self, symbol, direction, price, short_size, long_size, conviction=None):
-        """Flip-only decision, but rest a passive limit instead of taking."""
+    def _maker_handle(self, symbol, direction, price, short_size, long_size, conviction=None, rest_price=None):
+        """Flip-only decision, but rest a passive limit instead of taking.
+
+        `rest_price` is the real order-book touch (bid for a buy/cover, offer
+        for a sell/short) forwarded from grok; when None we fall back to
+        price ± half_spread inside _register_pending.
+        """
         if symbol in self.pending:
             return  # one resting order per symbol at a time
         current_qty = self.positions.get(symbol, {}).get("qty", 0)
         cooldown = 30.0
         if direction == "ask-heavy":
             if current_qty > 0:                       # exit long -> rest SELL at offer
-                self._register_pending(symbol, "SELL", current_qty, price, is_exit=True, conviction=conviction)
+                self._register_pending(symbol, "SELL", current_qty, price, is_exit=True, conviction=conviction, rest_price=rest_price)
             elif current_qty < 0:
                 return                                # already short
             else:                                     # flat -> rest SHORT entry
-                if time.time() - self.last_exit_time.get(symbol, 0) < cooldown:
+                if self._now() - self.last_exit_time.get(symbol, 0) < cooldown:
                     return
-                self._register_pending(symbol, "SHORT", short_size, price, is_exit=False, conviction=conviction)
+                self._register_pending(symbol, "SHORT", short_size, price, is_exit=False, conviction=conviction, rest_price=rest_price)
         elif direction == "bid-heavy":
             if current_qty < 0:                       # exit short -> rest COVER at bid
-                self._register_pending(symbol, "COVER", abs(current_qty), price, is_exit=True, conviction=conviction)
+                self._register_pending(symbol, "COVER", abs(current_qty), price, is_exit=True, conviction=conviction, rest_price=rest_price)
             elif current_qty > 0:
                 return                                # already long
             else:                                     # flat -> rest BUY entry
-                if time.time() - self.last_exit_time.get(symbol, 0) < cooldown:
+                if self._now() - self.last_exit_time.get(symbol, 0) < cooldown:
                     return
-                self._register_pending(symbol, "BUY", long_size, price, is_exit=False, conviction=conviction)
+                self._register_pending(symbol, "BUY", long_size, price, is_exit=False, conviction=conviction, rest_price=rest_price)
 
     # ============================================================
     # FLIP-ONLY ALERT LOGIC
     # ============================================================
-    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, pattern_info: dict = None, conviction: dict = None) -> None:
+    def _handle_alert(self, alert_id: int, symbol: str, direction: str, price: float, range_cents: float = 0.0, pattern_info: dict = None, conviction: dict = None, rest_price: float = None) -> None:
         """Core flip-only logic shared by inline + DB polling paths."""
         
         # Determine dynamic size
@@ -517,7 +622,7 @@ class PaperTrader:
         # fresh passive limit. Instant-fill (taker) logic below is skipped.
         if MAKER_ENABLED:
             self._check_pending(symbol, price)
-            self._maker_handle(symbol, direction, price, current_short_size, current_position_size, conviction=conviction)
+            self._maker_handle(symbol, direction, price, current_short_size, current_position_size, conviction=conviction, rest_price=rest_price)
             self._update_position_db(symbol, cur_price=price)
             return
 
@@ -529,14 +634,14 @@ class PaperTrader:
         if direction == "ask-heavy":
             if current_qty > 0:  # close long, then wait for next alert to enter short
                 self._execute_order(symbol, -current_qty, price, "SELL", size_factor=size_factor)
-                self.last_exit_time[symbol] = time.time()
+                self.last_exit_time[symbol] = self._now()
                 return
             elif current_qty < 0:  # already short, skip
                 pass
             else:  # flat — check cooldown before entering short
                 last_exit = self.last_exit_time.get(symbol, 0)
-                if time.time() - last_exit < cooldown_seconds:
-                    remaining = cooldown_seconds - (time.time() - last_exit)
+                if self._now() - last_exit < cooldown_seconds:
+                    remaining = cooldown_seconds - (self._now() - last_exit)
                     print(f"[{self.name.upper()}] Cooldown active for {symbol} ({remaining:.1f}s remaining); skipping Short entry", flush=True)
                     return
                 self._execute_order(symbol, -current_short_size, price, "SHORT", size_factor=size_factor)
@@ -545,14 +650,14 @@ class PaperTrader:
         elif direction == "bid-heavy":
             if current_qty < 0:  # close short, then wait for next alert to enter long
                 self._execute_order(symbol, abs(current_qty), price, "COVER", size_factor=size_factor)
-                self.last_exit_time[symbol] = time.time()
+                self.last_exit_time[symbol] = self._now()
                 return
             elif current_qty > 0:  # already long, skip
                 pass
             else:  # flat — check cooldown before entering long
                 last_exit = self.last_exit_time.get(symbol, 0)
-                if time.time() - last_exit < cooldown_seconds:
-                    remaining = cooldown_seconds - (time.time() - last_exit)
+                if self._now() - last_exit < cooldown_seconds:
+                    remaining = cooldown_seconds - (self._now() - last_exit)
                     print(f"[{self.name.upper()}] Cooldown active for {symbol} ({remaining:.1f}s remaining); skipping Long entry", flush=True)
                     return
                 self._execute_order(symbol, current_position_size, price, "BUY", size_factor=size_factor)
@@ -590,7 +695,15 @@ class PaperTrader:
             qty = pos.get("qty", 0)
             if qty == 0:
                 continue
+            # No fabricated price: if we have no real quote, flatten at the
+            # entry price (zero realized PnL) rather than settling on a made-up
+            # number.
             price = self._get_current_price(sym)
+            if price is None:
+                price = pos.get("entry_price")
+            if price is None:
+                print(f"[{self.name.upper()}] No price for {sym}; leaving position open", flush=True)
+                continue
             if qty > 0:
                 self._execute_order(sym, -qty, price, "SELL")
             else:
@@ -606,16 +719,30 @@ class PaperTrader:
         pattern_info = kwargs.get("pattern_info")
         # Conviction passed from grok's alert dict (None when polling the DB).
         conviction = None
-        if any(k in kwargs for k in ("ratio", "imbalance_duration", "heavy_venues")):
+        if any(k in kwargs for k in ("ratio", "imbalance_duration", "heavy_venues", "drift_60s")):
             conviction = {
                 "ratio": kwargs.get("ratio"),
                 "imbalance_duration": kwargs.get("imbalance_duration"),
                 "heavy_venues": kwargs.get("heavy_venues"),
+                # 60s trailing price drift at alert time. Sign vs trade
+                # direction = counter-trend / trend-aligned A/B (tag only —
+                # no filtering until forward data confirms the backtests).
+                "drift_60s": kwargs.get("drift_60s"),
             }
+        # Real order-book touch from grok (bid for a buy/cover, offer for a
+        # sell/short). None when polling the DB or replaying history, where we
+        # only have a mid/last price and fall back to mid ± half_spread. Guard
+        # against grok's empty-book 0.0 default — a bogus 0 touch would never
+        # fill a buy and would instantly fill a sell.
+        rest_price = kwargs.get("target_limit_price")
+        try:
+            rest_price = float(rest_price) if rest_price and float(rest_price) > 0 else None
+        except (TypeError, ValueError):
+            rest_price = None
         with self._lock:
             self.last_alert_id = max(self.last_alert_id, int(alert_id))
             self._sweep_all_pending()  # advance every resting order's deadline
-            self._handle_alert(alert_id, symbol, direction, price, range_cents, pattern_info, conviction=conviction)
+            self._handle_alert(alert_id, symbol, direction, price, range_cents, pattern_info, conviction=conviction, rest_price=rest_price)
             self.save_state()
 
     def monitor_alerts(self):
@@ -701,11 +828,52 @@ class PaperTrader:
                 continue
 
     # ============================================================
+    # Maker liveness timer
+    # ============================================================
+    def _maker_timer_loop(self):
+        """Advance resting orders and honor the kill switch on a fixed cadence.
+
+        Sweeps and the kill-switch check used to run ONLY when a new alert
+        arrived. On a quiet feed that meant a pending exit never crossed the
+        spread at its deadline (we'd hold the position indefinitely) and
+        `touch kill_switch.flag` did nothing until the next alert. This timer
+        fires every MAKER_SWEEP_INTERVAL seconds so both happen on time.
+        """
+        while not self._timer_stop.is_set():
+            try:
+                self._check_kill_switch()  # may sys.exit if flag present
+                with self._lock:
+                    self._sweep_all_pending()
+            except SystemExit:
+                raise
+            except Exception as e:
+                print(f"[PAPER][MAKER] timer sweep error: {e}", flush=True)
+            self._timer_stop.wait(MAKER_SWEEP_INTERVAL)
+
+    def start_maker_timer(self):
+        """Start the liveness timer (idempotent). No-op unless maker mode is on.
+
+        Called from both the subprocess entrypoint (start) and grok's inline
+        setup, since inline mode constructs the trader but never calls start().
+        """
+        if not MAKER_ENABLED:
+            return None
+        if self._maker_timer and self._maker_timer.is_alive():
+            return self._maker_timer
+        self._timer_stop.clear()
+        self._maker_timer = threading.Thread(
+            target=self._maker_timer_loop, daemon=True, name=f"{self.name}-maker-timer")
+        self._maker_timer.start()
+        print(f"[PAPER][MAKER] Liveness timer started ({MAKER_SWEEP_INTERVAL:.0f}s cadence)", flush=True)
+        return self._maker_timer
+
+    # ============================================================
     # Start Trader Thread
     # ============================================================
     def start(self):
         t = threading.Thread(target=self.monitor_alerts, daemon=True)
         t.start()
+        self.start_maker_timer()
         print(f"[PAPER] LIVE (Flip-Only Mode) | Cash: ${self.cash:,.2f}", flush=True)
         return t
 

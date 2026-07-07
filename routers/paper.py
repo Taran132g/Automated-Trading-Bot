@@ -253,8 +253,24 @@ def _build_round_trips(rows):
                 "ratio": (entry["imbalance_ratio"] if entry else None),
                 "duration": (entry["imbalance_duration"] if entry else None),
                 "venues": (entry["heavy_venues"] if entry else None),
+                "drift": (entry["drift_60s"]
+                          if entry and "drift_60s" in entry.keys() else None),
             })
     return trips
+
+
+def _trend_bucket(t) -> str:
+    """Counter-trend vs trend-aligned entry, from the 60s drift at alert time.
+
+    A long after a dip / short after a pop is 'counter' — the bucket both the
+    Jun-15 backtest and the Jul-06 log replay found carries the edge. Zero or
+    missing drift can't be classified either way."""
+    d = t.get("drift")
+    if d is None or d == 0:
+        return "untagged"
+    if (t["direction"] == "long") == (d < 0):
+        return "counter"
+    return "aligned"
 
 
 def _agg(trips, keyfn):
@@ -282,7 +298,7 @@ def _agg(trips, keyfn):
 def get_paper_analytics(range: str = Query("all")):
     """All the instrumentation in one payload for the Paper Lab UI."""
     empty = {"by_hour": [], "by_direction": [], "by_symbol": [],
-             "by_conviction": [], "misses": {}, "range": range, "trips": 0}
+             "by_conviction": [], "by_trend": [], "misses": {}, "range": range, "trips": 0}
     if not DB_PATH.exists():
         return empty
     today_start = _get_today_start()
@@ -324,6 +340,11 @@ def get_paper_analytics(range: str = Query("all")):
         _agg(trips, lambda t: _conviction_bucket(t["ratio"])),
         key=lambda x: conv_order.get(x["key"], 9),
     )
+    trend_order = {"counter": 0, "aligned": 1, "untagged": 2}
+    by_trend = sorted(
+        _agg(trips, _trend_bucket),
+        key=lambda x: trend_order.get(x["key"], 9),
+    )
 
     # Miss diagnostics
     n_miss = len(misses)
@@ -353,6 +374,7 @@ def get_paper_analytics(range: str = Query("all")):
         "by_direction": by_direction,
         "by_symbol": by_symbol,
         "by_conviction": by_conviction,
+        "by_trend": by_trend,
         "misses": miss_stats,
     }
 

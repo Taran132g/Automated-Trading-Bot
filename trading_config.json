@@ -4,7 +4,7 @@
     "live_position_size": 100,
     "paper_position_size": 100,
     "maker_enabled": true,
-    "maker_half_spread_cents": 1.0,
+    "maker_half_spread_cents": 0.5,
     "maker_fill_window_sec": 30,
     "live_max_trades_per_hour": 60,
     "account_stop_loss": 25500.0,

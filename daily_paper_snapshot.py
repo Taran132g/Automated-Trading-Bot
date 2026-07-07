@@ -51,6 +51,20 @@ def build_entry() -> str:
             f"${r['today_pnl']:+.2f} | {r['today_win_rate']:.0f}% |"
         )
 
+    # Counter-trend vs trend-aligned split (the forward A/B for the
+    # mean-reversion finding). Comes from the analytics round-trip pairing.
+    trend_line = ""
+    try:
+        by_trend = _get("/paper/analytics?range=today").get("by_trend", [])
+        parts = [
+            f"{b['key']} {b['trades']} | ${b['pnl']:+.2f} | {b['win_rate']:.0f}% win"
+            for b in by_trend if b["key"] != "untagged" and b["trades"]
+        ]
+        if parts:
+            trend_line = "\n- **Trend A/B (entry vs 60s drift):** " + "  ·  ".join(parts)
+    except Exception:
+        pass
+
     # Conviction: avg imbalance ratio on winning vs losing closes (if logged).
     conv_line = ""
     closes = [t for t in trades if t["side"] in ("SELL", "COVER") and t.get("imbalance_ratio") is not None]
@@ -72,6 +86,8 @@ def build_entry() -> str:
         "|---|---|---|---|",
         *sym_lines,
     ]
+    if trend_line:
+        out.append(trend_line)
     if conv_line:
         out.append(conv_line)
     return "\n".join(out) + "\n"

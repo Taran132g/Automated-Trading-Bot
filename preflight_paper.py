@@ -42,9 +42,15 @@ def main():
           "Set ENABLE_INLINE_DISPATCH=1 in .env")
     check("INLINE_DRY_RUN=1 (routes to PaperTrader simulator)", dry,
           "Set INLINE_DRY_RUN=1 in .env — otherwise it builds a LIVE trader")
-    check(f"SYMBOLS streams all four ({syms_env})",
-          set(s.strip() for s in syms_env.split(",")) >= {"AAL", "RIG", "F", "BBAI"},
-          "Set SYMBOLS=AAL,RIG,F,BBAI in .env")
+    # grok actually subscribes to the union of live_symbols + paper_symbols in
+    # trading_config.json, NOT $SYMBOLS. Validate .env against that config set
+    # so the two can't silently drift (e.g. OPEN added to config but not .env).
+    _cfg = json.loads((here / "trading_config.json").read_text())
+    want_syms = set(s.strip().upper() for s in str(_cfg.get("paper_symbols", "")).split(",") if s.strip())
+    have_syms = set(s.strip().upper() for s in syms_env.split(",") if s.strip())
+    check(f"SYMBOLS covers config paper_symbols ({sorted(want_syms)})",
+          have_syms >= want_syms,
+          f"Set SYMBOLS to include {sorted(want_syms)} in .env")
 
     # 2. Config + maker settings
     print("\nConfig (trading_config.json):")
