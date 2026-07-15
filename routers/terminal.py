@@ -33,41 +33,72 @@ def get_terminal_state():
         try:
             with closing(sqlite3.connect(str(DB_PATH))) as conn:
                 conn.row_factory = sqlite3.Row
+
+                tables = {r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()}
+                trade_table = "live_trades" if "live_trades" in tables else "paper_trades"
+
                 row = conn.execute(
-                    "SELECT COALESCE(SUM(pnl),0) as total FROM live_trades WHERE timestamp >= ?",
+                    f"SELECT COALESCE(SUM(pnl),0) as total FROM {trade_table} WHERE timestamp >= ?",
                     (today_start,)
                 ).fetchone()
                 daily_pnl = float(row["total"]) if row else 0.0
 
                 wins = conn.execute(
-                    "SELECT COUNT(*) as c FROM live_trades WHERE pnl > 0 AND side IN ('SELL','COVER') AND timestamp >= ?",
+                    f"SELECT COUNT(*) as c FROM {trade_table} WHERE pnl > 0 AND side IN ('SELL','COVER') AND timestamp >= ?",
                     (today_start,)
                 ).fetchone()["c"]
                 total_exits = conn.execute(
-                    "SELECT COUNT(*) as c FROM live_trades WHERE side IN ('SELL','COVER') AND timestamp >= ?",
+                    f"SELECT COUNT(*) as c FROM {trade_table} WHERE side IN ('SELL','COVER') AND timestamp >= ?",
                     (today_start,)
                 ).fetchone()["c"]
                 win_rate = (wins / total_exits * 100) if total_exits > 0 else 0.0
 
                 today_rows = conn.execute(
-                    "SELECT qty FROM live_trades WHERE timestamp >= ?", (today_start,)
+                    f"SELECT qty FROM {trade_table} WHERE timestamp >= ?", (today_start,)
                 ).fetchall()
                 total_shares = sum(abs(r["qty"]) for r in today_rows)
                 rolling_pi = daily_pnl / total_shares if total_shares > 0 else 0.0
 
-                hist = conn.execute(
-                    "SELECT liquidation_value FROM (SELECT liquidation_value, timestamp FROM account_history ORDER BY timestamp DESC LIMIT 500) ORDER BY timestamp ASC"
-                ).fetchall()
-                if hist:
-                    vals = [float(r["liquidation_value"]) for r in hist if r["liquidation_value"] is not None]
-                    if vals:
-                        peak = vals[0]
-                        dd = 0.0
-                        for v in vals:
-                            peak = max(peak, v)
-                            if peak > 0:
-                                dd = max(dd, (peak - v) / peak * 100)
-                        max_drawdown = round(dd, 2)
+                # When live_trades existed but had no data today, check paper_trades
+                if trade_table == "live_trades" and total_exits == 0 and "paper_trades" in tables:
+                    row = conn.execute(
+                        "SELECT COALESCE(SUM(pnl),0) as total FROM paper_trades WHERE timestamp >= ?",
+                        (today_start,)
+                    ).fetchone()
+                    paper_pnl = float(row["total"]) if row else 0.0
+                    if paper_pnl != 0.0:
+                        daily_pnl = paper_pnl
+                        wins = conn.execute(
+                            "SELECT COUNT(*) as c FROM paper_trades WHERE pnl > 0 AND side IN ('SELL','COVER') AND timestamp >= ?",
+                            (today_start,)
+                        ).fetchone()["c"]
+                        total_exits = conn.execute(
+                            "SELECT COUNT(*) as c FROM paper_trades WHERE side IN ('SELL','COVER') AND timestamp >= ?",
+                            (today_start,)
+                        ).fetchone()["c"]
+                        win_rate = (wins / total_exits * 100) if total_exits > 0 else 0.0
+                        paper_rows = conn.execute(
+                            "SELECT qty FROM paper_trades WHERE timestamp >= ?", (today_start,)
+                        ).fetchall()
+                        total_shares = sum(abs(r["qty"]) for r in paper_rows)
+                        rolling_pi = daily_pnl / total_shares if total_shares > 0 else 0.0
+
+                if "account_history" in tables:
+                    hist = conn.execute(
+                        "SELECT liquidation_value FROM (SELECT liquidation_value, timestamp FROM account_history ORDER BY timestamp DESC LIMIT 500) ORDER BY timestamp ASC"
+                    ).fetchall()
+                    if hist:
+                        vals = [float(r["liquidation_value"]) for r in hist if r["liquidation_value"] is not None]
+                        if vals:
+                            peak = vals[0]
+                            dd = 0.0
+                            for v in vals:
+                                peak = max(peak, v)
+                                if peak > 0:
+                                    dd = max(dd, (peak - v) / peak * 100)
+                            max_drawdown = round(dd, 2)
         except Exception:
             pass
 
@@ -111,16 +142,33 @@ def get_trades(
     try:
         with closing(sqlite3.connect(str(DB_PATH))) as conn:
             conn.row_factory = sqlite3.Row
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()}
+            trade_table = "live_trades" if "live_trades" in tables else "paper_trades"
+
             if date == "today":
                 rows = conn.execute(
-                    "SELECT * FROM live_trades WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+                    f"SELECT * FROM {trade_table} WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
                     (today_start, limit)
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM live_trades ORDER BY timestamp DESC LIMIT ?",
+                    f"SELECT * FROM {trade_table} ORDER BY timestamp DESC LIMIT ?",
                     (limit,)
                 ).fetchall()
+            # If live_trades existed but was empty, fall back to paper_trades
+            if not rows and trade_table == "live_trades" and "paper_trades" in tables:
+                if date == "today":
+                    rows = conn.execute(
+                        "SELECT * FROM paper_trades WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+                        (today_start, limit)
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM paper_trades ORDER BY timestamp DESC LIMIT ?",
+                        (limit,)
+                    ).fetchall()
             for r in rows:
                 d = dict(r)
                 d["datetime_est"] = datetime.utcfromtimestamp(float(d["timestamp"])).strftime("%H:%M:%S") if d.get("timestamp") else ""
@@ -159,25 +207,48 @@ def get_equity_curve(
         with closing(sqlite3.connect(str(DB_PATH))) as conn:
             conn.row_factory = sqlite3.Row
 
+            tables = {r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()}
+
             if range == "today":
-                # Build trade windows: (entry_ts, exit_ts) for each closed trade today
-                trade_rows = conn.execute(
-                    """
-                    SELECT e.timestamp AS entry_ts, x.timestamp AS exit_ts
-                    FROM live_trades e
-                    JOIN live_trades x ON x.symbol = e.symbol
-                    WHERE e.side IN ('BUY','SHORT','SELL SHORT')
-                      AND x.side IN ('SELL','COVER')
-                      AND x.timestamp >= e.timestamp
-                      AND e.timestamp >= ?
-                    GROUP BY x.rowid
-                    ORDER BY entry_ts ASC
-                    """,
-                    (today_start,)
-                ).fetchall()
+                trade_rows = []
+                if "live_trades" in tables:
+                    # Build trade windows: (entry_ts, exit_ts) for each closed trade today
+                    trade_rows = conn.execute(
+                        """
+                        SELECT e.timestamp AS entry_ts, x.timestamp AS exit_ts
+                        FROM live_trades e
+                        JOIN live_trades x ON x.symbol = e.symbol
+                        WHERE e.side IN ('BUY','SHORT','SELL SHORT')
+                          AND x.side IN ('SELL','COVER')
+                          AND x.timestamp >= e.timestamp
+                          AND e.timestamp >= ?
+                        GROUP BY x.rowid
+                        ORDER BY entry_ts ASC
+                        """,
+                        (today_start,)
+                    ).fetchall()
 
                 if not trade_rows:
-                    # No closed trades yet — show nothing
+                    # No live trades — fall back to paper_trades cumulative PnL curve
+                    if "paper_trades" not in tables:
+                        return {"points": points}
+                    paper_rows = conn.execute(
+                        "SELECT timestamp, pnl FROM paper_trades WHERE timestamp >= ? ORDER BY timestamp ASC",
+                        (today_start,)
+                    ).fetchall()
+                    if not paper_rows:
+                        return {"points": points}
+                    cumulative = 0.0
+                    for r in paper_rows:
+                        pnl = float(r["pnl"] or 0.0)
+                        cumulative += pnl
+                        points.append({
+                            "timestamp": float(r["timestamp"]),
+                            "value": round(cumulative, 2),
+                            "datetime_est": datetime.utcfromtimestamp(float(r["timestamp"])).strftime("%H:%M"),
+                        })
                     return {"points": points}
 
                 # Build set of active windows

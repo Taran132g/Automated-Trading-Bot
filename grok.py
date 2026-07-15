@@ -387,6 +387,7 @@ MIN_IMBALANCE_DURATION_SEC: float = 10.0
 # would otherwise look like one continuous (stale) imbalance.
 MAX_IMBALANCE_GAP_SEC: float = 3.0
 DB_PATH: str = "penny_basing.db"
+MIN_IMBALANCE_RATIO: float = 2.0
 DISABLE_BID_HEAVY: bool = False
 PRINTED_NO_INSTR: set = set()
 last_l1: Dict[str, dict] = {}
@@ -860,9 +861,11 @@ def on_book(msg: dict):
 
             curr_min_volume = STOCK_VOLUME_OVERRIDES.get(sym, MIN_VOLUME)
             ratio = metrics.ask_to_bid_ratio if direction == "ask-heavy" else metrics.bid_to_ask_ratio
+            is_exit_signal = (is_long and direction == "ask-heavy") or (is_short and direction == "bid-heavy")
             if (imbalance_duration >= curr_min_duration and
                 metrics.valid_exchanges >= curr_min_venues and
-                vol_per_min >= curr_min_volume):
+                vol_per_min >= curr_min_volume and
+                (is_exit_signal or ratio >= MIN_IMBALANCE_RATIO)):
 
                 # ── Buy-volume confirmation (Lee-Ready, 10s lookback) ─────────
                 _tape_window = [(d, v) for ts, d, v in tape_ticks[sym]
@@ -1092,7 +1095,7 @@ async def main():
 
     global WINDOW_SECONDS, VOL_WINDOW_SECONDS, HEARTBEAT_SEC, MIN_ASK_HEAVY, MIN_BID_HEAVY
     global MAX_RANGE_CENTS, MIN_RANGE_CENTS, MIN_VOLUME, MIN_IMBALANCE_DURATION_SEC
-    global DB_PATH, SYMBOLS, DISABLE_BID_HEAVY, trades, msg_count, _book_raw_remaining
+    global DB_PATH, SYMBOLS, DISABLE_BID_HEAVY, MIN_IMBALANCE_RATIO, trades, msg_count, _book_raw_remaining
     global DEBUG_BOOK_RAW, JSON_BOOK, SHOW_BOOK, BOOK_INTERVAL_SEC, DEBUG_INSTR, DEBUG
 
     WINDOW_SECONDS = args.window if args.window is not None else _get_int_env("WINDOW_SECONDS", 60, 30)
@@ -1104,6 +1107,7 @@ async def main():
     MIN_RANGE_CENTS = args.min_range if args.min_range is not None else _get_int_env("MIN_RANGE_CENTS", 2, 0)
     MIN_VOLUME = args.min_volume if args.min_volume is not None else _get_int_env("MIN_VOLUME", 100000, 1000)
     MIN_IMBALANCE_DURATION_SEC = args.min_imbalance_duration if args.min_imbalance_duration is not None else _get_float_env("MIN_IMBALANCE_DURATION_SEC", 10.0, 0.0)
+    MIN_IMBALANCE_RATIO = _get_float_env("MIN_IMBALANCE_RATIO", 2.0, 1.0)
     DB_PATH = args.db_path if args.db_path is not None else os.getenv("DB_PATH", "penny_basing.db")
     os.environ["DB_PATH"] = str(DB_PATH)
     inline_only_requested = _bool_env("ENABLE_INLINE_DISPATCH", False)
@@ -1458,6 +1462,25 @@ async def main():
                     log_structured("SUBS", {"status": "resubscribed_after_reconnect"})
                 except Exception as _sub_e:
                     log_structured("SUBS_ERROR", {"error": f"Re-subscribe after reconnect failed: {_sub_e}"})
+                    break
+            except Exception as _conn_err:
+                _err_str = str(_conn_err)
+                _is_close = any(x in _err_str for x in (
+                    "close frame", "1000", "1001", "1006",
+                    "ConnectionClosed", "connection closed", "no close frame",
+                ))
+                if not _is_close:
+                    raise
+                log_structured("STREAM_RECONNECT", {"reason": "connection_closed", "error": _err_str})
+                await asyncio.sleep(2)
+                if not await connect_with_retries():
+                    log_structured("STREAM_ERROR", {"error": "Reconnection failed after close"})
+                    break
+                try:
+                    await _subscribe_all()
+                    log_structured("SUBS", {"status": "resubscribed_after_close"})
+                except Exception as _sub_e:
+                    log_structured("SUBS_ERROR", {"error": f"Re-subscribe after close failed: {_sub_e}"})
                     break
     except KeyboardInterrupt:
         log_structured("STOP", {"message": "User stopped"})

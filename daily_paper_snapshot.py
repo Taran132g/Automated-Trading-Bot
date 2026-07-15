@@ -18,6 +18,7 @@ VAULT = Path(
     "Documents/Digital Brain/Projects & Building/TNFund Trading Bot/"
     "13 - Daily Paper Journal.md"
 )
+LOCAL_JOURNAL = Path("/Users/taranveersingh/Automated-Trading-Bot/paper_journal_local.md")
 
 
 def _get(path: str):
@@ -93,8 +94,10 @@ def build_entry() -> str:
     return "\n".join(out) + "\n"
 
 
-def main():
-    entry = build_entry()
+PENDING = Path.home() / ".pais" / "paper_journal_pending.md"
+
+
+def _append_vault(text: str) -> None:
     if not VAULT.exists():
         header = (
             "---\ntags:\n  - trading\n  - bot\n  - journal\n---\n\n"
@@ -105,8 +108,41 @@ def main():
         )
         VAULT.write_text(header)
     with VAULT.open("a") as f:
+        f.write(text)
+
+
+def main():
+    try:
+        entry = build_entry()
+    except Exception as e:
+        print(f"[paper-journal] API unavailable ({e}) — skipping snapshot")
+        return
+
+    # Always write to local journal first (never fails on permissions).
+    with LOCAL_JOURNAL.open("a") as f:
         f.write(entry)
-    print(f"[paper-journal] appended {datetime.now():%Y-%m-%d %H:%M} -> {VAULT.name}")
+    print(f"[paper-journal] local → {LOCAL_JOURNAL.name}")
+
+    # Flush any entries stranded by a previous permission failure first, so
+    # the journal stays chronological even across broken days.
+    backlog = ""
+    if PENDING.exists():
+        backlog = PENDING.read_text()
+
+    try:
+        _append_vault(backlog + entry)
+        if backlog:
+            PENDING.unlink()
+            print(f"[paper-journal] flushed {len(backlog)} pending bytes")
+        print(f"[paper-journal] vault → {VAULT.name}")
+    except PermissionError:
+        # launchd-spawned python3 has no iCloud (TCC) access unless granted
+        # Full Disk Access. Stage locally; the next run — or any run from a
+        # terminal context — flushes it into the vault.
+        PENDING.parent.mkdir(parents=True, exist_ok=True)
+        with PENDING.open("a") as f:
+            f.write(entry)
+        print(f"[paper-journal] vault unwritable (TCC) — staged to {PENDING}")
 
 
 if __name__ == "__main__":

@@ -109,6 +109,12 @@ def get_paper_trades(
                     "SELECT * FROM paper_trades WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
                     (today_start, limit)
                 ).fetchall()
+            elif range == "2days":
+                two_days_start = today_start - 86400
+                rows = conn.execute(
+                    "SELECT * FROM paper_trades WHERE timestamp >= ? ORDER BY timestamp DESC LIMIT ?",
+                    (two_days_start, limit)
+                ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT * FROM paper_trades ORDER BY timestamp DESC LIMIT ?", (limit,)
@@ -136,6 +142,11 @@ def get_paper_equity_curve(
             if range == "today":
                 rows = conn.execute(
                     "SELECT * FROM paper_trades WHERE timestamp >= ? ORDER BY timestamp ASC", (today_start,)
+                ).fetchall()
+            elif range == "2days":
+                two_days_start = today_start - 86400
+                rows = conn.execute(
+                    "SELECT * FROM paper_trades WHERE timestamp >= ? ORDER BY timestamp ASC", (two_days_start,)
                 ).fetchall()
             else:
                 rows = conn.execute(
