@@ -105,6 +105,17 @@ export function BacktestPage() {
     refetchInterval: 10000,
   })
 
+  // Always fetch 2-day trades for the fixed 48h PnL metric (independent of range toggle)
+  const { data: trades2day } = useQuery({
+    queryKey: ['paper-trades', '2days'],
+    queryFn: () => paperService.getTrades('2days').then((r) => r.data.trades),
+    refetchInterval: 30000,
+  })
+
+  const pnl48h = (trades2day as Array<{ side: string; pnl: number }> | undefined)
+    ?.filter(t => t.side === 'SELL' || t.side === 'COVER')
+    .reduce((sum, t) => sum + t.pnl, 0) ?? null
+
   const openPositions = Object.entries(state?.positions ?? {}).filter(([, qty]) => qty !== 0)
 
   // Group trades by calendar date (ET)
@@ -151,7 +162,13 @@ export function BacktestPage() {
 
       {/* Metrics */}
       <div style={{ display: 'flex', gap: 12 }}>
-        <MetricCard label="Daily PnL" value={`${state?.daily_pnl >= 0 ? '+' : ''}$${Math.abs(state?.daily_pnl ?? 0).toFixed(2)}`} color={(state?.daily_pnl ?? 0) >= 0 ? BLUE : RED} />
+        <MetricCard label="Today PnL" value={`${(state?.daily_pnl ?? 0) >= 0 ? '+' : ''}$${Math.abs(state?.daily_pnl ?? 0).toFixed(2)}`} color={(state?.daily_pnl ?? 0) >= 0 ? BLUE : RED} />
+        <MetricCard
+          label="48h PnL"
+          value={pnl48h === null ? '—' : `${pnl48h >= 0 ? '+' : ''}$${Math.abs(pnl48h).toFixed(2)}`}
+          color={pnl48h === null ? DIM : pnl48h >= 0 ? BLUE : RED}
+          sub="EXITS ONLY"
+        />
         <MetricCard label="Total PnL" value={`${(state?.total_pnl ?? 0) >= 0 ? '+' : ''}$${Math.abs(state?.total_pnl ?? 0).toFixed(2)}`} color={(state?.total_pnl ?? 0) >= 0 ? BLUE : RED} />
         <MetricCard label="Win Rate" value={`${state?.win_rate?.toFixed(1) ?? '0.0'}%`} color={(state?.win_rate ?? 0) > 50 ? BLUE : TEXT} sub="TODAY" />
         <MetricCard label="Trades Today" value={state?.trades_today?.toLocaleString() ?? '0'} />

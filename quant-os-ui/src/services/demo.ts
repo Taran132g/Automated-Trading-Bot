@@ -41,29 +41,56 @@ interface DemoTrade {
 
 // Representative fills from the Mar 13 session — real symbols, real price levels,
 // flip-only long (BUY/SELL) and short (SHORT/COVER) round trips on a $26K book.
-const TRADES: DemoTrade[] = [
-  { symbol: 'F',    side: 'COVER', qty: 600,  price: 13.226, pnl: 8.40,  t: '15:41:08' },
-  { symbol: 'F',    side: 'SHORT', qty: 600,  price: 13.240, pnl: 0,     t: '15:33:52' },
-  { symbol: 'AAL',  side: 'SELL',  qty: 500,  price: 12.531, pnl: 9.50,  t: '15:18:44' },
-  { symbol: 'AAL',  side: 'BUY',   qty: 500,  price: 12.512, pnl: 0,     t: '15:09:21' },
-  { symbol: 'BBAI', side: 'SELL',  qty: 1000, price: 3.901,  pnl: -7.00, t: '14:46:55' },
-  { symbol: 'BBAI', side: 'BUY',   qty: 1000, price: 3.908,  pnl: 0,     t: '14:38:13' },
-  { symbol: 'RIG',  side: 'COVER', qty: 400,  price: 6.292,  pnl: 5.20,  t: '13:52:30' },
-  { symbol: 'RIG',  side: 'SHORT', qty: 400,  price: 6.305,  pnl: 0,     t: '13:44:02' },
-  { symbol: 'F',    side: 'SELL',  qty: 800,  price: 13.224, pnl: 15.20, t: '12:31:19' },
-  { symbol: 'F',    side: 'BUY',   qty: 800,  price: 13.205, pnl: 0,     t: '12:22:41' },
-  { symbol: 'AAL',  side: 'COVER', qty: 500,  price: 12.486, pnl: 6.00,  t: '11:18:07' },
-  { symbol: 'AAL',  side: 'SHORT', qty: 500,  price: 12.498, pnl: 0,     t: '11:09:33' },
-].map((r, i) => ({
-  id: 1000 - i,
-  timestamp: Date.now() / 1000 - i * 240,
-  symbol: r.symbol,
-  side: r.side,
-  qty: r.qty,
-  price: r.price,
-  pnl: r.pnl,
-  datetime_est: r.t,
-}))
+const TRADES_TODAY_RAW = [
+  { symbol: 'F',    side: 'COVER', qty: 600,  price: 13.226, pnl:  8.40, t: '15:41:08', daysAgo: 0 },
+  { symbol: 'F',    side: 'SHORT', qty: 600,  price: 13.240, pnl:  0,    t: '15:33:52', daysAgo: 0 },
+  { symbol: 'AAL',  side: 'SELL',  qty: 500,  price: 12.531, pnl:  9.50, t: '15:18:44', daysAgo: 0 },
+  { symbol: 'AAL',  side: 'BUY',   qty: 500,  price: 12.512, pnl:  0,    t: '15:09:21', daysAgo: 0 },
+  { symbol: 'BBAI', side: 'SELL',  qty: 1000, price: 3.901,  pnl: -7.00, t: '14:46:55', daysAgo: 0 },
+  { symbol: 'BBAI', side: 'BUY',   qty: 1000, price: 3.908,  pnl:  0,    t: '14:38:13', daysAgo: 0 },
+  { symbol: 'RIG',  side: 'COVER', qty: 400,  price: 6.292,  pnl:  5.20, t: '13:52:30', daysAgo: 0 },
+  { symbol: 'RIG',  side: 'SHORT', qty: 400,  price: 6.305,  pnl:  0,    t: '13:44:02', daysAgo: 0 },
+  { symbol: 'F',    side: 'SELL',  qty: 800,  price: 13.224, pnl: 15.20, t: '12:31:19', daysAgo: 0 },
+  { symbol: 'F',    side: 'BUY',   qty: 800,  price: 13.205, pnl:  0,    t: '12:22:41', daysAgo: 0 },
+  { symbol: 'AAL',  side: 'COVER', qty: 500,  price: 12.486, pnl:  6.00, t: '11:18:07', daysAgo: 0 },
+  { symbol: 'AAL',  side: 'SHORT', qty: 500,  price: 12.498, pnl:  0,    t: '11:09:33', daysAgo: 0 },
+]
+
+// Mar 12 trades — real price levels, net +$3.92 on the day (39 fills).
+const TRADES_YESTERDAY_RAW = [
+  { symbol: 'AAL',  side: 'SELL',  qty: 500,  price: 12.390, pnl:  5.12, t: '15:41:33', daysAgo: 1 },
+  { symbol: 'AAL',  side: 'BUY',   qty: 500,  price: 12.380, pnl:  0,    t: '15:30:11', daysAgo: 1 },
+  { symbol: 'F',    side: 'COVER', qty: 600,  price: 13.148, pnl:  1.80, t: '14:15:44', daysAgo: 1 },
+  { symbol: 'F',    side: 'SHORT', qty: 600,  price: 13.151, pnl:  0,    t: '14:05:22', daysAgo: 1 },
+  { symbol: 'BBAI', side: 'SELL',  qty: 800,  price: 3.524,  pnl: -3.00, t: '13:22:17', daysAgo: 1 },
+  { symbol: 'BBAI', side: 'BUY',   qty: 800,  price: 3.528,  pnl:  0,    t: '13:15:09', daysAgo: 1 },
+  { symbol: 'RIG',  side: 'SELL',  qty: 400,  price: 6.232,  pnl:  0.80, t: '12:38:51', daysAgo: 1 },
+  { symbol: 'RIG',  side: 'BUY',   qty: 400,  price: 6.230,  pnl:  0,    t: '12:30:04', daysAgo: 1 },
+  { symbol: 'F',    side: 'SELL',  qty: 600,  price: 13.145, pnl: -1.80, t: '11:52:28', daysAgo: 1 },
+  { symbol: 'F',    side: 'BUY',   qty: 600,  price: 13.148, pnl:  0,    t: '11:40:13', daysAgo: 1 },
+  { symbol: 'AAL',  side: 'COVER', qty: 500,  price: 12.322, pnl:  1.00, t: '11:22:45', daysAgo: 1 },
+  { symbol: 'AAL',  side: 'SHORT', qty: 500,  price: 12.324, pnl:  0,    t: '11:15:38', daysAgo: 1 },
+]
+
+function makeTrades(raw: typeof TRADES_TODAY_RAW, idOffset: number): DemoTrade[] {
+  return raw.map((r, i) => ({
+    id: idOffset - i,
+    timestamp: Date.now() / 1000 - r.daysAgo * 86400 - i * 200,
+    symbol: r.symbol,
+    side: r.side,
+    qty: r.qty,
+    price: r.price,
+    pnl: r.pnl,
+    datetime_est: r.t,
+  }))
+}
+
+const TRADES_TODAY = makeTrades(TRADES_TODAY_RAW, 1000)
+const TRADES_2DAYS = [...makeTrades(TRADES_TODAY_RAW, 1000), ...makeTrades(TRADES_YESTERDAY_RAW, 988)]
+// For "all" we reuse the 2-day set — the full 591-trade run history isn't needed for display.
+const TRADES_ALL = TRADES_2DAYS
+// Legacy alias kept for non-range callers.
+const TRADES = TRADES_TODAY
 
 // One open long carried into the close (AAL 500).
 const OPEN_POSITIONS: Record<string, number> = { AAL: 500 }
@@ -75,6 +102,22 @@ const EQUITY_TODAY = [
   ['15:41', 40], ['15:58', 35.98],
 ].map(([label, value], i) => ({
   timestamp: Date.now() / 1000 - (12 - i) * 300,
+  value: value as number,
+  datetime_est: label as string,
+}))
+
+// Mar 12 intraday (net +$3.92) → Mar 13 (+$35.98). Cumulative resets each day
+// then carries forward — shows the two sessions joined end-to-end.
+const EQUITY_2DAYS = [
+  ['03-12 09:31', 0],   ['03-12 10:10', -2],  ['03-12 11:22', 2],
+  ['03-12 12:38', 4],   ['03-12 13:22', 1],   ['03-12 14:15', 3],
+  ['03-12 15:41', 3.92],['03-12 16:00', 3.92],
+  ['03-13 09:32', 3.92],['03-13 09:50', 12],  ['03-13 10:10', 8],
+  ['03-13 10:40', 14],  ['03-13 11:18', 22],  ['03-13 12:31', 37],
+  ['03-13 13:00', 32],  ['03-13 13:52', 37],  ['03-13 14:47', 30],
+  ['03-13 15:18', 39],  ['03-13 15:41', 48],  ['03-13 15:58', 39.90],
+].map(([label, value], i) => ({
+  timestamp: Date.now() / 1000 - (20 - i) * 1800,
   value: value as number,
   datetime_est: label as string,
 }))
@@ -206,8 +249,14 @@ const REPORTS = [
 
 // ─────────────────────────── REST route table ───────────────────────────
 
+function parseRange(url: string): string {
+  const match = url.match(/[?&]range=([^&]+)/)
+  return match ? match[1] : 'today'
+}
+
 function route(url: string): unknown {
   const path = url.split('?')[0].replace(/\/$/, '')
+  const range = parseRange(url)
 
   if (path.startsWith('/screener/history/')) return { points: SCREENER_HISTORY }
 
@@ -224,9 +273,17 @@ function route(url: string): unknown {
     case '/analytics/daily-pnl':  return { bars: DAILY_BARS }
     case '/analytics/win-loss':   return { wins: 323, losses: 268 }
     case '/analytics/parse-history': return { error: 'Paste-parsing is disabled in the public demo.' }
-    case '/paper/state':          return { positions: {}, daily_pnl: 35.98, total_pnl: -16.08, win_rate: 54.7, trades_today: 59 }
-    case '/paper/equity-curve':   return { points: EQUITY_ALLTIME }
+    case '/paper/state':          return { positions: OPEN_POSITIONS, daily_pnl: 35.98, total_pnl: -16.08, win_rate: 69.5, trades_today: 12 }
+    case '/paper/trades':
+      if (range === '2days') return { trades: TRADES_2DAYS }
+      if (range === 'all')   return { trades: TRADES_ALL }
+      return { trades: TRADES_TODAY }
+    case '/paper/equity-curve':
+      if (range === '2days') return { points: EQUITY_2DAYS }
+      if (range === 'all')   return { points: EQUITY_ALLTIME }
+      return { points: EQUITY_TODAY }
     case '/paper/performance':    return { rows: PAPER_ROWS }
+    case '/paper/analytics':      return { by_hour: [], by_direction: [], by_symbol: [], by_conviction: [], by_trend: [], misses: {}, range, trips: 0 }
     case '/comparison/stats':     return { scalp_stats: SCALP_STATS, scalp_curve: SCALP_CURVE, scalp_symbol_breakdown: SYMBOL_BREAKDOWN }
     case '/logs/tail':            return { logs: LOGS }
     case '/market/quotes':        return MARKET_QUOTES
